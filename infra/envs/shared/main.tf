@@ -29,3 +29,13 @@ module "cognito" {
     }
   }
 }
+
+module "dns" {
+  source = "../../modules/dns"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  domain_name = "ironforge.rickycaballero.com"
+}

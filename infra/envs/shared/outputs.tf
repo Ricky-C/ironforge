@@ -32,3 +32,18 @@ output "cognito_client_ids" {
   description = "Map of env name to Cognito user pool client ID. Apps MUST verify aud claim against the right env's client_id."
   value       = module.cognito.client_ids
 }
+
+output "dns_hosted_zone_id" {
+  description = "ID of the ironforge subdomain Route53 hosted zone."
+  value       = module.dns.hosted_zone_id
+}
+
+output "dns_hosted_zone_arn" {
+  description = "ARN of the ironforge subdomain hosted zone. Lambda IAM grants for Route53 actions MUST scope to this ARN."
+  value       = module.dns.hosted_zone_arn
+}
+
+output "dns_certificate_arn" {
+  description = "ARN of the validated wildcard ACM certificate for ironforge.rickycaballero.com (us-east-1)."
+  value       = module.dns.certificate_arn
+}
