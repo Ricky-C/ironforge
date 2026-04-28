@@ -68,8 +68,23 @@ Each entry has:
 
 #### GSI `hash_key` / `range_key` deprecation
 
-- **What:** `hash_key` and `range_key` arguments on `global_secondary_index` blocks in `aws_dynamodb_table` are deprecated in AWS provider 6.x.
-- **Why deferred:** Pinned to AWS provider `~> 5.70` (5.x line). At apply time on the pinned provider the warning doesn't appear; replacement syntax is unverified against current docs.
-- **When to revisit:** Next AWS provider major version bump (5.x → 6.x), or when adding a new GSI to the table — whichever comes first.
-- **Action:** Verify the 6.x replacement syntax against AWS provider docs (likely `partition_key`/`sort_key` or a `key_schema` nested block matching the AWS API shape), update the `global_secondary_index` block, confirm via `terraform plan` that the only diff is the syntax change.
+- **What:** `hash_key` and `range_key` arguments on `global_secondary_index` blocks in `aws_dynamodb_table` are deprecated in AWS provider 6.x. **Verified by inspecting both schemas:** under our pinned `~> 5.70` (resolves to 5.100.0) the arguments are NOT deprecated; under 6.x they ARE deprecated, replaced by a `key_schema` nested block matching the AWS API shape. The IDE's terraform-ls fetches the latest registry schema (6.x), which is why warnings appear in the editor but not at apply time. Table-level `hash_key`/`range_key` remain non-deprecated in both versions; only the GSI/LSI nested-block versions are.
+- **Why deferred:** Bumping to AWS provider 6.x is a major-version change with breaking changes elsewhere (not just DynamoDB GSI shape). Doing it as a "fix the IDE warning" task understates the scope. Our pinned 5.x doesn't emit the deprecation at apply time, so the underlying configuration is correct — only the editor noise is the artifact.
+- **When to revisit:** Bundled with a deliberate AWS provider 5.x → 6.x bump, audited for breaking changes across all modules. Or when adding a new GSI (and we want to write it in the modern syntax from the start).
+- **Action:** When bumping to 6.x, replace each `global_secondary_index` block's `hash_key`/`range_key` arguments with `key_schema` nested blocks. Verified target syntax:
+  ```hcl
+  global_secondary_index {
+    name = "GSI1"
+    key_schema {
+      attribute_name = "GSI1PK"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "GSI1SK"
+      key_type       = "RANGE"
+    }
+    projection_type = "ALL"
+  }
+  ```
+  Confirm `terraform plan` shows no resource recreation — the schema change should be in-place.
 - **Where:** `infra/modules/dynamodb/main.tf` (GSI1 definition).
