@@ -1,0 +1,116 @@
+name: infra-plan
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - "services/cost-reporter/**"
+      - ".github/workflows/infra-plan.yml"
+
+permissions:
+  id-token: write       # OIDC token request
+  contents: read        # checkout
+  pull-requests: write  # post plan comment
+
+env:
+  TF_VERSION: "1.10.0"
+  AWS_REGION: us-east-1
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.33.2"
+  PLAN_TRUNCATE_LIMIT: "60000"
+
+jobs:
+  plan:
+    name: Plan ${{ matrix.composition }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        composition: [shared, dev]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build cost-reporter Lambda
+        # Required for shared composition's data.archive_file to find dist/index.js.
+        if: matrix.composition == 'shared'
+        run: pnpm --filter @ironforge/cost-reporter build
+
+      - name: Configure AWS credentials (OIDC plan role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Set composition-specific TF_VAR_environment
+        if: matrix.composition == 'dev' || matrix.composition == 'prod'
+        run: echo "TF_VAR_environment=${{ matrix.composition }}" >> "$GITHUB_ENV"
+
+      - name: Write backend.hcl
+        working-directory: infra/envs/${{ matrix.composition }}
+        run: |
+          cat > backend.hcl <<EOF
+          bucket = "ironforge-terraform-state-${{ secrets.AWS_ACCOUNT_ID }}"
+          EOF
+
+      - name: Terraform init
+        working-directory: infra/envs/${{ matrix.composition }}
+        run: terraform init -backend-config=backend.hcl -input=false
+
+      - name: Terraform plan
+        working-directory: infra/envs/${{ matrix.composition }}
+        env:
+          TF_VAR_alert_email: ${{ secrets.TF_VAR_ALERT_EMAIL }}
+        run: |
+          terraform plan -input=false -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const composition = "${{ matrix.composition }}";
+            const limit = parseInt(process.env.PLAN_TRUNCATE_LIMIT, 10);
+            const planPath = `infra/envs/${composition}/plan.txt`;
+            const plan = fs.readFileSync(planPath, "utf8");
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            let header = `### Terraform Plan: \`${composition}\`\n\n`;
+            let displayed;
+
+            if (plan.length > limit) {
+              header += `> [!WARNING]\n> Plan output truncated (${plan.length} chars > ${limit} limit). See [the full workflow run](${runUrl}) for the complete plan.\n\n`;
+              displayed = plan.slice(0, limit);
+            } else {
+              displayed = plan;
+            }
+
+            const body = `${header}<details>\n<summary>Show plan</summary>\n\n\`\`\`hcl\n${displayed}\n\`\`\`\n\n</details>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

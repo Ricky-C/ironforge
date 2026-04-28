@@ -1,0 +1,643 @@
+# GitHub Actions OIDC Bootstrap
+
+One-time, manual AWS CLI setup that creates the OIDC trust between GitHub Actions and the Ironforge AWS account, plus the two CI roles (`ironforge-ci-plan` and `ironforge-ci-apply`) the workflows assume. Runs after `BOOTSTRAP.md` (which creates the Terraform state infrastructure).
+
+## What gets created
+
+- **IAM OIDC provider** for `token.actions.githubusercontent.com`.
+- **`IronforgeCIPermissionBoundary`** managed policy — attached to both CI roles. Acts as a hard cap: even if the role's identity policy or trust is somehow widened, the boundary keeps the role from modifying itself, the OIDC provider, the boundary itself, or any of the cost-runaway services.
+- **`ironforge-ci-plan` role** — assumed by workflows running in `pull_request` context. Read-only across Ironforge's resource ARN patterns, plus state-lock writes on `ironforge-terraform-locks` and state object reads on the state bucket.
+- **`ironforge-ci-apply` role** — assumed by workflows running in `environment:production` context. Read + state-machinery + write across Ironforge's resource ARN patterns. Same boundary attached.
+- **GitHub Environment `production`** with required reviewer + 5-minute wait timer.
+- **GitHub repository secrets** wiring it all together.
+
+## Why two roles
+
+The split is the load-bearing security primitive. A workflow running in pull_request context (potentially from a forked PR, with arbitrary changes to workflow YAML) cannot assume the apply role — its OIDC token's `sub` claim never matches the apply role's trust condition. The apply role is reachable only when the workflow explicitly opts into the `production` environment, which itself is gated by the manual-approval + wait-timer in repo settings.
+
+## Prerequisites
+
+- AWS CLI v2 with an admin profile for the Ironforge account.
+- `BOOTSTRAP.md` completed (Terraform state bucket, lock table, and state CMK exist).
+- The repo `Ricky-C/ironforge` exists on GitHub.
+- `jq` installed (for parsing CLI output during verification).
+
+Set environment variables for the session:
+
+```bash
+export AWS_PROFILE=<your-admin-profile>
+export AWS_REGION=us-east-1
+export AWS_ACCOUNT_ID=<your-aws-account-id>
+export GITHUB_REPO="Ricky-C/ironforge"
+```
+
+Verify the right account:
+
+```bash
+aws sts get-caller-identity --query Account --output text
+# Should match AWS_ACCOUNT_ID.
+```
+
+## Step 1 — Create the OIDC provider
+
+GitHub Actions OIDC tokens are signed by `token.actions.githubusercontent.com`. AWS needs the provider registered.
+
+```bash
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1 \
+  --tags Key=ironforge-managed,Value=true \
+         Key=ironforge-component,Value=ci-oidc \
+         Key=ironforge-environment,Value=shared
+```
+
+Note: AWS no longer strictly validates the thumbprint for the well-known GitHub OIDC issuer (since 2023), but the field is still required by the API. The value above is one of the historical GitHub OIDC root cert thumbprints.
+
+## Step 2 — Create the permission boundary
+
+The boundary caps both CI roles. It allows broadly (so each role's identity policy is the actual grant), and explicitly DENYs the operations that would let a CI role compromise the rest of the account.
+
+```bash
+cat > /tmp/ironforge-ci-boundary.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowEverythingByDefault",
+      "Effect": "Allow",
+      "Action": "*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyModifyingTheOIDCProvider",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteOpenIDConnectProvider",
+        "iam:UpdateOpenIDConnectProviderThumbprint",
+        "iam:RemoveClientIDFromOpenIDConnectProvider",
+        "iam:AddClientIDToOpenIDConnectProvider"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyModifyingTheCIRolesThemselves",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRole",
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ironforge-ci-plan",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ironforge-ci-apply"
+      ]
+    },
+    {
+      "Sid": "DenyModifyingTheBoundaryItself",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:CreatePolicyVersion",
+        "iam:SetDefaultPolicyVersion"
+      ],
+      "Resource": "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/IronforgeCIPermissionBoundary"
+    },
+    {
+      "Sid": "DenyExpensiveServicesPermanently",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:*",
+        "rds:*",
+        "redshift:*",
+        "elasticache:*",
+        "es:*",
+        "opensearch:*",
+        "sagemaker:*",
+        "emr:*",
+        "eks:*",
+        "ecs:*",
+        "kafka:*",
+        "memorydb:*",
+        "qldb:*",
+        "documentdb:*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+
+aws iam create-policy \
+  --policy-name IronforgeCIPermissionBoundary \
+  --description "Permission boundary attached to ironforge-ci-plan and ironforge-ci-apply. Caps what either role can ever do, even if its identity policy is widened or its trust is compromised." \
+  --policy-document file:///tmp/ironforge-ci-boundary.json \
+  --tags Key=ironforge-managed,Value=true \
+         Key=ironforge-component,Value=ci-oidc \
+         Key=ironforge-environment,Value=shared
+```
+
+## Step 3 — Create `ironforge-ci-plan`
+
+Trust policy: scoped to `pull_request` context only. `StringEquals` (not `StringLike`) on the sub claim — exact match.
+
+```bash
+cat > /tmp/ironforge-ci-plan-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": "repo:${GITHUB_REPO}:pull_request"
+      }
+    }
+  }]
+}
+EOF
+
+aws iam create-role \
+  --role-name ironforge-ci-plan \
+  --assume-role-policy-document file:///tmp/ironforge-ci-plan-trust.json \
+  --permissions-boundary "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/IronforgeCIPermissionBoundary" \
+  --tags Key=ironforge-managed,Value=true \
+         Key=ironforge-component,Value=ci-oidc \
+         Key=ironforge-environment,Value=shared
+```
+
+Plan role identity policy: read-only across Ironforge resources + state-lock + state CMK access.
+
+```bash
+cat > /tmp/ironforge-ci-plan-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TerraformStateRead",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:ListBucket",
+        "s3:GetBucketVersioning"
+      ],
+      "Resource": [
+        "arn:aws:s3:::ironforge-terraform-state-*",
+        "arn:aws:s3:::ironforge-terraform-state-*/*"
+      ]
+    },
+    {
+      "Sid": "TerraformStateLock",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/ironforge-terraform-locks"
+    },
+    {
+      "Sid": "TerraformStateKMS",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:Encrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "kms:ResourceAliases": "alias/ironforge-terraform-state"
+        }
+      }
+    },
+    {
+      "Sid": "ReadAllForPlanDiff",
+      "Effect": "Allow",
+      "Action": [
+        "s3:Get*",
+        "s3:List*",
+        "dynamodb:Describe*",
+        "dynamodb:List*",
+        "lambda:Get*",
+        "lambda:List*",
+        "cloudfront:Get*",
+        "cloudfront:List*",
+        "acm:Describe*",
+        "acm:List*",
+        "acm:Get*",
+        "cognito-idp:Describe*",
+        "cognito-idp:List*",
+        "cognito-idp:Get*",
+        "kms:Describe*",
+        "kms:List*",
+        "kms:Get*",
+        "sns:Get*",
+        "sns:List*",
+        "ce:Get*",
+        "ce:Describe*",
+        "ce:List*",
+        "budgets:Describe*",
+        "budgets:View*",
+        "cloudwatch:Describe*",
+        "cloudwatch:Get*",
+        "cloudwatch:List*",
+        "logs:Describe*",
+        "logs:Get*",
+        "logs:List*",
+        "states:Describe*",
+        "states:List*",
+        "secretsmanager:Describe*",
+        "secretsmanager:List*",
+        "secretsmanager:Get*",
+        "wafv2:Get*",
+        "wafv2:List*",
+        "wafv2:Describe*",
+        "apigateway:GET",
+        "events:Describe*",
+        "events:List*",
+        "scheduler:Get*",
+        "scheduler:List*",
+        "iam:Get*",
+        "iam:List*",
+        "route53:Get*",
+        "route53:List*",
+        "xray:Get*",
+        "xray:List*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+
+aws iam put-role-policy \
+  --role-name ironforge-ci-plan \
+  --policy-name ironforge-ci-plan-permissions \
+  --policy-document file:///tmp/ironforge-ci-plan-policy.json
+```
+
+## Step 4 — Create `ironforge-ci-apply`
+
+Trust policy: scoped to `environment:production` only. The OIDC token sub claim takes the `environment:` form when the workflow uses an environment, regardless of the underlying push/ref.
+
+```bash
+cat > /tmp/ironforge-ci-apply-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": "repo:${GITHUB_REPO}:environment:production"
+      }
+    }
+  }]
+}
+EOF
+
+aws iam create-role \
+  --role-name ironforge-ci-apply \
+  --assume-role-policy-document file:///tmp/ironforge-ci-apply-trust.json \
+  --permissions-boundary "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/IronforgeCIPermissionBoundary" \
+  --tags Key=ironforge-managed,Value=true \
+         Key=ironforge-component,Value=ci-oidc \
+         Key=ironforge-environment,Value=shared
+```
+
+Apply role identity policy: write access scoped to Ironforge resource ARN patterns. Mostly `<service>:*` on `arn:aws:<service>:...:ironforge-*`.
+
+```bash
+cat > /tmp/ironforge-ci-apply-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TerraformStateAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetBucketVersioning"
+      ],
+      "Resource": [
+        "arn:aws:s3:::ironforge-terraform-state-*",
+        "arn:aws:s3:::ironforge-terraform-state-*/*"
+      ]
+    },
+    {
+      "Sid": "TerraformStateLock",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/ironforge-terraform-locks"
+    },
+    {
+      "Sid": "TerraformStateKMS",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:Encrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "kms:ResourceAliases": "alias/ironforge-terraform-state"
+        }
+      }
+    },
+    {
+      "Sid": "ReadAllForPlanDiff",
+      "Effect": "Allow",
+      "Action": [
+        "s3:Get*", "s3:List*",
+        "dynamodb:Describe*", "dynamodb:List*",
+        "lambda:Get*", "lambda:List*",
+        "cloudfront:Get*", "cloudfront:List*",
+        "acm:Describe*", "acm:List*", "acm:Get*",
+        "cognito-idp:Describe*", "cognito-idp:List*", "cognito-idp:Get*",
+        "kms:Describe*", "kms:List*", "kms:Get*",
+        "sns:Get*", "sns:List*",
+        "ce:Get*", "ce:Describe*", "ce:List*",
+        "budgets:Describe*", "budgets:View*",
+        "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*",
+        "logs:Describe*", "logs:Get*", "logs:List*",
+        "states:Describe*", "states:List*",
+        "secretsmanager:Describe*", "secretsmanager:List*", "secretsmanager:Get*",
+        "wafv2:Get*", "wafv2:List*", "wafv2:Describe*",
+        "apigateway:GET",
+        "events:Describe*", "events:List*",
+        "scheduler:Get*", "scheduler:List*",
+        "iam:Get*", "iam:List*",
+        "route53:Get*", "route53:List*",
+        "xray:Get*", "xray:List*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WriteIronforgeS3",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::ironforge-*",
+        "arn:aws:s3:::ironforge-*/*"
+      ]
+    },
+    {
+      "Sid": "WriteIronforgeDynamoDB",
+      "Effect": "Allow",
+      "Action": "dynamodb:*",
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/ironforge-*",
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/ironforge-*/*"
+      ]
+    },
+    {
+      "Sid": "WriteIronforgeLambda",
+      "Effect": "Allow",
+      "Action": "lambda:*",
+      "Resource": [
+        "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:ironforge-*",
+        "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:layer:ironforge-*",
+        "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:layer:ironforge-*:*"
+      ]
+    },
+    {
+      "Sid": "WriteIronforgeIAM",
+      "Effect": "Allow",
+      "Action": "iam:*",
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ironforge-*",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/Ironforge*"
+      ]
+    },
+    {
+      "Sid": "PassRoleForIronforgeServices",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ironforge-*"
+    },
+    {
+      "Sid": "WriteIronforgeLogs",
+      "Effect": "Allow",
+      "Action": "logs:*",
+      "Resource": [
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/lambda/ironforge-*",
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/lambda/ironforge-*:*",
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/states/ironforge-*",
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/states/ironforge-*:*"
+      ]
+    },
+    {
+      "Sid": "WriteIronforgeSNS",
+      "Effect": "Allow",
+      "Action": "sns:*",
+      "Resource": "arn:aws:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:ironforge-*"
+    },
+    {
+      "Sid": "WriteIronforgeStateMachines",
+      "Effect": "Allow",
+      "Action": "states:*",
+      "Resource": [
+        "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:ironforge-*",
+        "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:execution:ironforge-*:*"
+      ]
+    },
+    {
+      "Sid": "WriteIronforgeSecrets",
+      "Effect": "Allow",
+      "Action": "secretsmanager:*",
+      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:ironforge/*"
+    },
+    {
+      "Sid": "WriteAccountWideServicesIronforgeUses",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:*",
+        "wafv2:*",
+        "acm:*",
+        "cognito-idp:*",
+        "kms:*",
+        "budgets:*",
+        "ce:CreateAnomaly*",
+        "ce:UpdateAnomaly*",
+        "ce:DeleteAnomaly*",
+        "ce:TagResource",
+        "ce:UntagResource",
+        "events:*",
+        "apigateway:*",
+        "scheduler:*",
+        "xray:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53IronforgeZoneWrite",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets",
+        "route53:ChangeTagsForResource",
+        "route53:UpdateHostedZoneComment"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/*"
+    },
+    {
+      "Sid": "Route53AccountWideReads",
+      "Effect": "Allow",
+      "Action": [
+        "route53:GetChange"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+
+aws iam put-role-policy \
+  --role-name ironforge-ci-apply \
+  --policy-name ironforge-ci-apply-permissions \
+  --policy-document file:///tmp/ironforge-ci-apply-policy.json
+```
+
+Note on `cloudfront:*`, `wafv2:*`, `acm:*`, `cognito-idp:*`, `kms:*`: these services either don't support resource-level scoping in IAM, or scoping by resource ARN is impractical at create-time. The boundary's DENY list keeps the cost-runaway services blocked regardless. Future tightening — particularly around KMS key policies — is tracked in `docs/tech-debt.md`.
+
+## Step 5 — Configure GitHub Environment `production`
+
+In the GitHub UI:
+
+1. Repo → **Settings** → **Environments** → **New environment** → name `production`.
+2. **Required reviewers**: add yourself (or any approving reviewer).
+3. **Wait timer**: `5` minutes. Gives a window to cancel an approval if "wait, no" hits between merge and apply start.
+4. **Deployment branches**: **Selected branches and tags** → add rule `main` only. Prevents non-main branches from triggering apply.
+5. Save.
+
+The wait timer + required reviewer is what makes the apply role's `environment:production` sub-claim trust meaningful. Without these gates, anyone with merge access could trigger apply immediately.
+
+## Step 6 — Configure GitHub repository secrets
+
+Repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**:
+
+| Name | Value |
+|---|---|
+| `AWS_OIDC_PLAN_ROLE_ARN` | `arn:aws:iam::<account-id>:role/ironforge-ci-plan` |
+| `AWS_OIDC_APPLY_ROLE_ARN` | `arn:aws:iam::<account-id>:role/ironforge-ci-apply` |
+| `AWS_ACCOUNT_ID` | `<your-aws-account-id>` |
+| `TF_VAR_ALERT_EMAIL` | `<your alert recipient email>` |
+
+`AWS_ACCOUNT_ID` is technically not a secret, but storing it as a secret keeps it consistent with the env-specific-identifiers convention. The plan/apply role ARNs include the account ID; storing those as secrets prevents the account ID from leaking into workflow logs even indirectly.
+
+## Verification
+
+Run after Steps 1–4 complete. Each command has a clearly stated expected output; failure indicates a setup mistake.
+
+### OIDC provider exists
+
+```bash
+aws iam list-open-id-connect-providers \
+  --query "OpenIDConnectProviderList[?contains(Arn, 'token.actions.githubusercontent.com')].Arn" \
+  --output text
+```
+
+Expected: `arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com` (the ARN of the provider). Empty output = provider missing.
+
+### Boundary policy exists
+
+```bash
+aws iam get-policy \
+  --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/IronforgeCIPermissionBoundary" \
+  --query 'Policy.PolicyName' --output text
+```
+
+Expected: `IronforgeCIPermissionBoundary`.
+
+### Plan role: boundary attached, trust scoped to pull_request
+
+```bash
+# Boundary
+aws iam get-role --role-name ironforge-ci-plan \
+  --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text
+# Expected: arn:aws:iam::<account-id>:policy/IronforgeCIPermissionBoundary
+
+# Trust policy sub claim
+aws iam get-role --role-name ironforge-ci-plan \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals."token.actions.githubusercontent.com:sub"' \
+  --output text
+# Expected: repo:Ricky-C/ironforge:pull_request
+
+# Trust policy aud claim
+aws iam get-role --role-name ironforge-ci-plan \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals."token.actions.githubusercontent.com:aud"' \
+  --output text
+# Expected: sts.amazonaws.com
+```
+
+### Apply role: boundary attached, trust scoped to environment:production
+
+```bash
+# Boundary
+aws iam get-role --role-name ironforge-ci-apply \
+  --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text
+# Expected: arn:aws:iam::<account-id>:policy/IronforgeCIPermissionBoundary
+
+# Trust policy sub claim
+aws iam get-role --role-name ironforge-ci-apply \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals."token.actions.githubusercontent.com:sub"' \
+  --output text
+# Expected: repo:Ricky-C/ironforge:environment:production
+
+# Trust policy aud claim
+aws iam get-role --role-name ironforge-ci-apply \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals."token.actions.githubusercontent.com:aud"' \
+  --output text
+# Expected: sts.amazonaws.com
+```
+
+If all six expected outputs match, the bootstrap is correct without needing to wait for the first workflow run.
+
+## Rotation / recovery procedure
+
+**If a CI role is suspected of compromise** (unexpected CloudTrail activity, leaked OIDC token, compromised GitHub repo, etc.), the recovery sequence below halts further damage in seconds and gives you time to investigate without losing access.
+
+**Step 1 — Break the trust immediately.** Edit the suspected role's trust policy to set the `sub` claim to a deliberately non-existent value, e.g., `repo:Ricky-C/ironforge:revoked-pending-rotation`. The role becomes unassumable from any GitHub Actions context within seconds. No need to delete anything yet — preserving the role lets CloudTrail correlate ongoing investigation against its ARN.
+
+```bash
+aws iam update-assume-role-policy \
+  --role-name ironforge-ci-apply \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com","token.actions.githubusercontent.com:sub":"repo:Ricky-C/ironforge:revoked-pending-rotation"}}}]}'
+```
+
+**Step 2 — CloudTrail investigation.** Search CloudTrail for `AssumeRoleWithWebIdentity` events targeting the role's ARN over the suspected window. Each event includes the source IP, user agent, and the OIDC token's `sub` claim — enough to determine whether usage was legitimate (workflow runs from `Ricky-C/ironforge`) or anomalous. For anomalous events, pivot to the events made *by* that session: filter `userIdentity.sessionContext.sessionIssuer.arn` matching the role and inspect what was changed. CloudTrail Lake or Athena over the CloudTrail S3 bucket are the practical query surfaces.
+
+**Step 3 — Rotate associated secrets.** Even if the OIDC role itself is the only suspected weak link, rotate the GitHub repo secrets that reference it: regenerate `AWS_OIDC_APPLY_ROLE_ARN` (and plan equivalent if needed) by re-running Step 3 or Step 4 of this bootstrap with a new role name (e.g., `ironforge-ci-apply-v2`), then update the GitHub secret. Delete the old role. Rotating `TF_VAR_ALERT_EMAIL` and `AWS_ACCOUNT_ID` is unnecessary in most cases — those don't grant access — but rotating the role is the meaningful change.
+
+**Step 4 — Restore trust to the rotated role.** The new role's trust policy uses the same sub-claim values as the original (`repo:Ricky-C/ironforge:pull_request` or `repo:Ricky-C/ironforge:environment:production`). Re-run the verification commands above against the new role to confirm the trust policy is correct. The next PR or merge will exercise the new role through the usual workflow path.
+
+**Step 5 — Document what happened.** Add a brief note to `docs/EMERGENCY.md` § "Recovery: reversing a triggered deny policy" (or a new section if the incident is a different shape) with the timeline, what was found in CloudTrail, and what was rotated. The next incident — months from now — benefits from the previous one's notes more than from re-deriving the procedure.

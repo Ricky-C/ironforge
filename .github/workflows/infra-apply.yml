@@ -1,0 +1,121 @@
+name: infra-apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - "services/cost-reporter/**"
+      - ".github/workflows/infra-apply.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.10.0"
+  AWS_REGION: us-east-1
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.33.2"
+
+# Serialize applies. Don't cancel an in-progress apply if a new push lands —
+# halfway-applied state is worse than waiting.
+concurrency:
+  group: infra-apply
+  cancel-in-progress: false
+
+jobs:
+  apply-shared:
+    name: Apply shared composition
+    runs-on: ubuntu-latest
+    # GitHub Environment "production" provides the manual-approval gate and
+    # the 5-minute wait timer (configured in repo settings, not here).
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build cost-reporter Lambda
+        run: pnpm --filter @ironforge/cost-reporter build
+
+      - name: Configure AWS credentials (OIDC apply role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Write backend.hcl
+        working-directory: infra/envs/shared
+        run: |
+          cat > backend.hcl <<EOF
+          bucket = "ironforge-terraform-state-${{ secrets.AWS_ACCOUNT_ID }}"
+          EOF
+
+      - name: Terraform init
+        working-directory: infra/envs/shared
+        run: terraform init -backend-config=backend.hcl -input=false
+
+      - name: Terraform apply
+        working-directory: infra/envs/shared
+        env:
+          TF_VAR_alert_email: ${{ secrets.TF_VAR_ALERT_EMAIL }}
+        run: terraform apply -input=false -auto-approve
+
+  apply-dev:
+    name: Apply dev composition
+    runs-on: ubuntu-latest
+    needs: apply-shared
+    # No environment gate here — the gate fired on apply-shared. dev runs
+    # automatically after shared completes successfully.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC apply role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Write backend.hcl
+        working-directory: infra/envs/dev
+        run: |
+          cat > backend.hcl <<EOF
+          bucket = "ironforge-terraform-state-${{ secrets.AWS_ACCOUNT_ID }}"
+          EOF
+
+      - name: Terraform init
+        working-directory: infra/envs/dev
+        run: terraform init -backend-config=backend.hcl -input=false
+
+      - name: Terraform apply
+        working-directory: infra/envs/dev
+        env:
+          TF_VAR_environment: dev
+        run: terraform apply -input=false -auto-approve
