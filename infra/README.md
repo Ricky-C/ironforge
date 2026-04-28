@@ -55,3 +55,6 @@ Authoritative reference: `/CLAUDE.md` ("Terraform Conventions" and "AWS Resource
 - State in S3 with DynamoDB locking, key prefix `ironforge/<env>/<component>/`.
 - `required_version` and `required_providers` pinned in every root module.
 - Local resource names use `snake_case` (e.g., `resource "aws_s3_bucket" "site_content"`).
+
+# Contributors
+- Enrique Caballero
