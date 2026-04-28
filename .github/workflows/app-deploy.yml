@@ -1,0 +1,101 @@
+name: app-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/app-deploy.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.33.2"
+  AWS_REGION: us-east-1
+
+# Serialize deploys. Don't cancel an in-progress sync if a new push lands —
+# half-synced state is worse than waiting.
+concurrency:
+  group: app-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy portal
+    runs-on: ubuntu-latest
+    # Reuses the same production environment as infra-apply: manual approval
+    # + 5-min wait timer. Splitting into a lighter "app-deploy" environment
+    # with a narrower OIDC role is tracked in docs/tech-debt.md § "Separate
+    # OIDC role for app deploys" for when deploy frequency justifies it.
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      # cache: pnpm tells setup-node to cache the pnpm store directory
+      # between runs. Cold installs of Next/React/Tailwind would otherwise
+      # cost ~30+ seconds per deploy; cached installs are typically <5s.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Next.js portal
+        run: pnpm --filter @ironforge/web build
+
+      - name: Configure AWS credentials (OIDC apply role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # IMPORTANT: --delete makes this workflow the single source of truth for
+      # the portal bucket's contents. Files written out-of-band (e.g., manual
+      # `aws s3 cp`) WILL be removed on the next sync. If you need to serve
+      # files that aren't in apps/web/out/, either commit them under that
+      # directory or move them to a different bucket. The bucket policy + OAC
+      # setup means there's no other supported write path anyway.
+      - name: Sync portal output to S3
+        env:
+          BUCKET: ironforge-portal-${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          aws s3 sync apps/web/out/ "s3://${BUCKET}/" \
+            --delete \
+            --no-progress
+
+      # Look up distribution ID by alias rather than store it as a secret.
+      # The apply role's cloudfront:* on * covers list + invalidate.
+      # Invalidation is fire-and-forget — typical propagation is 5–15 min.
+      # Blocking the workflow on `aws cloudfront wait invalidation-completed`
+      # isn't worth the latency.
+      - name: Invalidate CloudFront cache
+        run: |
+          DISTRIBUTION_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'ironforge.rickycaballero.com')].Id | [0]" \
+            --output text)
+
+          if [ -z "$DISTRIBUTION_ID" ] || [ "$DISTRIBUTION_ID" = "None" ]; then
+            echo "Could not find CloudFront distribution for ironforge.rickycaballero.com" >&2
+            exit 1
+          fi
+
+          echo "Found distribution: $DISTRIBUTION_ID"
+
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --paths "/*" \
+            --query 'Invalidation.Id' --output text)
+
+          echo "Created invalidation: $INVALIDATION_ID"
