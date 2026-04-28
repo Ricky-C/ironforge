@@ -1,23 +1,9 @@
 locals {
   table_name = "ironforge-${var.environment}"
-  kms_alias  = "alias/ironforge-dynamodb-${var.environment}"
 
   component_tags = {
     "ironforge-component" = "data"
   }
-}
-
-resource "aws_kms_key" "this" {
-  description             = "Encryption key for the Ironforge DynamoDB table (${var.environment})"
-  enable_key_rotation     = true
-  deletion_window_in_days = 30
-
-  tags = local.component_tags
-}
-
-resource "aws_kms_alias" "this" {
-  name          = local.kms_alias
-  target_key_id = aws_kms_key.this.key_id
 }
 
 resource "aws_dynamodb_table" "ironforge" {
@@ -57,9 +43,11 @@ resource "aws_dynamodb_table" "ironforge" {
     enabled = true
   }
 
+  # AWS-managed encryption (alias/aws/dynamodb). Per ADR-003, CMK is reserved
+  # for content with specific access-control or compliance needs. Single-tenant
+  # operational data accessed only by Ironforge IAM principals doesn't qualify.
   server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.this.arn
+    enabled = true
   }
 
   deletion_protection_enabled = true
