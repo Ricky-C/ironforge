@@ -1,0 +1,6 @@
+packages:
+  - "apps/*"
+  - "services/api"
+  - "services/drift-detector"
+  - "services/workflow/*"
+  - "packages/*"
