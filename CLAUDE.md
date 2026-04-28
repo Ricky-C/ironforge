@@ -15,6 +15,7 @@ Boring infrastructure choices. Use AWS-native services over third-party tools. U
 Type-safe end-to-end. TypeScript everywhere. Shared Zod schemas. Compile-time guarantees over runtime checks.
 Step Functions for workflows. Multi-stage processes use Step Functions. Don't chain Lambdas manually.
 DynamoDB single-table design. No RDS. Single-table over multi-table. Fight the temptation to use RDS for "ease."
+Shared resources with prefix separation. Default to one shared AWS resource (S3 bucket, Cognito user pool, SNS topic) with prefix-, key-, or audience-claim separation per environment, not multiple physical resources per env. DynamoDB is the principal known exception due to weak IAM partition-key matching — see ADR-005. Other exceptions require similar threat-model justification.
 
 When making architectural decisions, prefer choices that demonstrate senior-level thinking over choices that are easier to implement. The portfolio signal is the architecture, not just the working code.
 Core Stack

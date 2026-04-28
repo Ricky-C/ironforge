@@ -14,3 +14,18 @@ module "cost_safeguards" {
 module "artifacts" {
   source = "../../modules/artifacts"
 }
+
+module "cognito" {
+  source = "../../modules/cognito"
+
+  clients = {
+    dev = {
+      callback_urls = ["http://localhost:3000/api/auth/callback/cognito"]
+      logout_urls   = ["http://localhost:3000"]
+    }
+    prod = {
+      callback_urls = ["https://ironforge.rickycaballero.com/api/auth/callback/cognito"]
+      logout_urls   = ["https://ironforge.rickycaballero.com"]
+    }
+  }
+}
