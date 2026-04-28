@@ -1,6 +1,7 @@
 packages:
   - "apps/*"
   - "services/api"
+  - "services/cost-reporter"
   - "services/drift-detector"
   - "services/workflow/*"
   - "packages/*"
