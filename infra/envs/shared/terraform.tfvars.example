@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+
+alert_email = "you@example.com"
+
+# Populate as Ironforge IAM roles come online. The budget action stays
+# disabled while all three lists are empty.
+# budget_action_target_roles  = ["ironforge-ci", "ironforge-workflow-terraform-executor"]
+# budget_action_target_users  = []
+# budget_action_target_groups = []

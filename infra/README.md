@@ -10,7 +10,8 @@ infra/
 ├── modules/           # Reusable Terraform modules
 └── envs/
     ├── dev/           # Development environment composition
-    └── prod/          # Production environment composition
+    ├── prod/          # Production environment composition
+    └── shared/        # Account-level resources (budgets, OIDC, etc.) — see ADR-001
 ```
 
 ## First-time setup
