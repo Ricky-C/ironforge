@@ -140,9 +140,9 @@ Hard limits on resource sizes (no instances larger than t3.micro for templates, 
 
 Data:
 
-All DynamoDB tables encrypted with customer-managed KMS keys
-All S3 buckets have encryption-at-rest, block-public-access, and TLS-only bucket policies
-CloudWatch Logs encrypted
+All DynamoDB tables encrypted (AWS-managed encryption by default; CMK only when ADR-003 criteria apply)
+All S3 buckets have encryption-at-rest, block-public-access, and TLS-only bucket policies (CMK choice per ADR-003)
+CloudWatch Logs use AWS-managed encryption by default; CMK only when log content is sensitive or compliance requires it (per ADR-003)
 
 WAF:
 

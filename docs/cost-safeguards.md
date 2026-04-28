@@ -204,3 +204,37 @@ CI deploys *will* fail while the action is triggered. That's intentional — whe
   - `ironforge-anomaly-relative-40pct` — 40% relative deviation
 - Both subscriptions publish to the same SNS topic. If both trigger on the same anomaly, you get two emails — acceptable cost for keeping each threshold cleanly auditable.
 - AWS Cost Anomaly Detection takes ~10 days of historical spend before it produces useful baselines. Expect noisy or absent alerts in the first ~2 weeks of operation.
+
+## Building the cost-reporter Lambda
+
+The Lambda's deploy artifact is `services/cost-reporter/dist/index.js`. Terraform reads it via `data.archive_file`; if it doesn't exist, `terraform plan` fails with a clear "no such file" error.
+
+**Local:**
+
+```bash
+pnpm install
+pnpm --filter @ironforge/cost-reporter build
+```
+
+Run `build` again after any change in `services/cost-reporter/src/`. esbuild produces a single bundled CJS file with inline source maps; `@aws-sdk/*` packages are externalized because they ship in the Lambda Node.js 22 runtime.
+
+**CI (Commit 11):**
+
+The `infra-apply.yml` workflow runs `pnpm install && pnpm --filter @ironforge/cost-reporter build` before `terraform apply` on the `shared` composition. Other Lambdas added in later commits join this build step.
+
+**Redeploy trigger:**
+
+Terraform sees a new `source_code_hash` whenever the bundle changes; the Lambda redeploys on the next apply. No source change → no redeploy on subsequent applies.
+
+**SNS topic reuse:**
+
+The cost reporter publishes to the same `ironforge-cost-alerts` SNS topic that Cost Anomaly Detection uses. Distinct subject lines keep them sortable in the inbox:
+
+| Source | Subject |
+|---|---|
+| Cost reporter Lambda | `Ironforge daily cost report — YYYY-MM-DD` |
+| Cost Anomaly Detection | AWS-set: `AWS Cost Anomaly Detection has detected an anomaly` (or similar) |
+
+**Log group encryption:**
+
+The Lambda's CloudWatch log group uses AWS-managed encryption (no CMK). Cost summaries are operational data — none of ADR-003's CMK criteria apply.

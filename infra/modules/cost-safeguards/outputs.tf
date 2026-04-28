@@ -27,3 +27,18 @@ output "budget_action_executor_role_arn" {
   description = "ARN of the IAM role assumed by AWS Budgets when the $50 action triggers. Null when the action is disabled (no target principals)."
   value       = local.budget_action_enabled ? aws_iam_role.budget_action[0].arn : null
 }
+
+output "cost_reporter_function_name" {
+  description = "Name of the daily cost reporter Lambda function."
+  value       = aws_lambda_function.cost_reporter.function_name
+}
+
+output "cost_reporter_function_arn" {
+  description = "ARN of the daily cost reporter Lambda function."
+  value       = aws_lambda_function.cost_reporter.arn
+}
+
+output "cost_reporter_log_group_name" {
+  description = "CloudWatch log group name for the cost reporter Lambda."
+  value       = aws_cloudwatch_log_group.cost_reporter.name
+}
