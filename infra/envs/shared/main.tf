@@ -10,3 +10,7 @@ module "cost_safeguards" {
   budget_action_target_users  = var.budget_action_target_users
   budget_action_target_groups = var.budget_action_target_groups
 }
+
+module "artifacts" {
+  source = "../../modules/artifacts"
+}

@@ -24,6 +24,16 @@ Each entry has:
 
 ## Open
 
+### S3 / IAM hardening
+
+#### Prefix-scoped artifacts bucket policy (defense-in-depth)
+
+- **What:** Add a bucket policy on the artifacts bucket that enforces prefix-scoped access at the bucket-policy level — beyond per-policy IAM scoping. Defense in depth.
+- **Why deferred:** Not required for MVP. IAM-grant scoping is sufficient *if grants are correct*. The bucket policy adds a safety net for IAM mistakes (a Lambda role accidentally granted `${bucket_arn}/*` could otherwise read across env prefixes).
+- **When to revisit:** When Ironforge has more than one Lambda role accessing the artifacts bucket, when the `IronforgePermissionBoundary` (Commit 10) is in place and we want belt-and-suspenders, or when a real cross-env access incident is detected.
+- **Action:** Add an `aws_s3_bucket_policy` statement that requires the calling principal's session tag (or a per-env IAM path/role-name pattern) to match the env prefix being accessed. Test by attempting cross-prefix access from a dev role and confirming denial.
+- **Where:** `infra/modules/artifacts/main.tf`.
+
 ### Terraform / AWS provider
 
 #### GSI `hash_key` / `range_key` deprecation
