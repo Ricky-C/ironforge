@@ -34,6 +34,16 @@ Each entry has:
 - **Action:** Add an `aws_s3_bucket_policy` statement that requires the calling principal's session tag (or a per-env IAM path/role-name pattern) to match the env prefix being accessed. Test by attempting cross-prefix access from a dev role and confirming denial.
 - **Where:** `infra/modules/artifacts/main.tf`.
 
+### CloudFront / observability
+
+#### CloudFront access logging not enabled
+
+- **What:** CloudFront access logs are disabled on the portal distribution.
+- **Why deferred:** Pre-launch (Phase 0). No real traffic to log. Logging adds an additional S3 logs bucket, lifecycle config, and (recommended) Athena/Glue setup for querying — not justified before there's traffic to debug.
+- **When to revisit:** Once Phase 1 ships and real traffic flows. Required for debugging cache behavior, validating WAF effectiveness over time, and identifying abuse patterns that don't trip rate limits.
+- **Action:** Enable `aws_cloudfront_distribution.portal.logging_config` pointing at a dedicated logs bucket (`ironforge-cloudfront-logs-<account-id>`). Configure 90-day S3 lifecycle expiration. Document in runbook how to query logs (Athena recommended).
+- **Where:** `infra/modules/cloudfront-frontend/main.tf` (currently has an inline comment marking the deferral site).
+
 ### Terraform / AWS provider
 
 #### GSI `hash_key` / `range_key` deprecation

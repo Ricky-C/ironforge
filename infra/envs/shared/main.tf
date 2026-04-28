@@ -39,3 +39,15 @@ module "dns" {
 
   domain_name = "ironforge.rickycaballero.com"
 }
+
+module "portal_frontend" {
+  source = "../../modules/cloudfront-frontend"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  domain_name     = "ironforge.rickycaballero.com"
+  certificate_arn = module.dns.certificate_arn
+  hosted_zone_id  = module.dns.hosted_zone_id
+}

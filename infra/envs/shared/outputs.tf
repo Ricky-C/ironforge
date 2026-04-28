@@ -47,3 +47,18 @@ output "dns_certificate_arn" {
   description = "ARN of the validated wildcard ACM certificate for ironforge.rickycaballero.com (us-east-1)."
   value       = module.dns.certificate_arn
 }
+
+output "portal_distribution_id" {
+  description = "CloudFront distribution ID for the portal. Used by the app-deploy CI workflow for cache invalidation."
+  value       = module.portal_frontend.distribution_id
+}
+
+output "portal_distribution_domain_name" {
+  description = "CloudFront-assigned domain name for the portal (e.g., d1234.cloudfront.net). Public traffic uses ironforge.rickycaballero.com via Route53 alias."
+  value       = module.portal_frontend.distribution_domain_name
+}
+
+output "portal_bucket_name" {
+  description = "S3 bucket name for the portal origin. The app-deploy CI workflow syncs Next.js export output here."
+  value       = module.portal_frontend.bucket_name
+}
