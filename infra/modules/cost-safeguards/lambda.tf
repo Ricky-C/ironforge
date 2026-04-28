@@ -18,9 +18,10 @@ resource "aws_cloudwatch_log_group" "cost_reporter" {
   tags = local.component_tags
 }
 
-# Lambda execution role.
-# Permission boundary will be added in Commit 10 when IronforgePermissionBoundary
-# lands. The role's narrow inline policy below is the only access for now.
+# Lambda execution role with the IronforgePermissionBoundary attached when
+# var.permissions_boundary_arn is non-null. The boundary caps what an inline
+# policy can grant — see ADR-006. The role's narrow inline policy below is
+# well within the boundary's ALLOW list.
 data "aws_iam_policy_document" "cost_reporter_trust" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -32,8 +33,9 @@ data "aws_iam_policy_document" "cost_reporter_trust" {
 }
 
 resource "aws_iam_role" "cost_reporter" {
-  name               = "ironforge-cost-reporter"
-  assume_role_policy = data.aws_iam_policy_document.cost_reporter_trust.json
+  name                 = "ironforge-cost-reporter"
+  assume_role_policy   = data.aws_iam_policy_document.cost_reporter_trust.json
+  permissions_boundary = var.permissions_boundary_arn
 
   tags = local.component_tags
 }

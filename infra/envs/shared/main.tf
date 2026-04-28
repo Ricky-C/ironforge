@@ -2,6 +2,12 @@
 # Resources here apply once per AWS account, not per env.
 # See docs/adrs/001-shared-env-composition.md for the rationale.
 
+module "lambda_baseline" {
+  source = "../../modules/lambda-baseline"
+
+  route53_zone_arn = module.dns.hosted_zone_arn
+}
+
 module "cost_safeguards" {
   source = "../../modules/cost-safeguards"
 
@@ -9,6 +15,7 @@ module "cost_safeguards" {
   budget_action_target_roles  = var.budget_action_target_roles
   budget_action_target_users  = var.budget_action_target_users
   budget_action_target_groups = var.budget_action_target_groups
+  permissions_boundary_arn    = module.lambda_baseline.boundary_policy_arn
 }
 
 module "artifacts" {

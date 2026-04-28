@@ -44,6 +44,16 @@ Each entry has:
 - **Action:** Enable `aws_cloudfront_distribution.portal.logging_config` pointing at a dedicated logs bucket (`ironforge-cloudfront-logs-<account-id>`). Configure 90-day S3 lifecycle expiration. Document in runbook how to query logs (Athena recommended).
 - **Where:** `infra/modules/cloudfront-frontend/main.tf` (currently has an inline comment marking the deferral site).
 
+### IAM / permission boundary
+
+#### KMS permissions absent from the IronforgePermissionBoundary
+
+- **What:** `IronforgePermissionBoundary` (`infra/modules/lambda-baseline/main.tf`) has no `kms:*` ALLOW statements. Lambdas that try to call KMS directly (e.g., `kms:Decrypt` on envelope-encrypted data) will be denied.
+- **Why deferred:** Post-ADR-003, no Lambda directly calls KMS. AWS-managed encryption is handled transparently by data-plane services (DynamoDB, S3, SNS). Adding KMS perms speculatively risks the tag/alias condition pitfalls — boundary KMS conditions have inconsistent behavior across operations. Better to add them when there's a concrete requirement.
+- **When to revisit:** When the first Lambda needs to call KMS directly. Most likely scenarios: Secrets Manager with a CMK (Phase 1 GitHub App private key), envelope-encrypted Lambda environment vars, or signed-payload verification.
+- **Action:** Add `kms:Decrypt`, `kms:GenerateDataKey`, `kms:DescribeKey` to the boundary's ALLOW list. Scope to specific CMK ARNs via input variable from the modules that create them, OR use `kms:ResourceTag/ironforge-managed = true` if the universe of CMKs is broad — but verify the condition syntax against current AWS docs at write time. See `project_commit_10_kms_validation.md` memory for the gotchas.
+- **Where:** `infra/modules/lambda-baseline/main.tf`.
+
 ### Terraform / AWS provider
 
 #### GSI `hash_key` / `range_key` deprecation

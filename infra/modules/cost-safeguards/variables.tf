@@ -20,3 +20,9 @@ variable "budget_action_target_groups" {
   type        = list(string)
   default     = []
 }
+
+variable "permissions_boundary_arn" {
+  description = "ARN of an IAM permissions boundary policy to attach to Lambda execution roles in this module (currently the cost-reporter role). When null, no boundary is applied — useful for module reuse without the lambda-baseline module wired in. See ADR-006."
+  type        = string
+  default     = null
+}
