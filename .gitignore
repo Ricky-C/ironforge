@@ -27,6 +27,7 @@ out/
 *.tfstate.*
 *.tfvars
 !example.tfvars
+backend.hcl
 
 # IDE
 .vscode/
