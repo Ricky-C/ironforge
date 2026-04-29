@@ -1,6 +1,6 @@
-import { Clock, ExternalLink, Github } from "lucide-react";
+import { CheckCircle2, Clock, ExternalLink, Github } from "lucide-react";
 
-type PhaseStatus = "in-progress" | "not-started";
+type PhaseStatus = "completed" | "in-progress" | "not-started";
 
 type Phase = {
   title: string;
@@ -11,13 +11,13 @@ type Phase = {
 const phases: Phase[] = [
   {
     title: "Phase 0 — Foundations",
-    status: "in-progress",
+    status: "completed",
     summary:
       "Monorepo, Terraform infrastructure, GitHub Actions CI/CD, portal placeholder.",
   },
   {
     title: "Phase 1 — End-to-end provisioning",
-    status: "not-started",
+    status: "in-progress",
     summary:
       "Step Functions workflow and Lambda task functions. Real provisioning end-to-end via API call.",
   },
@@ -61,9 +61,10 @@ export default function Home() {
             Status
           </h2>
           <p className="mt-2 text-zinc-700 dark:text-zinc-300">
-            Phase 0 (foundations) in progress. The portal is being assembled
-            commit by commit; this page is served by the same CloudFront +
-            S3 stack the rest of the project will use.
+            Phase 0 (foundations) is complete. This page is served by the
+            same CloudFront + S3 stack the rest of the project will use.
+            Phase 1 — the API, Step Functions workflow, and static-site
+            template — is the next milestone.
           </p>
         </section>
 
@@ -78,7 +79,9 @@ export default function Home() {
                   className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center"
                   aria-hidden="true"
                 >
-                  {phase.status === "in-progress" ? (
+                  {phase.status === "completed" ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  ) : phase.status === "in-progress" ? (
                     <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                   ) : (
                     <span className="h-2 w-2 rounded-full bg-zinc-300 dark:bg-zinc-700" />
@@ -87,6 +90,11 @@ export default function Home() {
                 <div>
                   <h3 className="font-medium text-zinc-900 dark:text-zinc-100">
                     {phase.title}
+                    {phase.status === "completed" && (
+                      <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+                        complete
+                      </span>
+                    )}
                     {phase.status === "in-progress" && (
                       <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
                         in progress
