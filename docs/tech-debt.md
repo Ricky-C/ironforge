@@ -64,6 +64,14 @@ Each entry has:
 
 ### IAM / permission boundary
 
+#### Tighten `kms:*` and other account-wide writes on `ironforge-ci-apply`
+
+- **What:** The apply role's identity policy (`OIDC_BOOTSTRAP.md` Step 4, sid `WriteAccountWideServicesIronforgeUses`) grants `kms:*`, `cloudfront:*`, `wafv2:*`, `acm:*`, `cognito-idp:*`, `events:*`, `apigateway:*`, `scheduler:*`, `xray:*`, `budgets:*` on `Resource: "*"`. The CI boundary's `Action: "*"` ALLOW does not cap these — only the DENYs (OIDC mods, self-modification, expensive services) constrain. Concrete escalation path: `kms:PutKeyPolicy` against `alias/ironforge-terraform-state` followed by `kms:ScheduleKeyDeletion` would render the state bucket unrecoverable. Same shape for `cognito-idp:*` against any non-Ironforge Cognito pool that might exist in the account.
+- **Why deferred:** At Phase 0 these services don't yet have customer-facing data flowing through them, the apply role is gated behind `environment:production` with required reviewer + 5-minute wait, and tightening requires care: several of these services have actions that don't support resource-level scoping (which is why they were broadened in the first place — see the `Note on cloudfront:*, wafv2:*, acm:*, cognito-idp:*, kms:*` comment in `OIDC_BOOTSTRAP.md`).
+- **When to revisit:** Before any of: (a) Secrets Manager CMK creation in Phase 1, (b) the first non-Ironforge resource in the account that we don't want the apply role to be able to delete, (c) anyone external getting merge access to the repo.
+- **Action:** Tighten in this order — (1) `kms:*` to `arn:aws:kms:us-east-1:<account>:key/*` plus a `kms:ResourceTag/ironforge-managed = true` condition, with the state CMK and any Ironforge-created CMKs picking up that tag; (2) `cognito-idp:*` to the specific user-pool ARN once the pool exists; (3) for the remaining services where resource-level scoping isn't supported, add explicit entries to `docs/iam-exceptions.md` so the `Resource: "*"` is recorded as a known limitation rather than an oversight. Test the tightened apply role by running a normal `terraform apply` against the shared composition and verifying no permission denials.
+- **Where:** `infra/OIDC_BOOTSTRAP.md` Step 4; `docs/iam-exceptions.md` (additions).
+
 #### KMS permissions absent from the IronforgePermissionBoundary
 
 - **What:** `IronforgePermissionBoundary` (`infra/modules/lambda-baseline/main.tf`) has no `kms:*` ALLOW statements. Lambdas that try to call KMS directly (e.g., `kms:Decrypt` on envelope-encrypted data) will be denied.
@@ -96,3 +104,75 @@ Each entry has:
   ```
   Confirm `terraform plan` shows no resource recreation — the schema change should be in-place.
 - **Where:** `infra/modules/dynamodb/main.tf` (GSI1 definition).
+
+### Cost safeguards — known bugs surfaced during verification attempt
+
+#### Budget-action executor role uses unattachable AWS-managed policy
+
+- **What:** `infra/modules/cost-safeguards/budgets.tf` attaches `arn:aws:iam::aws:policy/aws-service-role/AWSBudgetsActionsWithAWSResourceControlAccess` to the customer-managed role `ironforge-budget-action-executor`. AWS rejects this with `PolicyNotAttachable: Cannot attach AWS reserved policy to an IAM role` — policies under the `aws-service-role/` path can only attach to service-linked roles. The bug is dormant because `local.budget_action_enabled = false` (target lists are empty); it surfaces the moment any `budget_action_target_*` variable becomes non-empty.
+- **Why deferred:** Discovered during the Phase 0 verification attempt (April 2026). Rolling back the verification rather than landing the fix mid-procedure was the right move; the fix is small (~30 lines) but its ADR-002 implications need a separate think — see next entry. Phase 0 has no real target principals so no production impact.
+- **When to revisit:** Before Phase 1 populates `var.budget_action_target_roles` with real workflow Lambda roles. This is hard-blocking for that step — the action would fail to create otherwise.
+- **Action:** Replace the `aws_iam_role_policy_attachment.budget_action_managed` resource with a custom inline `aws_iam_role_policy` granting the six `iam:Attach*Policy`/`iam:Detach*Policy` actions on `Resource: "*"` with an `iam:PolicyARN` `ArnEquals` condition pinning to `aws_iam_policy.deny_resource_creation.arn`. The inline form is *tighter* than the AWS-managed policy was — it can only attach/detach the deny policy, never anything else. Code was drafted in-session and is recoverable from git history if needed.
+- **Where:** `infra/modules/cost-safeguards/budgets.tf` (lines 107-117, the `budget_action_managed` resource and its preceding comment).
+
+#### ADR-002's canonical worked example does not work in practice
+
+- **What:** ADR-002 (`docs/adrs/002-managed-iam-policies.md`) cites `AWSBudgetsActionsWithAWSResourceControlAccess` as the canonical example of "AWS-managed policy acceptable when ALL four criteria apply." Empirically that policy can't be attached to a customer-managed role at all (see entry above), so the worked example doesn't actually work. The four-criteria rule itself is sound; the example was wrong.
+- **Why deferred:** Only surfaced via the verification attempt. Updating the ADR is a 15-minute write but wants explicit thought about whether to (a) find a different canonical example that actually works, (b) reframe the ADR to acknowledge that AWS-managed policies for service-integration patterns are largely SLR-reserved and our current footprint has zero qualifying instances, or (c) supersede with a new ADR.
+- **When to revisit:** Bundled with the budgets.tf fix above. Same trigger (Phase 1 populating target principals).
+- **Action:** Recommend option (b) — keep the four-criteria rule, add a § "Empirical reality" section noting the SLR-reservation pattern, and explicitly state that no current Ironforge resource qualifies. Cross-link the budgets.tf fix entry above as the case study that surfaced this.
+- **Where:** `docs/adrs/002-managed-iam-policies.md`.
+
+#### `cost-safeguards.md` § 3 verification procedure references a Console button that doesn't exist for AUTOMATIC actions
+
+- **What:** § 3 step 1 instructs the user to click "Run action now" in the AWS Cost Management Console to test the budget action. That button only appears for actions in `Pending` state (MANUAL approval mode awaiting human approval). Our action uses AUTOMATIC approval and never enters `Pending`. The button is genuinely absent. AWS Budgets exposes no API to force-fire an AUTOMATIC action — the only fire path is an actual budget threshold breach.
+- **Why deferred:** The whole verification was rolled back rather than redesigned mid-procedure.
+- **When to revisit:** When recurring verification cadence (entry below) is set up. Replace § 3 with a procedure that tests the load-bearing pieces without depending on a fire trigger: (1) static config inspection of budget action / executor role, (2) IAM policy simulator confirming executor role can attach the deny policy and only the deny policy, (3) manual `aws iam attach-user-policy` against a throwaway test user (the same call the executor role would make at runtime), (4) simulator confirming the deny policy denies, (5) manual detach. Acknowledge in the doc that "AWS Budgets detects threshold breach and assumes executor role" is AWS-internal and not under our test surface.
+- **Action:** Rewrite `cost-safeguards.md` § 3 to the simulator + manual-attach approach. Also fix the inline comment in `infra/modules/cost-safeguards/iam.tf:10` if `--execution-type RESET` turns out to be wrong (current AWS Budgets API documents `REVERSE_BUDGET_ACTION` as the corresponding value; verify before editing).
+- **Where:** `docs/cost-safeguards.md` § 3; `infra/modules/cost-safeguards/iam.tf:10` (inline comment).
+
+### Operational verification / monitoring
+
+#### End-to-end verification of the cost-safeguards circuit breaker
+
+- **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. No end-to-end verification has been completed — an attempt in April 2026 surfaced three pre-existing bugs (see the "Cost safeguards — known bugs" section above) and was rolled back. The static configuration is correct; the runtime fire path has never been observed.
+- **Why deferred:** The verification attempt revealed that the unattachable managed policy and the broken Console procedure had to be fixed *before* a meaningful verification was possible. Bundled with Phase 1's first real `budget_action_target_*` population since the bugs are dormant until then.
+- **When to revisit:** Same trigger as the budgets.tf fix above — before Phase 1 populates target principals. After the bugs are fixed, run the simulator + manual-attach verification described in the third "known bugs" entry, capture artifacts, and establish a quarterly cadence.
+- **Action:** (1) Land the budgets.tf inline-policy fix. (2) Rewrite `cost-safeguards.md` § 3 per the third "known bugs" entry. (3) Run the new procedure against a throwaway IAM user. (4) Capture artifacts in `docs/cost-safeguards.md` § verification log and cross-link from `docs/EMERGENCY.md` § 2. (5) Add a quarterly reminder (calendar entry or scheduled review).
+- **Where:** `infra/modules/cost-safeguards/budgets.tf`, `docs/cost-safeguards.md`, `docs/EMERGENCY.md`.
+
+#### CloudWatch metric filters and alarms on CloudTrail security events
+
+- **What:** CloudTrail itself is being enabled this week as a standalone pre-Phase-1 commit. Metric filters and alarms on top of CloudTrail (e.g., `ConsoleLogin` failures, root-account API calls, IAM changes by non-CI principals, KMS key policy edits, S3 bucket policy changes) are deferred to Phase 1.
+- **Why deferred:** CloudTrail captures the events; alarming on them requires deciding which events warrant a page versus a quiet log entry. Defining the filter set well requires Phase 1's resource set to be in place — alarming on "IAM changes" before Phase 1 IAM lands would just generate noise from the Phase 1 commits themselves. Better to add filters as the resources they protect come online.
+- **When to revisit:** First Phase 1 commit that creates a non-CI IAM role, secret, or KMS key. The new resource is the trigger to add its corresponding alarm.
+- **Action:** Create `aws_cloudwatch_log_metric_filter` + `aws_cloudwatch_metric_alarm` pairs alerting to `ironforge-cost-alerts` (or a new `ironforge-security-alerts` topic if the cost-vs-security distinction matters). Minimum recommended set: (1) root-account API usage, (2) IAM policy changes outside `ironforge-ci-*` actor, (3) `kms:DisableKey` / `kms:ScheduleKeyDeletion` events, (4) S3 bucket-policy edits on `ironforge-terraform-state-*`, (5) Console login failures from non-allowlisted IPs (post-MVP if console use grows). Document the filter set in `docs/runbook.md` so an alert tells the on-call where the metric came from.
+- **Where:** New `infra/modules/security-monitoring/` (or fold into `cost-safeguards` and rename); referenced from `infra/envs/shared/main.tf`.
+
+#### GuardDuty enabling
+
+- **What:** AWS GuardDuty is not enabled. GuardDuty surfaces threat-detection findings (compromised credentials, anomalous API patterns, crypto-mining instances, etc.) that CloudTrail metric filters miss because they require behavioral analysis across the event stream.
+- **Why deferred:** ~$3-4/month at idle traffic for the basic detector, more with malware protection or runtime monitoring. Limited signal at portfolio scale — there's no real attacker traffic to detect. Phase 0 (placeholder portal) and Phase 1 (provisioning workflow with no public surface beyond the wizard) don't generate the kind of API patterns GuardDuty is designed to catch.
+- **When to revisit:** Phase 2 (wizard live with authenticated users) or whenever real production traffic begins. Also revisit if the cost-safeguards budget is raised — GuardDuty's monthly cost becomes a smaller fraction of the budget then.
+- **Action:** Enable in the shared composition: `aws_guardduty_detector` with `enable = true`, finding-publishing frequency `FIFTEEN_MINUTES`, and SNS subscription to `ironforge-cost-alerts` (or `ironforge-security-alerts`) via EventBridge. Document the GuardDuty dashboard URL in `docs/runbook.md`.
+- **Where:** New addition to `infra/envs/shared/main.tf`; referenced docs.
+
+### Documentation
+
+#### `docs/runbook.md` polish beyond Phase 0 skeleton
+
+- **What:** A skeleton runbook is being added this week with four sections: state-bucket recovery, CMK pending-deletion recovery, lock-table corruption, and "I think state is wrong, what now." Sections capture symptom/diagnosis/recovery/prevention but in compact form, not polished prose.
+- **Why deferred:** Polish-without-incident-data is speculative — runbook prose written in the abstract tends to miss the actually-confusing parts of an incident. The skeleton is enough to navigate by; polish lands when an incident reveals which sentences were unclear.
+- **When to revisit:** After the first real recovery action (which Phase 4 drift detector or any unplanned `terraform state` surgery would generate), or quarterly review whichever comes first. Also revisit if a new failure mode appears (e.g., CI role compromise, which the OIDC bootstrap doc partially covers but the runbook should cross-link).
+- **Action:** For each section, expand into prose covering: precise symptom strings to grep for, the AWS CLI commands with explanatory context (not just the command), the rollback path if recovery fails, and a "things you might be tempted to do but shouldn't" warning block. Add a top-level decision tree: "I'm seeing X, go to section Y."
+- **Where:** `docs/runbook.md`.
+
+### Supply chain
+
+#### CodeQL workflow pending repo going public
+
+- **What:** GitHub-hosted CodeQL (free for public repos) provides static analysis for security issues in TypeScript code. Not enabled — CodeQL on private repos is paid (Advanced Security), and the project hasn't gone public yet.
+- **Why deferred:** Cost. The free tier requires public visibility; the paid tier isn't worth it for portfolio-scale code volume.
+- **When to revisit:** When the repo flips to public (likely Phase 3 or Phase 4 when the demo mode lands and the project is portfolio-presentation-ready).
+- **Action:** Add `.github/workflows/codeql.yml` using the standard CodeQL action, scanning JavaScript/TypeScript on push to `main` and weekly schedule. Configure SARIF upload to GitHub Security tab. Should take <10 minutes once the repo is public — the paste-from-template path is well-trodden.
+- **Where:** `.github/workflows/codeql.yml` (new file).

@@ -49,6 +49,11 @@ echo "Created KMS key: ${KEY_ID}"
 aws kms create-alias \
   --alias-name alias/ironforge-terraform-state \
   --target-key-id "${KEY_ID}"
+
+# Enable annual rotation. New keys do NOT have rotation enabled by default;
+# this is an explicit one-line cost (~$0/year for symmetric keys) and a
+# one-line follow-up command. Skip-by-default would leak into the audit trail.
+aws kms enable-key-rotation --key-id "${KEY_ID}"
 ```
 
 The default key policy grants full access to the account root, which delegates to IAM. Any IAM principal in the account with appropriate KMS permissions (admin or PowerUser) can use this key. The GitHub Actions OIDC role will be added to the key policy in a later step.
@@ -153,9 +158,10 @@ aws s3api get-bucket-policy --bucket "${STATE_BUCKET}" --query Policy --output t
 aws s3api get-bucket-lifecycle-configuration --bucket "${STATE_BUCKET}"
 aws dynamodb describe-table --table-name "${LOCK_TABLE}" --query 'Table.TableStatus'
 aws kms describe-key --key-id alias/ironforge-terraform-state --query 'KeyMetadata.KeyId'
+aws kms get-key-rotation-status --key-id alias/ironforge-terraform-state --query 'KeyRotationEnabled'
 ```
 
-Every command should succeed and print expected values.
+Every command should succeed and print expected values. The rotation status command should print `True`.
 
 ## Idempotency
 
