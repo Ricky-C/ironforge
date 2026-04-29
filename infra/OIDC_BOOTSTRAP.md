@@ -27,9 +27,14 @@ Set environment variables for the session:
 ```bash
 export AWS_PROFILE=<your-admin-profile>
 export AWS_REGION=us-east-1
-export AWS_ACCOUNT_ID=<your-aws-account-id>
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 export GITHUB_REPO="Ricky-C/ironforge"
+export STATE_KMS_KEY_ARN=$(aws kms describe-key \
+  --key-id alias/ironforge-terraform-state \
+  --query 'KeyMetadata.Arn' --output text)
 ```
+
+`STATE_KMS_KEY_ARN` is the CMK created in `BOOTSTRAP.md`. Both CI roles' identity policies scope `kms:Decrypt`/`Encrypt`/`GenerateDataKey` to this exact ARN — see Steps 3 and 4. The earlier pattern of using `kms:ResourceAliases` as a condition was dropped because that condition key is multivalued and requires a `ForAnyValue`/`ForAllValues` set operator to evaluate reliably; using the resolved ARN directly is simpler and unambiguous.
 
 Verify the right account:
 
@@ -219,12 +224,7 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "kms:Encrypt",
         "kms:DescribeKey"
       ],
-      "Resource": "*",
-      "Condition": {
-        "StringLike": {
-          "kms:ResourceAliases": "alias/ironforge-terraform-state"
-        }
-      }
+      "Resource": "${STATE_KMS_KEY_ARN}"
     },
     {
       "Sid": "ReadAllForPlanDiff",
@@ -253,6 +253,7 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "ce:Describe*",
         "ce:List*",
         "budgets:Describe*",
+        "budgets:List*",
         "budgets:View*",
         "cloudwatch:Describe*",
         "cloudwatch:Get*",
@@ -367,12 +368,7 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "kms:Encrypt",
         "kms:DescribeKey"
       ],
-      "Resource": "*",
-      "Condition": {
-        "StringLike": {
-          "kms:ResourceAliases": "alias/ironforge-terraform-state"
-        }
-      }
+      "Resource": "${STATE_KMS_KEY_ARN}"
     },
     {
       "Sid": "ReadAllForPlanDiff",
@@ -387,7 +383,7 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "kms:Describe*", "kms:List*", "kms:Get*",
         "sns:Get*", "sns:List*",
         "ce:Get*", "ce:Describe*", "ce:List*",
-        "budgets:Describe*", "budgets:View*",
+        "budgets:Describe*", "budgets:List*", "budgets:View*",
         "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*",
         "logs:Describe*", "logs:Get*", "logs:List*",
         "states:Describe*", "states:List*",
