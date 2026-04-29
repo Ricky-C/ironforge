@@ -21,6 +21,16 @@ data "aws_iam_policy_document" "sns_publish" {
 
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.cost_alerts.arn]
+
+    # Confused-deputy mitigation: scope the AWS service principal to this
+    # account only. Cost Anomaly Detection in another account cannot publish
+    # here even if it knew the topic ARN. Mirrors the budget_action_trust
+    # pattern in budgets.tf.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [local.account_id]
+    }
   }
 }
 

@@ -265,7 +265,6 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "states:List*",
         "secretsmanager:Describe*",
         "secretsmanager:List*",
-        "secretsmanager:Get*",
         "wafv2:Get*",
         "wafv2:List*",
         "wafv2:Describe*",
@@ -387,7 +386,7 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*",
         "logs:Describe*", "logs:Get*", "logs:List*",
         "states:Describe*", "states:List*",
-        "secretsmanager:Describe*", "secretsmanager:List*", "secretsmanager:Get*",
+        "secretsmanager:Describe*", "secretsmanager:List*",
         "wafv2:Get*", "wafv2:List*", "wafv2:Describe*",
         "apigateway:GET",
         "events:Describe*", "events:List*",
@@ -536,6 +535,17 @@ In the GitHub UI:
 5. Save.
 
 The wait timer + required reviewer is what makes the apply role's `environment:production` sub-claim trust meaningful. Without these gates, anyone with merge access could trigger apply immediately.
+
+### Step 5a — Verify fork-PR Actions settings (load-bearing for plan-role trust)
+
+The plan role's trust policy allows assumption from any workflow run with sub `repo:Ricky-C/ironforge:pull_request` — including fork-PR runs against this repo. Three things make this safe; verify all three.
+
+1. **Repo → Settings → Actions → General → Fork pull request workflows from outside collaborators.**
+   Set to **Require approval for first-time contributors** (or stricter: **Require approval for all outside collaborators**). Default-on for new repos but worth confirming. Without this, a first-time contributor's fork PR runs the workflow without maintainer review.
+2. **Secret isolation.** GitHub does not pass `secrets.*` to fork-PR `pull_request` workflows. `aws-actions/configure-aws-credentials` would receive an empty `role-to-assume` and fail before the OIDC exchange. This is GitHub's default behavior — there is no setting that opts in to passing secrets to fork PRs from `pull_request` events.
+3. **Code-level guard in the workflow.** `.github/workflows/infra-plan.yml` carries a job-level `if: github.event.pull_request.head.repo.full_name == github.repository` so fork-PR runs skip the plan job entirely rather than failing partway. This is the durable invariant — even if GitHub's secret-isolation behavior changes, the workflow refuses to run for fork PRs.
+
+If a fork PR legitimately needs a plan, pull the branch locally and run `terraform plan` — don't relax these gates.
 
 ## Step 6 — Configure GitHub repository secrets
 

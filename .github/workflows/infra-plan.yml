@@ -23,6 +23,12 @@ jobs:
   plan:
     name: Plan ${{ matrix.composition }}
     runs-on: ubuntu-latest
+    # Code-level fork-PR guard. GitHub already withholds `secrets.*` from
+    # fork-PR `pull_request` workflows (so OIDC credential configuration would
+    # fail anyway), but encoding the check here makes the protection an
+    # explicit invariant rather than dependent on a GitHub policy detail.
+    # Fork PRs that need a plan: maintainer pulls locally and runs plan.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:
