@@ -85,8 +85,14 @@ jobs:
     name: Apply dev composition
     runs-on: ubuntu-latest
     needs: apply-shared
-    # No environment gate here — the gate fired on apply-shared. dev runs
-    # automatically after shared completes successfully.
+    # Same environment as apply-shared. The environment declaration is what
+    # makes the OIDC token's `sub` claim take the form
+    # `repo:OWNER/REPO:environment:production`, which is the only sub claim
+    # the apply role's trust policy accepts. Without this line, the OIDC
+    # token's sub is `ref:refs/heads/main` and AssumeRoleWithWebIdentity is
+    # rejected. Splitting dev into its own environment with a lighter gate
+    # is tracked in docs/tech-debt.md.
+    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4
