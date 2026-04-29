@@ -57,4 +57,4 @@ Authoritative reference: `/CLAUDE.md` ("Terraform Conventions" and "AWS Resource
 - Local resource names use `snake_case` (e.g., `resource "aws_s3_bucket" "site_content"`).
 
 # Contributors
-- Enrique Caballero
+- Enrique Caballero (Ricky-C)
