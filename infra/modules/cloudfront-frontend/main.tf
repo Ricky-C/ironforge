@@ -283,6 +283,69 @@ resource "aws_wafv2_web_acl" "portal" {
 }
 
 # ============================================================================
+# Response headers policy — security headers
+# ============================================================================
+
+# Attached to the portal distribution's default cache behavior. Sets four
+# security headers on every response. All four use override=true so any
+# origin-supplied value is replaced — the S3 origin doesn't currently set
+# these, but override=true keeps the policy authoritative even if origin
+# behavior changes.
+#
+# Headers shipped:
+#   - Strict-Transport-Security: max-age=31536000; includeSubDomains
+#       1-year max-age with subdomain coverage. preload=false initially —
+#       HSTS preload list registration is a long-term commitment (6-12 month
+#       removal window) and should be a deliberate decision, not a side
+#       effect of "add security headers." Flip to preload=true and submit
+#       at hstspreload.org when ready to commit. includeSubDomains covers
+#       Phase 1's `*.ironforge.rickycaballero.com` user-template subdomains,
+#       which all enforce HTTPS via their own ACM certs.
+#   - X-Content-Type-Options: nosniff
+#       Standard MIME-sniffing prevention.
+#   - Referrer-Policy: strict-origin-when-cross-origin
+#       Modern default. Sends full origin same-origin, only the origin
+#       (no path) cross-origin HTTPS, nothing on HTTPS→HTTP downgrades.
+#   - Content-Security-Policy: frame-ancestors 'none'
+#       Single-directive CSP for clickjacking defense. Modern replacement
+#       for legacy X-Frame-Options. Browser support is universal in 2026
+#       and frame-ancestors supersedes X-Frame-Options when both are
+#       present, so deploying CSP-only avoids shipping a header we'd later
+#       remove. Phase 1 will expand this directive to a full CSP including
+#       default-src, script-src, style-src, connect-src, img-src, font-src
+#       once the Next.js bundle's external dependencies are known (Cognito
+#       hosted UI, API Gateway origin, any CDN-hosted fonts/assets).
+resource "aws_cloudfront_response_headers_policy" "portal" {
+  provider = aws.us_east_1
+
+  name    = "ironforge-portal-security-headers"
+  comment = "Security response headers for the Ironforge portal distribution."
+
+  security_headers_config {
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      include_subdomains         = true
+      preload                    = false
+      override                   = true
+    }
+
+    content_type_options {
+      override = true
+    }
+
+    referrer_policy {
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }
+
+    content_security_policy {
+      content_security_policy = "frame-ancestors 'none'"
+      override                = true
+    }
+  }
+}
+
+# ============================================================================
 # CloudFront distribution
 # ============================================================================
 
@@ -315,6 +378,8 @@ resource "aws_cloudfront_distribution" "portal" {
     # AWS-managed cache policy "Managed-CachingOptimized" — cache GET/HEAD
     # without query strings or cookies. ID is stable across all AWS accounts.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.portal.id
   }
 
   # SPA fallback: serve /index.html with a 200 status when S3 returns 403/404.
