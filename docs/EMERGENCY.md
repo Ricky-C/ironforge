@@ -24,6 +24,8 @@ The $50 budget action triggered. The deny policy is attached. How do you safely 
 - [ ] What to monitor for 24h after reversal (CloudWatch billing alarm? Daily report?)
 - [ ] When to leave the policy attached longer than minimum
 
+If reversing the deny policy also revealed Terraform-state inaccessibility (e.g., the deny policy denied `kms:Decrypt` against the state CMK and now plan/apply fail), continue to `docs/runbook.md` § "State-bucket recovery" and § "CMK pending-deletion recovery" for the state-side recovery path.
+
 ## 3. Forensics: identifying unknown resources
 
 You see resources in your account that you didn't knowingly create. Or you see costs you can't attribute.
