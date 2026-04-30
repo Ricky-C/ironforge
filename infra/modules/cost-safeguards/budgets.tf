@@ -104,16 +104,44 @@ resource "aws_iam_role" "budget_action" {
   tags = local.component_tags
 }
 
-# AWS-managed policy purpose-built for Budgets actions. Acceptable per ADR-002:
-# the role's trust policy restricts assumption to budgets.amazonaws.com with
-# aws:SourceAccount and aws:SourceArn confused-deputy protections, so the broad
-# iam:Attach*Policy permissions only apply during AWS-Budgets-initiated invocations
-# on this account's specific deny-50 budget action.
-resource "aws_iam_role_policy_attachment" "budget_action_managed" {
+# Inline policy granting just enough IAM surface for AWS Budgets to attach and
+# later detach the deny policy on target principals when the $50 threshold
+# fires. The iam:PolicyARN condition pins every Attach/Detach call to the
+# single deny policy this module owns — the executor role cannot attach or
+# detach any other IAM policy, on any principal.
+#
+# This replaces an attachment of AWS-managed AWSBudgetsActionsWithAWSResourceControlAccess,
+# which AWS rejects with PolicyNotAttachable: policies under aws-service-role/
+# can only attach to service-linked roles. Trust-policy confused-deputy
+# protections (aws:SourceAccount + aws:SourceArn) remain on the role itself.
+data "aws_iam_policy_document" "budget_action_executor" {
+  statement {
+    sid    = "AttachDetachIronforgeBudgetActionDenyOnly"
+    effect = "Allow"
+    actions = [
+      "iam:AttachGroupPolicy",
+      "iam:AttachRolePolicy",
+      "iam:AttachUserPolicy",
+      "iam:DetachGroupPolicy",
+      "iam:DetachRolePolicy",
+      "iam:DetachUserPolicy",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PolicyARN"
+      values   = [aws_iam_policy.deny_resource_creation.arn]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "budget_action_executor" {
   count = local.budget_action_enabled ? 1 : 0
 
-  role       = aws_iam_role.budget_action[0].name
-  policy_arn = "arn:aws:iam::aws:policy/aws-service-role/AWSBudgetsActionsWithAWSResourceControlAccess"
+  name   = "ironforge-budget-action-executor-inline"
+  role   = aws_iam_role.budget_action[0].name
+  policy = data.aws_iam_policy_document.budget_action_executor.json
 }
 
 resource "aws_budgets_budget_action" "deny_at_50" {
