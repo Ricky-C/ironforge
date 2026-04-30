@@ -34,6 +34,14 @@ Each entry has:
 - **Action:** Enable `aws_cloudfront_distribution.portal.logging_config` pointing at a dedicated logs bucket (`ironforge-cloudfront-logs-<account-id>`). Configure 90-day S3 lifecycle expiration. Document in runbook how to query logs (Athena recommended).
 - **Where:** `infra/modules/cloudfront-frontend/main.tf` (currently has an inline comment marking the deferral site).
 
+#### Expand portal Content-Security-Policy beyond `frame-ancestors 'none'`
+
+- **What:** `aws_cloudfront_response_headers_policy.portal` currently sets a single-directive CSP: `frame-ancestors 'none'`. That covers clickjacking but doesn't restrict `script-src` / `style-src` / `connect-src` / `img-src` / `font-src` — which is the bulk of what CSP is for. The single directive shipped now to replace legacy `X-Frame-Options: DENY` without committing to a full CSP that has to be tied to the actual Next.js bundle's external dependencies.
+- **Why deferred:** A full CSP requires enumerating every origin the portal loads from — the exact set depends on Phase 1's auth wiring (Cognito hosted UI domain), API surface (API Gateway origin or custom domain), and any CDN-hosted assets (fonts, libraries). Defining the directive set before those land would either be wrong or require revising on every Phase 1 commit that adds a new dependency. Better to expand once when the dependency set is stable.
+- **When to revisit:** When the portal first authenticates traffic against Cognito and calls the API Gateway. That's the moment the `script-src` / `connect-src` / `form-action` surface stabilizes for the wizard flow.
+- **Action:** Replace `frame-ancestors 'none'` with a full directive set: at minimum `default-src 'self'; script-src 'self' [Cognito hosted UI domain]; connect-src 'self' [API Gateway origin]; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`. Verify against the actual Next.js build output — `'unsafe-inline'` may be needed for styled-components or runtime CSS-in-JS depending on what the bundle ships. Test in report-only mode (`Content-Security-Policy-Report-Only` header via a separate response headers policy) for at least one deploy cycle before enforcing, so violations are observed before they break the page.
+- **Where:** `infra/modules/cloudfront-frontend/main.tf` (`aws_cloudfront_response_headers_policy.portal` resource, `content_security_policy` block).
+
 ### CI/CD
 
 #### Separate OIDC role for app deploys (least privilege)
