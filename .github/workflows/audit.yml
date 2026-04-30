@@ -1,0 +1,48 @@
+name: audit
+
+on:
+  pull_request:
+    paths:
+      - "**/package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/audit.yml"
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.33.2"
+
+jobs:
+  audit:
+    name: pnpm audit
+    runs-on: ubuntu-latest
+    # No fork-PR guard, no Dependabot guard. Audit reads the local lockfile
+    # and queries the public advisory DB; no AWS creds, no repo secrets,
+    # safe in any context. Dependabot PRs especially want to be audited —
+    # that is the whole point of having a gate.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fails the PR on any high or critical advisory in the resolved tree.
+      # Moderate and low advisories surface through Dependabot security
+      # updates instead — this gate is for things urgent enough to block
+      # a merge.
+      - name: Audit dependencies
+        run: pnpm audit --audit-level=high
