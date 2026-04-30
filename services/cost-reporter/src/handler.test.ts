@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 
-beforeAll(() => {
-  // Module-level env validation runs at import; satisfy it before importing.
-  process.env.SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:000000000000:test-topic";
-});
+// handler.ts performs Zod validation of process.env at module-evaluation
+// time. Set the required env var BEFORE the dynamic import so the import
+// succeeds; a `beforeAll` hook would fire too late because top-level await
+// resolves before any test hooks run.
+process.env.SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:000000000000:test-topic";
 
 const { formatReport, parseCostResponse, yesterdayDateRange } = await import("./handler");
 

@@ -13,5 +13,12 @@
     "lint": "pnpm -r run lint",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
   }
 }
