@@ -1,0 +1,34 @@
+version: 2
+
+updates:
+  # JS/TS dependencies. Dependabot reads the root pnpm-lock.yaml and traverses
+  # all workspace package.json files (apps/*, services/*, packages/*).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      # Phase 1 will introduce many @aws-sdk/* modular clients across the
+      # workflow Lambdas. Group them so version bumps land as one PR rather
+      # than dozens. @smithy/* is a sibling stack to @aws-sdk/* and updates
+      # in lockstep — keep it grouped here too.
+      aws-sdk:
+        patterns:
+          - "@aws-sdk/*"
+          - "@smithy/*"
+      # Dev-only churn is high-volume and low-risk; group to reduce noise.
+      dev-dependencies:
+        dependency-type: "development"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "ci"
