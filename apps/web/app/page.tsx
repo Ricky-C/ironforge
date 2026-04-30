@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock, ExternalLink, Github } from "lucide-react";
+import { CheckCircle2, Clock, ExternalLink } from "lucide-react";
 
 type PhaseStatus = "completed" | "in-progress" | "not-started";
 
@@ -117,7 +117,6 @@ export default function Home() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            <Github className="h-4 w-4" aria-hidden="true" />
             <span>github.com/Ricky-C/ironforge</span>
             <ExternalLink className="h-3 w-3" aria-hidden="true" />
           </a>
