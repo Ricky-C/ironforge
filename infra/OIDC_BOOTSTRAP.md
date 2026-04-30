@@ -261,6 +261,10 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "logs:Describe*",
         "logs:Get*",
         "logs:List*",
+        "cloudtrail:Describe*",
+        "cloudtrail:Get*",
+        "cloudtrail:List*",
+        "cloudtrail:LookupEvents",
         "states:Describe*",
         "states:List*",
         "secretsmanager:Describe*",
@@ -385,6 +389,7 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "budgets:Describe*", "budgets:List*", "budgets:View*",
         "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*",
         "logs:Describe*", "logs:Get*", "logs:List*",
+        "cloudtrail:Describe*", "cloudtrail:Get*", "cloudtrail:List*", "cloudtrail:LookupEvents",
         "states:Describe*", "states:List*",
         "secretsmanager:Describe*", "secretsmanager:List*",
         "wafv2:Get*", "wafv2:List*", "wafv2:Describe*",
@@ -448,8 +453,16 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/lambda/ironforge-*",
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/lambda/ironforge-*:*",
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/states/ironforge-*",
-        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/states/ironforge-*:*"
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/states/ironforge-*:*",
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/cloudtrail/ironforge*",
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/cloudtrail/ironforge*:*"
       ]
+    },
+    {
+      "Sid": "WriteIronforgeCloudTrail",
+      "Effect": "Allow",
+      "Action": "cloudtrail:*",
+      "Resource": "arn:aws:cloudtrail:${AWS_REGION}:${AWS_ACCOUNT_ID}:trail/ironforge-*"
     },
     {
       "Sid": "WriteIronforgeSNS",
