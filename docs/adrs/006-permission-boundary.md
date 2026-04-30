@@ -114,9 +114,9 @@ This is a real risk, accepted with three mitigations:
 
 1. **Code review.** Inline policies are short, reviewable, and the env prefix is a one-line check.
 2. **Saved memory `project_commit_10_iam_prefix_scoping.md`** flags this requirement so it surfaces in every future commit adding a Lambda role.
-3. **Bucket-policy enforcement** in `infra/modules/artifacts/main.tf` (added in PR #33) — the bucket policy denies cross-env object access and cross-env listing for principals tagged `ironforge-managed=true`, using `aws:PrincipalTag/ironforge-environment` substitution into `not_resources`. Third layer behind boundary and inline; principal-tag substitution lives at the bucket-policy layer (where reviewer cost is bounded by a single document), not the boundary (see "Why not principal-tag substitution" above).
+3. **Bucket-policy enforcement** in `infra/modules/artifacts/main.tf` — currently **temporarily disabled** following the 2026-04-30 refresh-cascade incident (PR #35 and PR #38 both reproduced a state divergence triggered by the policy's presence in AWS). See `docs/postmortems/2026-04-bucket-policy-refresh-cascade.md` for the full diagnostic record and `docs/tech-debt.md` § "Re-enable artifacts cross-env bucket policy after refresh-cascade redesign" for the actionable plan. Original design (added in PR #33) used `aws:PrincipalTag/ironforge-environment` substitution into `not_resources` to deny cross-env object access and cross-env listing for principals tagged `ironforge-managed=true` — third layer behind boundary and inline; principal-tag substitution at the bucket-policy layer (where reviewer cost is bounded by a single document), not the boundary (see "Why not principal-tag substitution" above). The redesign will likely keep the principal-tag concept but restructure the deny statements (split object-level vs bucket-level with explicit action enumeration) AND/OR move enforcement to a permission-boundary-side mechanism that doesn't interact with bucket-policy refresh.
 
-The trade-off: less defense-in-depth at the boundary, more reliance on inline policy correctness — partially restored by the bucket-policy layer. Accepted for the reviewer-cost reduction and the conventional pattern.
+The trade-off: less defense-in-depth at the boundary, more reliance on inline policy correctness. The bucket-policy layer was intended to partially restore this defense-in-depth but is currently disabled pending redesign (per item #3 above). Accepted for the reviewer-cost reduction and the conventional pattern.
 
 ## Retrofit pattern
 
@@ -223,9 +223,7 @@ Expected:
 An error occurred (403) when calling the GetObject operation: Forbidden
 ```
 
-Note: the denial fires at **two layers** simultaneously now. The inline policy scopes to `dev/*` so `prod/verify-test` doesn't match an ALLOW; the artifacts bucket policy's `DenyCrossEnvObjectAccess` statement also fires because the dev-tagged role's `ironforge-environment=dev` substitution puts `prod/verify-test` outside the role's permitted env prefix. The boundary itself allows broadly on `ironforge-artifacts-*` and is not a deny source — that's by design (see "Why not principal-tag substitution" above for why the substitution lives at the bucket-policy layer rather than the boundary).
-
-To verify the **bucket-policy layer is load-bearing** (independent of the inline policy doing its job), temporarily widen the inline policy to `${bucket_arn}/*` and re-run the cross-env GetObject. The 403 should still fire, sourced now solely from the bucket policy. Revert the inline widening immediately afterward.
+Note: the denial fires at **the inline policy level only**, not the bucket policy or the boundary. The inline policy scopes to `dev/*`; `prod/verify-test` does not match. The boundary allows broadly on `ironforge-artifacts-*` — by design. The bucket-policy layer that would have provided defense-in-depth on this is currently disabled pending the refresh-cascade redesign (see § "What we lose" item #3 above and `docs/postmortems/2026-04-bucket-policy-refresh-cascade.md`); when it returns, this verification narrative should be updated to reflect the doubly-bounded deny path.
 
 Cleanup:
 
