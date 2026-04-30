@@ -58,3 +58,7 @@ module "portal_frontend" {
   certificate_arn = module.dns.certificate_arn
   hosted_zone_id  = module.dns.hosted_zone_id
 }
+
+module "cloudtrail" {
+  source = "../../modules/cloudtrail"
+}

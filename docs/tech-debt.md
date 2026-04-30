@@ -157,6 +157,14 @@ Each entry has:
 - **Action:** Enable in the shared composition: `aws_guardduty_detector` with `enable = true`, finding-publishing frequency `FIFTEEN_MINUTES`, and SNS subscription to `ironforge-cost-alerts` (or `ironforge-security-alerts`) via EventBridge. Document the GuardDuty dashboard URL in `docs/runbook.md`.
 - **Where:** New addition to `infra/envs/shared/main.tf`; referenced docs.
 
+#### Data events on the CloudTrail log bucket itself
+
+- **What:** The CloudTrail trail (PR-B) captures management events but not data events. In particular, S3 GetObject calls against `ironforge-cloudtrail-logs-<account>` are not logged — meaning we have no record of *who reads the audit log*. CMK encryption gives us decrypt-event audit on the key (criterion 2 in ADR-003), which is a partial substitute, but data events on the bucket would be the direct signal.
+- **Why deferred:** Data events cost money — $0.10 per 100k events at portfolio scale isn't material, but the operational value is low until there's a realistic threat model where someone might read the logs without authorization. At Phase 0/1 the only readers are CI principals and the user; both are accounted for through other means.
+- **When to revisit:** Phase 2 (wizard live with authenticated traffic and a non-trivial set of human investigators). Also revisit if a compliance regime with explicit audit-log access logging requirements lands.
+- **Action:** Add a `data_resource` block to `aws_cloudtrail.main` selecting `AWS::S3::Object` with the CloudTrail bucket ARN as the value. Pair with a metric filter alarming on `eventName = GetObject` whose `requestParameters.bucketName` equals the log bucket and whose principal is not the CloudTrail service or known CI roles.
+- **Where:** `infra/modules/cloudtrail/main.tf` (`aws_cloudtrail.main`); future `infra/modules/security-monitoring/` for the alarm.
+
 ### Documentation
 
 #### `docs/runbook.md` polish beyond Phase 0 skeleton
