@@ -42,7 +42,11 @@ Without a corresponding access-control or compliance benefit, this is over-engin
 | Cost reporter log group (Commit 5) | AWS-managed | No criterion applies; logs are operational data. |
 | DynamoDB table (Commit 3) | **CMK currently — flagged for revisit** | At commit time the rationale was "best practice." Per this ADR, AWS-managed is the right default. Refactor in a follow-up commit. |
 | Artifacts S3 bucket (Commit 6, planned) | AWS-managed | No criterion applies; artifacts are build outputs. |
+| CloudTrail S3 log bucket (PR-B) | **CMK** | Criteria 1 + 2: this bucket *is* the audit trail. Key policy admits the `cloudtrail.amazonaws.com` service principal only with an `aws:cloudtrail:arn` EncryptionContext condition pinned to our trail's ARN — narrower than IAM can express. CloudTrail decrypt events on the key form the chain-of-custody record for the audit logs themselves. |
+| CloudTrail CloudWatch log group (PR-B) | **CMK** (same key as the S3 bucket) | Same data as the S3-side logs, same audit purpose; sharing one key keeps the policy surface and rotation surface single. The `logs.<region>.amazonaws.com` principal is admitted only with an `aws:logs:arn` EncryptionContext condition pinned to this log group's ARN. |
 | Secrets Manager secrets (future) | **CMK** | Criteria 1 + 3: actual secrets; fine-grained decrypt control matters. |
+
+**General pattern: audit logs are a strong fit for CMK.** When a resource holds the forensic record (CloudTrail logs, future security-event archives, regulated audit data), criterion 2 applies almost by definition — the decrypt events on the key become part of the audit trail. Criterion 1 typically pairs with it because the key policy can pin the legitimate service principal via an `EncryptionContext` condition that IAM alone cannot enforce.
 
 ## Consequences
 

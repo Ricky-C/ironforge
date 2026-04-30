@@ -67,3 +67,23 @@ output "permission_boundary_arn" {
   description = "ARN of the IronforgePermissionBoundary. Future Lambda-creating modules in dev/prod compositions reference this via terraform_remote_state to apply the boundary to their roles."
   value       = module.lambda_baseline.boundary_policy_arn
 }
+
+output "cloudtrail_trail_arn" {
+  description = "ARN of the account's CloudTrail trail. Phase 1 metric-filter modules consume this via terraform_remote_state."
+  value       = module.cloudtrail.trail_arn
+}
+
+output "cloudtrail_log_group_arn" {
+  description = "ARN of the CloudWatch log group receiving CloudTrail events. Phase 1 metric filters target this group."
+  value       = module.cloudtrail.log_group_arn
+}
+
+output "cloudtrail_log_group_name" {
+  description = "Name of the CloudWatch log group receiving CloudTrail events."
+  value       = module.cloudtrail.log_group_name
+}
+
+output "cloudtrail_kms_key_arn" {
+  description = "ARN of the CMK encrypting CloudTrail logs (both S3 bucket and CWL log group). Consumers must scope grants via the appropriate kms:EncryptionContext condition."
+  value       = module.cloudtrail.kms_key_arn
+}
