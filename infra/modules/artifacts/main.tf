@@ -86,93 +86,44 @@ data "aws_iam_policy_document" "artifacts" {
     }
   }
 
-  # Cross-env object-access denial. Defense-in-depth third layer behind the
-  # permission boundary (broad ALLOW on ironforge-artifacts-*) and per-Lambda
-  # inline policies (env-prefix scope). This catches inline grants that
-  # mistakenly omit the env prefix — e.g., `${bucket_arn}/*` instead of
-  # `${bucket_arn}/dev/*`. See ADR-006 § "What we lose" for the layered model.
+  # ─────────────────────────────────────────────────────────────────────────
+  # DenyCrossEnvObjectAccess and DenyCrossEnvListing are TEMPORARILY DISABLED.
   #
-  # Mechanism: principal-tag substitution into not_resources. Every Ironforge
-  # role carries an `ironforge-environment` tag via the env composition's
-  # provider default_tags (dev → "dev", prod → "prod", shared → "shared").
-  # The principal's own env prefix and the bucket ARN itself stay exempt;
-  # everything else under the bucket gets denied for ironforge-managed
-  # principals.
+  # Re-enabling requires a redesign and an empirical-refresh-stability gate;
+  # see docs/postmortems/2026-04-bucket-policy-refresh-cascade.md for the full
+  # incident record and `docs/tech-debt.md` § "Re-enable artifacts cross-env
+  # bucket policy after refresh-cascade redesign" for the actionable plan.
   #
-  # Action wildcard `s3:*` is intentional. Enumerating object actions
-  # (s3:*Object*) misses real surface — s3:AbortMultipartUpload,
-  # s3:CreateMultipartUpload, s3:ReplicateDelete, s3:BypassGovernanceRetention
-  # don't match that pattern. With the bucket-ARN exemption in not_resources,
-  # bucket-level operations (apply role's GetBucketPolicy etc.) still pass.
+  # Empirical correlation (reproduced twice):
+  #   - PR #34 applied the policy with these two statements → next apply
+  #     (PR #35) hit refresh-time `# bucket has been deleted` drift detection
+  #     → cascading destroys of the 5 sub-resources → recreate failed at
+  #     `BucketAlreadyExists`.
+  #   - PR #37 recovered via import block, restored the policy → next apply
+  #     (PR #38) reproduced the same cascade.
+  #   - With these two statements absent, applies work cleanly.
   #
-  # Untagged principals (operator IAM users, AWS service principals) are
-  # exempt by the `ironforge-managed=true` condition. This is intentional:
-  # the protection targets automated identities; human break-glass / debug
-  # access via untagged user identities is preserved.
-  statement {
-    sid     = "DenyCrossEnvObjectAccess"
-    effect  = "Deny"
-    actions = ["s3:*"]
-
-    not_resources = [
-      aws_s3_bucket.artifacts.arn,
-      "${aws_s3_bucket.artifacts.arn}/$${aws:PrincipalTag/ironforge-environment}/*",
-    ]
-
-    principals {
-      type        = "AWS"
-      identifiers = ["*"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:PrincipalTag/ironforge-managed"
-      values   = ["true"]
-    }
-  }
-
-  # Cross-env listing denial. ListBucket operates on the bucket ARN, not on
-  # object ARNs, so prefix scoping comes from the s3:prefix request condition
-  # rather than from resource matching. Listing without a prefix or with a
-  # prefix outside the principal's env is denied; same ironforge-managed gate
-  # as DenyCrossEnvObjectAccess so untagged operators stay exempt.
+  # What CloudTrail diagnostics ruled out (not the cause):
+  #   - The apply role's refresh API calls SUCCEEDED — `GetBucketVersioning`,
+  #     `GetBucketLifecycle`, etc. with `err=''` in CloudTrail.
+  #   - No AccessDenied events from any session on this bucket.
+  #   - No NoSuchBucket / 404 on the bucket itself.
+  #   - Plan-role permission gap eliminated: zero plan-role events on the
+  #     bucket; apply runs its own refresh in this workflow.
+  #   - Statement 3's `StringNotLike s3:prefix` doesn't fire on prefix-less
+  #     ListBucket (null condition rule confirmed).
   #
-  # s3:ListBucketMultipartUploads is excluded from this statement because it
-  # does not support the s3:prefix condition key per the AWS service
-  # authorization reference (https://docs.aws.amazon.com/service-authorization/
-  # latest/reference/list_amazons3.html). Including it produces
-  # `MalformedPolicy: Conditions do not apply to combination of actions and
-  # resources in statement` at apply time. The narrow resulting gap (a buggy
-  # IAM grant could expose cross-env multipart-upload listing) is mitigated
-  # by the bucket lifecycle abort rule (`abort-incomplete-multipart`, 7-day,
-  # below) and the metadata-only nature of the exposure (upload IDs and keys,
-  # not object content).
-  statement {
-    sid    = "DenyCrossEnvListing"
-    effect = "Deny"
-    actions = [
-      "s3:ListBucket",
-      "s3:ListBucketVersions",
-    ]
-    resources = [aws_s3_bucket.artifacts.arn]
-
-    principals {
-      type        = "AWS"
-      identifiers = ["*"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:PrincipalTag/ironforge-managed"
-      values   = ["true"]
-    }
-
-    condition {
-      test     = "StringNotLike"
-      variable = "s3:prefix"
-      values   = ["$${aws:PrincipalTag/ironforge-environment}/*"]
-    }
-  }
+  # What we couldn't verify (still hypotheses):
+  #   - terraform-aws-provider parsing `${aws:PrincipalTag/...}` substitution
+  #     in GetBucketPolicy responses in a way that triggers internal "resource
+  #     gone" logic.
+  #   - HeadBucket or another refresh API call not surfaced as a CloudTrail
+  #     management event (CloudTrail visibility gap on the failing call).
+  #
+  # The mechanism is unidentified. Empirical correlation is enough to act on,
+  # but not enough to confidently re-enable. See the postmortem for the
+  # diagnostic procedure that the redesign session must run before merging.
+  # ─────────────────────────────────────────────────────────────────────────
 }
 
 # Per-env prefix-scoped expiration. Both rules currently use 30 days but are
