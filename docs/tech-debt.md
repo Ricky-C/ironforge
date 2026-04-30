@@ -151,6 +151,18 @@ Each entry has:
 - **Action:** For each section, expand into prose covering: precise symptom strings to grep for, the AWS CLI commands with explanatory context (not just the command), the rollback path if recovery fails, and a "things you might be tempted to do but shouldn't" warning block. Add a top-level decision tree: "I'm seeing X, go to section Y."
 - **Where:** `docs/runbook.md`.
 
+### Diagnostics breadcrumbs
+
+These aren't deferred work — they're institutional knowledge captured at the point the lesson was learned, so future-Ricky troubleshooting a similar failure benefits from the breadcrumb. Adapted from the standard entry shape: Symptom / Cause / How to diagnose.
+
+#### S3 bucket-policy `MalformedPolicy: Conditions do not apply...` failures return early on first invalid statement
+
+- **Symptom:** `terraform apply` against an `aws_s3_bucket_policy` resource fails with `MalformedPolicy: Conditions do not apply to combination of actions and resources in statement`.
+- **Cause:** AWS S3's bucket-policy validator is stricter than IAM's general policy validator and rejects condition-action mismatches at apply time. Specifically, every condition key in a statement must be valid for every action in that statement (or be a global condition key like `aws:PrincipalTag` which applies universally). Common mismatch: `s3:prefix` is supported by `s3:ListBucket` and `s3:ListBucketVersions` but NOT by `s3:ListBucketMultipartUploads`.
+- **How to diagnose:** **Verify all statements**, not just the one cited in the error — the validator returns early on the first invalid statement, so the error message identifies one but does NOT confirm the others are valid. For each statement, list every action and check the AWS service authorization reference (https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html) for which condition keys each action supports. Cross-reference against the conditions in that statement.
+- **Case study:** PR #33's `DenyCrossEnvListing` statement included `s3:ListBucketMultipartUploads` with an `s3:prefix` condition. Apply failed; the fix dropped that single action from the statement (`infra/modules/artifacts/main.tf`). Statement 2 of the same policy used `s3:*` + `NotResource` + `aws:PrincipalTag` substitution and was also under suspicion until docs verification confirmed each component is independently supported and the validator's "singular statement" wording matched only Statement 3.
+- **Where:** AWS service authorization reference is the diagnostic source-of-truth; the inline comment in `infra/modules/artifacts/main.tf` (`DenyCrossEnvListing` statement) carries the action-specific reasoning forward in code.
+
 ### Supply chain
 
 #### CodeQL workflow pending repo going public

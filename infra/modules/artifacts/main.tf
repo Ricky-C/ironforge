@@ -136,13 +136,23 @@ data "aws_iam_policy_document" "artifacts" {
   # rather than from resource matching. Listing without a prefix or with a
   # prefix outside the principal's env is denied; same ironforge-managed gate
   # as DenyCrossEnvObjectAccess so untagged operators stay exempt.
+  #
+  # s3:ListBucketMultipartUploads is excluded from this statement because it
+  # does not support the s3:prefix condition key per the AWS service
+  # authorization reference (https://docs.aws.amazon.com/service-authorization/
+  # latest/reference/list_amazons3.html). Including it produces
+  # `MalformedPolicy: Conditions do not apply to combination of actions and
+  # resources in statement` at apply time. The narrow resulting gap (a buggy
+  # IAM grant could expose cross-env multipart-upload listing) is mitigated
+  # by the bucket lifecycle abort rule (`abort-incomplete-multipart`, 7-day,
+  # below) and the metadata-only nature of the exposure (upload IDs and keys,
+  # not object content).
   statement {
     sid    = "DenyCrossEnvListing"
     effect = "Deny"
     actions = [
       "s3:ListBucket",
       "s3:ListBucketVersions",
-      "s3:ListBucketMultipartUploads",
     ]
     resources = [aws_s3_bucket.artifacts.arn]
 
