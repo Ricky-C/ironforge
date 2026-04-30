@@ -2,12 +2,15 @@
 #
 # Created here as a managed policy and referenced by aws_budgets_budget_action.
 # AWS Budgets attaches it to designated principals when actual spend hits $50;
-# AWS Budgets does NOT auto-detach on recovery — manual reset required.
+# AWS Budgets does NOT auto-detach on recovery — manual reversal required via
+# `aws budgets execute-budget-action --execution-type REVERSE_BUDGET_ACTION`
+# (REVERSE undoes the policy attachment; RESET only returns the action to
+# standby and does NOT detach — see docs/cost-safeguards.md § 4).
 # Full rationale per statement: see docs/cost-safeguards.md § "The deny policy".
 
 resource "aws_iam_policy" "deny_resource_creation" {
   name        = "IronforgeBudgetActionDeny"
-  description = "Tier-2 circuit breaker: deny new resource creation when monthly spend exceeds $50. Attached by AWS Budgets action; manually reversed via aws budgets execute-budget-action --execution-type RESET."
+  description = "Tier-2 circuit breaker: deny new resource creation when monthly spend exceeds $50. Attached by AWS Budgets action; manually reversed via `aws budgets execute-budget-action --execution-type REVERSE_BUDGET_ACTION`."
   policy      = data.aws_iam_policy_document.deny_resource_creation.json
 
   tags = local.component_tags
