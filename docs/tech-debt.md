@@ -107,14 +107,6 @@ Each entry has:
 
 ### Cost safeguards — known bugs surfaced during verification attempt
 
-#### ADR-002's canonical worked example does not work in practice
-
-- **What:** ADR-002 (`docs/adrs/002-managed-iam-policies.md`) cites `AWSBudgetsActionsWithAWSResourceControlAccess` as the canonical example of "AWS-managed policy acceptable when ALL four criteria apply." Empirically that policy can't be attached to a customer-managed role at all — it lives under the `aws-service-role/` path and AWS rejects attachment with `PolicyNotAttachable`. The four-criteria rule itself is sound; the example was wrong. The budgets.tf attachment that originally cited it has been replaced with an inline `aws_iam_role_policy` (see commit history on `infra/modules/cost-safeguards/budgets.tf`); ADR-002 still needs the corresponding correction.
-- **Why deferred:** Updating the ADR is a 15-minute write but wants explicit thought about whether to (a) find a different canonical example that actually works, (b) reframe the ADR to acknowledge that AWS-managed policies for service-integration patterns are largely SLR-reserved and our current footprint has zero qualifying instances, or (c) supersede with a new ADR.
-- **When to revisit:** Phase 1 — bundled with the ADR honesty pass listed in `project_phase1_inheritance.md`.
-- **Action:** Recommend option (b) — keep the four-criteria rule, add a § "Empirical reality" section noting the SLR-reservation pattern, and explicitly state that no current Ironforge resource qualifies. Cross-link the budgets.tf inline-policy commit as the case study that surfaced this.
-- **Where:** `docs/adrs/002-managed-iam-policies.md`.
-
 #### `cost-safeguards.md` § 3 verification procedure references a Console button that doesn't exist for AUTOMATIC actions
 
 - **What:** § 3 step 1 instructs the user to click "Run action now" in the AWS Cost Management Console to test the budget action. That button only appears for actions in `Pending` state (MANUAL approval mode awaiting human approval). Our action uses AUTOMATIC approval and never enters `Pending`. The button is genuinely absent. AWS Budgets exposes no API to force-fire an AUTOMATIC action — the only fire path is an actual budget threshold breach.
@@ -127,7 +119,7 @@ Each entry has:
 
 #### End-to-end verification of the cost-safeguards circuit breaker
 
-- **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. No end-to-end verification has been completed — an attempt in April 2026 surfaced three pre-existing bugs and was rolled back. The unattachable managed-policy bug has since been fixed (inline `aws_iam_role_policy` on the executor role); the remaining bugs are the ADR-002 worked-example mismatch and the broken Console-button procedure (see the "Cost safeguards — known bugs" section above). The static configuration is correct; the runtime fire path has never been observed.
+- **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. No end-to-end verification has been completed — an attempt in April 2026 surfaced three pre-existing bugs and was rolled back. Two are now fixed: the unattachable managed-policy bug (PR #30, inline `aws_iam_role_policy` on the executor role) and the ADR-002 worked-example mismatch (resolved by amending ADR-002 with an "Empirical reality" section). The remaining bug is the broken Console-button procedure (see the "Cost safeguards — known bugs" section above). The static configuration is correct; the runtime fire path has never been observed.
 - **Why deferred:** The verification attempt revealed that the broken Console procedure had to be fixed *before* a meaningful verification was possible. Bundled with Phase 1's first real `budget_action_target_*` population since the bugs are dormant until then.
 - **When to revisit:** Before Phase 1 populates target principals. After the procedure is rewritten, run the simulator + manual-attach verification described in the "cost-safeguards.md § 3" entry above, capture artifacts, and establish a quarterly cadence.
 - **Action:** (1) Rewrite `cost-safeguards.md` § 3 per the "cost-safeguards.md § 3" entry above. (2) Run the new procedure against a throwaway IAM user. (3) Capture artifacts in `docs/cost-safeguards.md` § verification log and cross-link from `docs/EMERGENCY.md` § 2. (4) Add a quarterly reminder (calendar entry or scheduled review).
