@@ -44,7 +44,7 @@ jobs:
       # between runs. Cold installs of Next/React/Tailwind would otherwise
       # cost ~30+ seconds per deploy; cached installs are typically <5s.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
