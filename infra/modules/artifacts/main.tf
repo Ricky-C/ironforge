@@ -53,14 +53,14 @@ resource "aws_s3_bucket_public_access_block" "artifacts" {
 
 resource "aws_s3_bucket_policy" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
-  policy = data.aws_iam_policy_document.tls_only.json
+  policy = data.aws_iam_policy_document.artifacts.json
 
   # Apply public access block first; BlockPublicPolicy can race with policy
   # creation otherwise.
   depends_on = [aws_s3_bucket_public_access_block.artifacts]
 }
 
-data "aws_iam_policy_document" "tls_only" {
+data "aws_iam_policy_document" "artifacts" {
   statement {
     sid     = "DenyInsecureTransport"
     effect  = "Deny"
@@ -83,6 +83,84 @@ data "aws_iam_policy_document" "tls_only" {
       test     = "Bool"
       variable = "aws:SecureTransport"
       values   = ["false"]
+    }
+  }
+
+  # Cross-env object-access denial. Defense-in-depth third layer behind the
+  # permission boundary (broad ALLOW on ironforge-artifacts-*) and per-Lambda
+  # inline policies (env-prefix scope). This catches inline grants that
+  # mistakenly omit the env prefix — e.g., `${bucket_arn}/*` instead of
+  # `${bucket_arn}/dev/*`. See ADR-006 § "What we lose" for the layered model.
+  #
+  # Mechanism: principal-tag substitution into not_resources. Every Ironforge
+  # role carries an `ironforge-environment` tag via the env composition's
+  # provider default_tags (dev → "dev", prod → "prod", shared → "shared").
+  # The principal's own env prefix and the bucket ARN itself stay exempt;
+  # everything else under the bucket gets denied for ironforge-managed
+  # principals.
+  #
+  # Action wildcard `s3:*` is intentional. Enumerating object actions
+  # (s3:*Object*) misses real surface — s3:AbortMultipartUpload,
+  # s3:CreateMultipartUpload, s3:ReplicateDelete, s3:BypassGovernanceRetention
+  # don't match that pattern. With the bucket-ARN exemption in not_resources,
+  # bucket-level operations (apply role's GetBucketPolicy etc.) still pass.
+  #
+  # Untagged principals (operator IAM users, AWS service principals) are
+  # exempt by the `ironforge-managed=true` condition. This is intentional:
+  # the protection targets automated identities; human break-glass / debug
+  # access via untagged user identities is preserved.
+  statement {
+    sid     = "DenyCrossEnvObjectAccess"
+    effect  = "Deny"
+    actions = ["s3:*"]
+
+    not_resources = [
+      aws_s3_bucket.artifacts.arn,
+      "${aws_s3_bucket.artifacts.arn}/$${aws:PrincipalTag/ironforge-environment}/*",
+    ]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:PrincipalTag/ironforge-managed"
+      values   = ["true"]
+    }
+  }
+
+  # Cross-env listing denial. ListBucket operates on the bucket ARN, not on
+  # object ARNs, so prefix scoping comes from the s3:prefix request condition
+  # rather than from resource matching. Listing without a prefix or with a
+  # prefix outside the principal's env is denied; same ironforge-managed gate
+  # as DenyCrossEnvObjectAccess so untagged operators stay exempt.
+  statement {
+    sid    = "DenyCrossEnvListing"
+    effect = "Deny"
+    actions = [
+      "s3:ListBucket",
+      "s3:ListBucketVersions",
+      "s3:ListBucketMultipartUploads",
+    ]
+    resources = [aws_s3_bucket.artifacts.arn]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:PrincipalTag/ironforge-managed"
+      values   = ["true"]
+    }
+
+    condition {
+      test     = "StringNotLike"
+      variable = "s3:prefix"
+      values   = ["$${aws:PrincipalTag/ironforge-environment}/*"]
     }
   }
 }
