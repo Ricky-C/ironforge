@@ -114,7 +114,7 @@ This is a real risk, accepted with three mitigations:
 
 1. **Code review.** Inline policies are short, reviewable, and the env prefix is a one-line check.
 2. **Saved memory `project_commit_10_iam_prefix_scoping.md`** flags this requirement so it surfaces in every future commit adding a Lambda role.
-3. **Bucket-policy enforcement** in `infra/modules/artifacts/main.tf` — the bucket policy denies cross-env object access and cross-env listing for principals tagged `ironforge-managed=true`, using `aws:PrincipalTag/ironforge-environment` substitution into `not_resources`. Third layer behind boundary and inline; principal-tag substitution lives at the bucket-policy layer (where reviewer cost is bounded by a single document), not the boundary (see "Why not principal-tag substitution" above).
+3. **Bucket-policy enforcement** in `infra/modules/artifacts/main.tf` (added in PR #33) — the bucket policy denies cross-env object access and cross-env listing for principals tagged `ironforge-managed=true`, using `aws:PrincipalTag/ironforge-environment` substitution into `not_resources`. Third layer behind boundary and inline; principal-tag substitution lives at the bucket-policy layer (where reviewer cost is bounded by a single document), not the boundary (see "Why not principal-tag substitution" above).
 
 The trade-off: less defense-in-depth at the boundary, more reliance on inline policy correctness — partially restored by the bucket-policy layer. Accepted for the reviewer-cost reduction and the conventional pattern.
 
