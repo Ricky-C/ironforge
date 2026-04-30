@@ -28,7 +28,16 @@ jobs:
     # fail anyway), but encoding the check here makes the protection an
     # explicit invariant rather than dependent on a GitHub policy detail.
     # Fork PRs that need a plan: maintainer pulls locally and runs plan.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    #
+    # Dependabot is also skipped: GitHub puts Dependabot-triggered runs in a
+    # separate restricted-secrets context, so `secrets.AWS_OIDC_PLAN_ROLE_ARN`
+    # is empty and the credentials step fails. Dependabot's PRs only touch
+    # `.github/workflows/*.yml` (action version bumps) and workspace
+    # `package.json` files — never `infra/**` — so the Terraform plan against
+    # AWS isn't meaningful for those changes anyway.
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     strategy:
       fail-fast: false
       matrix:
