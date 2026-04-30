@@ -107,20 +107,12 @@ Each entry has:
 
 ### Cost safeguards — known bugs surfaced during verification attempt
 
-#### Budget-action executor role uses unattachable AWS-managed policy
-
-- **What:** `infra/modules/cost-safeguards/budgets.tf` attaches `arn:aws:iam::aws:policy/aws-service-role/AWSBudgetsActionsWithAWSResourceControlAccess` to the customer-managed role `ironforge-budget-action-executor`. AWS rejects this with `PolicyNotAttachable: Cannot attach AWS reserved policy to an IAM role` — policies under the `aws-service-role/` path can only attach to service-linked roles. The bug is dormant because `local.budget_action_enabled = false` (target lists are empty); it surfaces the moment any `budget_action_target_*` variable becomes non-empty.
-- **Why deferred:** Discovered during the Phase 0 verification attempt (April 2026). Rolling back the verification rather than landing the fix mid-procedure was the right move; the fix is small (~30 lines) but its ADR-002 implications need a separate think — see next entry. Phase 0 has no real target principals so no production impact.
-- **When to revisit:** Before Phase 1 populates `var.budget_action_target_roles` with real workflow Lambda roles. This is hard-blocking for that step — the action would fail to create otherwise.
-- **Action:** Replace the `aws_iam_role_policy_attachment.budget_action_managed` resource with a custom inline `aws_iam_role_policy` granting the six `iam:Attach*Policy`/`iam:Detach*Policy` actions on `Resource: "*"` with an `iam:PolicyARN` `ArnEquals` condition pinning to `aws_iam_policy.deny_resource_creation.arn`. The inline form is *tighter* than the AWS-managed policy was — it can only attach/detach the deny policy, never anything else. Code was drafted in-session and is recoverable from git history if needed.
-- **Where:** `infra/modules/cost-safeguards/budgets.tf` (lines 107-117, the `budget_action_managed` resource and its preceding comment).
-
 #### ADR-002's canonical worked example does not work in practice
 
-- **What:** ADR-002 (`docs/adrs/002-managed-iam-policies.md`) cites `AWSBudgetsActionsWithAWSResourceControlAccess` as the canonical example of "AWS-managed policy acceptable when ALL four criteria apply." Empirically that policy can't be attached to a customer-managed role at all (see entry above), so the worked example doesn't actually work. The four-criteria rule itself is sound; the example was wrong.
-- **Why deferred:** Only surfaced via the verification attempt. Updating the ADR is a 15-minute write but wants explicit thought about whether to (a) find a different canonical example that actually works, (b) reframe the ADR to acknowledge that AWS-managed policies for service-integration patterns are largely SLR-reserved and our current footprint has zero qualifying instances, or (c) supersede with a new ADR.
-- **When to revisit:** Bundled with the budgets.tf fix above. Same trigger (Phase 1 populating target principals).
-- **Action:** Recommend option (b) — keep the four-criteria rule, add a § "Empirical reality" section noting the SLR-reservation pattern, and explicitly state that no current Ironforge resource qualifies. Cross-link the budgets.tf fix entry above as the case study that surfaced this.
+- **What:** ADR-002 (`docs/adrs/002-managed-iam-policies.md`) cites `AWSBudgetsActionsWithAWSResourceControlAccess` as the canonical example of "AWS-managed policy acceptable when ALL four criteria apply." Empirically that policy can't be attached to a customer-managed role at all — it lives under the `aws-service-role/` path and AWS rejects attachment with `PolicyNotAttachable`. The four-criteria rule itself is sound; the example was wrong. The budgets.tf attachment that originally cited it has been replaced with an inline `aws_iam_role_policy` (see commit history on `infra/modules/cost-safeguards/budgets.tf`); ADR-002 still needs the corresponding correction.
+- **Why deferred:** Updating the ADR is a 15-minute write but wants explicit thought about whether to (a) find a different canonical example that actually works, (b) reframe the ADR to acknowledge that AWS-managed policies for service-integration patterns are largely SLR-reserved and our current footprint has zero qualifying instances, or (c) supersede with a new ADR.
+- **When to revisit:** Phase 1 — bundled with the ADR honesty pass listed in `project_phase1_inheritance.md`.
+- **Action:** Recommend option (b) — keep the four-criteria rule, add a § "Empirical reality" section noting the SLR-reservation pattern, and explicitly state that no current Ironforge resource qualifies. Cross-link the budgets.tf inline-policy commit as the case study that surfaced this.
 - **Where:** `docs/adrs/002-managed-iam-policies.md`.
 
 #### `cost-safeguards.md` § 3 verification procedure references a Console button that doesn't exist for AUTOMATIC actions
@@ -135,10 +127,10 @@ Each entry has:
 
 #### End-to-end verification of the cost-safeguards circuit breaker
 
-- **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. No end-to-end verification has been completed — an attempt in April 2026 surfaced three pre-existing bugs (see the "Cost safeguards — known bugs" section above) and was rolled back. The static configuration is correct; the runtime fire path has never been observed.
-- **Why deferred:** The verification attempt revealed that the unattachable managed policy and the broken Console procedure had to be fixed *before* a meaningful verification was possible. Bundled with Phase 1's first real `budget_action_target_*` population since the bugs are dormant until then.
-- **When to revisit:** Same trigger as the budgets.tf fix above — before Phase 1 populates target principals. After the bugs are fixed, run the simulator + manual-attach verification described in the third "known bugs" entry, capture artifacts, and establish a quarterly cadence.
-- **Action:** (1) Land the budgets.tf inline-policy fix. (2) Rewrite `cost-safeguards.md` § 3 per the third "known bugs" entry. (3) Run the new procedure against a throwaway IAM user. (4) Capture artifacts in `docs/cost-safeguards.md` § verification log and cross-link from `docs/EMERGENCY.md` § 2. (5) Add a quarterly reminder (calendar entry or scheduled review).
+- **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. No end-to-end verification has been completed — an attempt in April 2026 surfaced three pre-existing bugs and was rolled back. The unattachable managed-policy bug has since been fixed (inline `aws_iam_role_policy` on the executor role); the remaining bugs are the ADR-002 worked-example mismatch and the broken Console-button procedure (see the "Cost safeguards — known bugs" section above). The static configuration is correct; the runtime fire path has never been observed.
+- **Why deferred:** The verification attempt revealed that the broken Console procedure had to be fixed *before* a meaningful verification was possible. Bundled with Phase 1's first real `budget_action_target_*` population since the bugs are dormant until then.
+- **When to revisit:** Before Phase 1 populates target principals. After the procedure is rewritten, run the simulator + manual-attach verification described in the "cost-safeguards.md § 3" entry above, capture artifacts, and establish a quarterly cadence.
+- **Action:** (1) Rewrite `cost-safeguards.md` § 3 per the "cost-safeguards.md § 3" entry above. (2) Run the new procedure against a throwaway IAM user. (3) Capture artifacts in `docs/cost-safeguards.md` § verification log and cross-link from `docs/EMERGENCY.md` § 2. (4) Add a quarterly reminder (calendar entry or scheduled review).
 - **Where:** `infra/modules/cost-safeguards/budgets.tf`, `docs/cost-safeguards.md`, `docs/EMERGENCY.md`.
 
 #### CloudWatch metric filters and alarms on CloudTrail security events
