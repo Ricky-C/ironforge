@@ -97,25 +97,15 @@ Each entry has:
   Confirm `terraform plan` shows no resource recreation — the schema change should be in-place.
 - **Where:** `infra/modules/dynamodb/main.tf` (GSI1 definition).
 
-### Cost safeguards — known bugs surfaced during verification attempt
-
-#### `cost-safeguards.md` § 3 verification procedure references a Console button that doesn't exist for AUTOMATIC actions
-
-- **What:** § 3 step 1 instructs the user to click "Run action now" in the AWS Cost Management Console to test the budget action. That button only appears for actions in `Pending` state (MANUAL approval mode awaiting human approval). Our action uses AUTOMATIC approval and never enters `Pending`. The button is genuinely absent. AWS Budgets exposes no API to force-fire an AUTOMATIC action — the only fire path is an actual budget threshold breach.
-- **Why deferred:** The whole verification was rolled back rather than redesigned mid-procedure.
-- **When to revisit:** When recurring verification cadence (entry below) is set up. Replace § 3 with a procedure that tests the load-bearing pieces without depending on a fire trigger: (1) static config inspection of budget action / executor role, (2) IAM policy simulator confirming executor role can attach the deny policy and only the deny policy, (3) manual `aws iam attach-user-policy` against a throwaway test user (the same call the executor role would make at runtime), (4) simulator confirming the deny policy denies, (5) manual detach. Acknowledge in the doc that "AWS Budgets detects threshold breach and assumes executor role" is AWS-internal and not under our test surface.
-- **Action:** Rewrite `cost-safeguards.md` § 3 to the simulator + manual-attach approach. Also fix the inline comment in `infra/modules/cost-safeguards/iam.tf:10` if `--execution-type RESET` turns out to be wrong (current AWS Budgets API documents `REVERSE_BUDGET_ACTION` as the corresponding value; verify before editing).
-- **Where:** `docs/cost-safeguards.md` § 3; `infra/modules/cost-safeguards/iam.tf:10` (inline comment).
-
 ### Operational verification / monitoring
 
 #### End-to-end verification of the cost-safeguards circuit breaker
 
-- **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. No end-to-end verification has been completed — an attempt in April 2026 surfaced three pre-existing bugs and was rolled back. Two are now fixed: the unattachable managed-policy bug (PR #30, inline `aws_iam_role_policy` on the executor role) and the ADR-002 worked-example mismatch (resolved by amending ADR-002 with an "Empirical reality" section). The remaining bug is the broken Console-button procedure (see the "Cost safeguards — known bugs" section above). The static configuration is correct; the runtime fire path has never been observed.
-- **Why deferred:** The verification attempt revealed that the broken Console procedure had to be fixed *before* a meaningful verification was possible. Bundled with Phase 1's first real `budget_action_target_*` population since the bugs are dormant until then.
-- **When to revisit:** Before Phase 1 populates target principals. After the procedure is rewritten, run the simulator + manual-attach verification described in the "cost-safeguards.md § 3" entry above, capture artifacts, and establish a quarterly cadence.
-- **Action:** (1) Rewrite `cost-safeguards.md` § 3 per the "cost-safeguards.md § 3" entry above. (2) Run the new procedure against a throwaway IAM user. (3) Capture artifacts in `docs/cost-safeguards.md` § verification log and cross-link from `docs/EMERGENCY.md` § 2. (4) Add a quarterly reminder (calendar entry or scheduled review).
-- **Where:** `infra/modules/cost-safeguards/budgets.tf`, `docs/cost-safeguards.md`, `docs/EMERGENCY.md`.
+- **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. The static configuration is now fully verified-by-static-analysis-and-procedure but the procedure has not yet been *run* against a live throwaway test user. All three pre-existing bugs from the April 2026 verification attempt are fixed: the unattachable managed-policy bug (PR #30), the ADR-002 worked-example mismatch (PR #31), and the broken Console-button § 3 procedure (rewrite PR — replaces "Run action now" with a five-step simulator + manual-attach + cleanup procedure that tests our surface without depending on AWS-internal threshold firing). What's left is to actually execute the rewritten procedure once and capture artifacts.
+- **Why deferred:** The runtime execution is a manual ops task with throwaway IAM resource creation, simulator runs, attach/detach, and cleanup verification. Better as its own focused session than as "one more thing" tacked onto the docs rewrite. The procedure's first run will also seed the verification log table in `docs/cost-safeguards.md` § "Verification log".
+- **When to revisit:** Before Phase 1 populates `var.budget_action_target_roles` with real workflow Lambda roles. After the first runtime execution, establish a quarterly cadence.
+- **Action:** Run the procedure in `docs/cost-safeguards.md` § 3 ("Verify the budget action plumbing"). Capture EvalDecision artifacts in the § "Verification log" table; cross-link the run from `docs/EMERGENCY.md` § 2. Set a quarterly reminder.
+- **Where:** `docs/cost-safeguards.md` § 3 (procedure to execute) and § "Verification log" (artifact capture); `docs/EMERGENCY.md` § 2 (cross-link).
 
 #### CloudWatch metric filters and alarms on CloudTrail security events
 
