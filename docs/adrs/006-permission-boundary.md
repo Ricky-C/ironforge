@@ -67,7 +67,9 @@ Belt-and-suspenders. The ALLOW list doesn't include these, so they would be deni
 
 ## Why not principal-tag substitution for env-prefix scoping
 
-The alternative considered: have the boundary's S3 ALLOW statement reference `${aws:PrincipalTag/ironforge-environment}` so the artifacts bucket prefix automatically scopes to the role's env. The pattern would look like:
+This section is about the **boundary**. The pattern *is* used in the artifacts bucket policy itself (see § "What we lose" mitigation #3 below) — the trade-offs differ at the bucket-policy layer, where reviewer cost and static-analysis surface are bounded by a single document.
+
+The alternative considered for the boundary: have the boundary's S3 ALLOW statement reference `${aws:PrincipalTag/ironforge-environment}` so the artifacts bucket prefix automatically scopes to the role's env. The pattern would look like:
 
 ```hcl
 resources = [
@@ -112,9 +114,9 @@ This is a real risk, accepted with three mitigations:
 
 1. **Code review.** Inline policies are short, reviewable, and the env prefix is a one-line check.
 2. **Saved memory `project_commit_10_iam_prefix_scoping.md`** flags this requirement so it surfaces in every future commit adding a Lambda role.
-3. **Deferred bucket-policy enforcement** (`docs/tech-debt.md` § "Prefix-scoped artifacts bucket policy"). When that lands, the bucket itself enforces prefix-scoped access at the AWS level — third layer behind boundary and inline.
+3. **Bucket-policy enforcement** in `infra/modules/artifacts/main.tf` — the bucket policy denies cross-env object access and cross-env listing for principals tagged `ironforge-managed=true`, using `aws:PrincipalTag/ironforge-environment` substitution into `not_resources`. Third layer behind boundary and inline; principal-tag substitution lives at the bucket-policy layer (where reviewer cost is bounded by a single document), not the boundary (see "Why not principal-tag substitution" above).
 
-The trade-off: less defense-in-depth at the boundary, more reliance on inline policy correctness. Accepted for the reviewer-cost reduction and the conventional pattern.
+The trade-off: less defense-in-depth at the boundary, more reliance on inline policy correctness — partially restored by the bucket-policy layer. Accepted for the reviewer-cost reduction and the conventional pattern.
 
 ## Retrofit pattern
 
@@ -221,7 +223,9 @@ Expected:
 An error occurred (403) when calling the GetObject operation: Forbidden
 ```
 
-Note: the denial happens at the **inline policy level**, not the boundary. The inline policy scopes to `dev/*`; `prod/verify-test` does not match. The boundary itself allows broadly on `ironforge-artifacts-*` — the boundary is not the deny source. This is exactly the trade-off documented in "Why not principal-tag substitution" above; verifying it explicitly here makes the boundary's role and the inline policy's role visible.
+Note: the denial fires at **two layers** simultaneously now. The inline policy scopes to `dev/*` so `prod/verify-test` doesn't match an ALLOW; the artifacts bucket policy's `DenyCrossEnvObjectAccess` statement also fires because the dev-tagged role's `ironforge-environment=dev` substitution puts `prod/verify-test` outside the role's permitted env prefix. The boundary itself allows broadly on `ironforge-artifacts-*` and is not a deny source — that's by design (see "Why not principal-tag substitution" above for why the substitution lives at the bucket-policy layer rather than the boundary).
+
+To verify the **bucket-policy layer is load-bearing** (independent of the inline policy doing its job), temporarily widen the inline policy to `${bucket_arn}/*` and re-run the cross-env GetObject. The 403 should still fire, sourced now solely from the bucket policy. Revert the inline widening immediately afterward.
 
 Cleanup:
 

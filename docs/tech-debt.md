@@ -24,16 +24,6 @@ Each entry has:
 
 ## Open
 
-### S3 / IAM hardening
-
-#### Prefix-scoped artifacts bucket policy (defense-in-depth)
-
-- **What:** Add a bucket policy on the artifacts bucket that enforces prefix-scoped access at the bucket-policy level — beyond per-policy IAM scoping. Defense in depth.
-- **Why deferred:** Not required for MVP. IAM-grant scoping is sufficient *if grants are correct*. The bucket policy adds a safety net for IAM mistakes (a Lambda role accidentally granted `${bucket_arn}/*` could otherwise read across env prefixes).
-- **When to revisit:** When Ironforge has more than one Lambda role accessing the artifacts bucket, when the `IronforgePermissionBoundary` (Commit 10) is in place and we want belt-and-suspenders, or when a real cross-env access incident is detected.
-- **Action:** Add an `aws_s3_bucket_policy` statement that requires the calling principal's session tag (or a per-env IAM path/role-name pattern) to match the env prefix being accessed. Test by attempting cross-prefix access from a dev role and confirming denial.
-- **Where:** `infra/modules/artifacts/main.tf`.
-
 ### CloudFront / observability
 
 #### CloudFront access logging not enabled
@@ -66,10 +56,12 @@ Each entry has:
 
 #### Tighten `kms:*` and other account-wide writes on `ironforge-ci-apply`
 
+> **Co-required with Phase 1's first KMS CMK creation.** When the Phase 1 Secrets Manager CMK (or any other ironforge-managed CMK beyond the existing state and CloudTrail keys) lands, the same PR must also tighten the apply role's `kms:*` grant to enumerate every then-existing ironforge-managed CMK. Shipping a new CMK without the tightening leaves the previously-documented escalation path open for the new key.
+
 - **What:** The apply role's identity policy (`OIDC_BOOTSTRAP.md` Step 4, sid `WriteAccountWideServicesIronforgeUses`) grants `kms:*`, `cloudfront:*`, `wafv2:*`, `acm:*`, `cognito-idp:*`, `events:*`, `apigateway:*`, `scheduler:*`, `xray:*`, `budgets:*` on `Resource: "*"`. The CI boundary's `Action: "*"` ALLOW does not cap these — only the DENYs (OIDC mods, self-modification, expensive services) constrain. Concrete escalation path: `kms:PutKeyPolicy` against `alias/ironforge-terraform-state` followed by `kms:ScheduleKeyDeletion` would render the state bucket unrecoverable. Same shape for `cognito-idp:*` against any non-Ironforge Cognito pool that might exist in the account.
-- **Why deferred:** At Phase 0 these services don't yet have customer-facing data flowing through them, the apply role is gated behind `environment:production` with required reviewer + 5-minute wait, and tightening requires care: several of these services have actions that don't support resource-level scoping (which is why they were broadened in the first place — see the `Note on cloudfront:*, wafv2:*, acm:*, cognito-idp:*, kms:*` comment in `OIDC_BOOTSTRAP.md`).
-- **When to revisit:** Before any of: (a) Secrets Manager CMK creation in Phase 1, (b) the first non-Ironforge resource in the account that we don't want the apply role to be able to delete, (c) anyone external getting merge access to the repo.
-- **Action:** Tighten in this order — (1) `kms:*` to `arn:aws:kms:us-east-1:<account>:key/*` plus a `kms:ResourceTag/ironforge-managed = true` condition, with the state CMK and any Ironforge-created CMKs picking up that tag; (2) `cognito-idp:*` to the specific user-pool ARN once the pool exists; (3) for the remaining services where resource-level scoping isn't supported, add explicit entries to `docs/iam-exceptions.md` so the `Resource: "*"` is recorded as a known limitation rather than an oversight. Test the tightened apply role by running a normal `terraform apply` against the shared composition and verifying no permission denials.
+- **Why deferred:** At Phase 0 these services don't yet have customer-facing data flowing through them, the apply role is gated behind `environment:production` with required reviewer + 5-minute wait, and tightening requires care: several of these services have actions that don't support resource-level scoping (which is why they were broadened in the first place — see the `Note on cloudfront:*, wafv2:*, acm:*, cognito-idp:*, kms:*` comment in `OIDC_BOOTSTRAP.md`). A Phase 0 partial-tightening pass would also need revisiting once Phase 1 adds new ironforge-managed CMKs (Secrets Manager for the GitHub App private key, etc.) — better to tighten once with full information than twice with partial.
+- **When to revisit:** **Primary trigger — Phase 1's Secrets Manager CMK lands.** That PR must include the apply-role tightening in the same commit (or as a tightly-coupled follow-on landing before the CMK reaches production). Other triggers: (a) the first non-Ironforge resource in the account that we don't want the apply role to be able to delete, (b) anyone external getting merge access to the repo.
+- **Action:** Tighten in this order — (1) `kms:*` to `arn:aws:kms:us-east-1:<account>:key/*` plus a `kms:ResourceTag/ironforge-managed = true` condition; ensure every Ironforge-created CMK at the time of tightening (state CMK, CloudTrail CMK, the new Phase 1 Secrets Manager CMK, plus any others) carries the `ironforge-managed=true` tag so the condition matches them. Enumerate the CMK list explicitly in the apply-role-tightening commit message so future PRs that add CMKs know what to extend. (2) `cognito-idp:*` to the specific user-pool ARN once the pool exists. (3) For the remaining services where resource-level scoping isn't supported, add explicit entries to `docs/iam-exceptions.md` so the `Resource: "*"` is recorded as a known limitation rather than an oversight. Test the tightened apply role by running a normal `terraform apply` against the shared composition and verifying no permission denials.
 - **Where:** `infra/OIDC_BOOTSTRAP.md` Step 4; `docs/iam-exceptions.md` (additions).
 
 #### KMS permissions absent from the IronforgePermissionBoundary
