@@ -520,7 +520,12 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "kms:CancelKeyDeletion",
         "kms:TagResource",
         "kms:CreateGrant",
-        "kms:RetireGrant"
+        "kms:RetireGrant",
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext"
       ],
       "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/*",
       "Condition": {
