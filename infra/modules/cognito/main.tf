@@ -1,5 +1,6 @@
-# SECURITY NOTE — Per-environment isolation depends on application-layer
-# JWT verification of the `client_id` claim on access tokens.
+# SECURITY NOTE — Per-environment isolation is enforced at the API
+# Gateway HTTP API JWT authorizer, with one application-layer check
+# in Lambda for the failure mode the authorizer doesn't cover.
 #
 # This module creates ONE shared Cognito user pool with multiple app
 # clients (one per env). Per ADR-005, the shared-resource default uses
@@ -12,16 +13,32 @@
 # explicit JWT-callback wiring to expose `account.access_token` on the
 # session.
 #
-# The API's auth middleware MUST verify:
+# Verification split (per CLAUDE.md § Authentication):
+#
+# At API Gateway HTTP API JWT authorizer (each env has its own
+# authorizer with its env-specific client_id as the configured
+# Audience):
 #   1. JWT signature against Cognito's JWKS endpoint
 #   2. `iss` claim equals the user pool issuer URL
-#   3. `client_id` claim equals the env's expected client_id (CRITICAL —
-#      this is what isolates dev tokens from prod APIs; see ADR-005)
-#   4. `token_use` claim equals "access"
-#   5. `exp` claim hasn't passed
+#   3. `aud` OR `client_id` claim matches the configured audience
+#      (per AWS docs: "API Gateway validates client_id only if aud is
+#      not present"). For access tokens this matches client_id; for ID
+#      tokens it matches aud. CRITICAL for env isolation; see ADR-005.
+#   4. `exp` claim hasn't passed
 #
-# If `client_id` verification is skipped or buggy, env isolation is broken.
-# This is the trade-off accepted in exchange for a single shared pool.
+# At in-Lambda middleware (the one check the authorizer doesn't do):
+#   5. `token_use` claim equals "access". The HTTP API JWT authorizer
+#      does NOT enforce token_use — AWS docs explicitly note: "There
+#      is no standard mechanism to differentiate JWT access tokens from
+#      other types of JWTs, such as OpenID Connect ID tokens." Without
+#      this in-Lambda check, an ID token from the same Cognito client
+#      (same client_id, so it passes the authorizer's audience check)
+#      would silently authenticate API calls — defeating the BFF's
+#      access-tokens-only policy above.
+#
+# The middleware also Zod-validates the claims object shape as defense
+# in depth against a malformed authorizer-injected payload, and
+# attaches the typed user to the Hono context for handlers.
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}

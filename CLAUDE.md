@@ -129,7 +129,7 @@ No provisioning of resources outside us-east-1 without explicit code change
 
 Authentication:
 
-Cognito-protected routes use API Gateway authorizers, not in-Lambda checks
+Cognito-protected routes use API Gateway HTTP API JWT authorizers for signature, `iss`, audience (`aud` / `client_id`), and `exp` verification. The in-Lambda middleware never re-verifies the signature. Application-specific claim validation that the authorizer doesn't cover — notably `token_use === "access"`, since the HTTP API JWT authorizer treats access and ID tokens interchangeably when both have a matching audience — belongs in middleware that consumes the pre-verified claims from `event.requestContext.authorizer.jwt.claims`.
 Demo routes are explicitly under /api/demo/* and serve only mocked data
 No backdoors, no admin override, no "skip auth in dev" flags
 
