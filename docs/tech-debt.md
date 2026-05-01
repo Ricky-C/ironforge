@@ -197,6 +197,20 @@ Each entry has:
 - **Estimated effort:** 4-8 hours including CI workflow update, Terraform refactor, and one full apply cycle to verify the new pipeline.
 - **Where:** `infra/modules/lambda/main.tf` (the `archive_file` data source), `.github/workflows/infra-apply.yml` (the build + upload step), `infra/envs/<env>/main.tf` (the api_lambda module call's `source_dir` argument is replaced or supplemented by `s3_bucket`/`s3_key`).
 
+### Schema evolution
+
+#### Malformed Service item handling — fail-loud → 500 revisit on first schema migration
+
+- **What:** PR-B.3's read handlers (`services/api/src/routes/services.ts`) parse every DynamoDB-returned item against `ServiceSchema` and throw on failure (caught and converted to `500 INTERNAL`). The list handler short-circuits the whole list on a single bad item; the detail handler's behavior is naturally per-item. Both log structured detail (item PK/SK, Zod flattened errors, requestId, userId) before throwing.
+- **Why deferred:** Phase 1 has no schema migration history — every Service item was written under the current schema. Malformed = bug in the write path, surface immediately. Implementing partial-error envelopes or skip-with-warning before any drift exists is engineering-without-a-symptom; the simple shape catches what matters now.
+- **When to revisit:** First PR that introduces a non-additive change to `ServiceSchema` — adding a required field, narrowing an enum, restructuring the discriminated union, removing a status variant. Additive changes (new optional fields, new status variants) don't need this since the handler can validate against either old or new shape via the same schema.
+- **Action — pick the shape based on the migration:**
+  1. **Partial-error envelope.** Response becomes `{ ok: true, data: { items: Service[], cursor, errors: [{ id, code, message }] } }`. Most honest; preserves valid items; surfaces parse failures to the client. Best when migrations are gradual (some items old shape, some new) and clients can show "1 service failed to load" UX.
+  2. **Skip-with-warning.** Item is omitted from the response; warning logged with the parse error. Quietest; fine if the failure mode is genuinely rare and the operator triage path (CloudWatch metric filter on the warning) is known. Avoid unless paired with monitoring.
+  3. **Inline migration.** On read, transform old-shape items to new-shape items with a fallback for missing fields. Works for additive-only migrations (which by definition don't trigger this revisit) — listed for completeness only.
+- **Estimated effort:** 2-4 hours including test rewrites (the 8 failure-mode tests already in `handler.test.ts` need to be updated to the new shape).
+- **Where:** `services/api/src/routes/services.ts` (the `parseServiceItem` helper and the list handler's `.map(...)` call site); `packages/shared-types/src/api.ts` (potentially extends `ApiResponse` envelope to carry per-item errors).
+
 ### Lint / type discipline
 
 #### Enforce discriminated-union exhaustiveness via `@typescript-eslint/switch-exhaustiveness-check`

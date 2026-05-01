@@ -1,14 +1,21 @@
 import { Hono } from "hono";
 import { handle } from "hono/aws-lambda";
 
-import { cognitoAuth, type AuthEnv } from "./middleware/auth.js";
+import type { AppEnv } from "./env.js";
+import { cognitoAuth } from "./middleware/auth.js";
+import { loggerMiddleware } from "./middleware/logger.js";
 import { servicesRoutes } from "./routes/services.js";
 
 // Factored out for testability — tests construct a fresh app and use
 // Hono's app.request() to drive routes without going through Lambda's
 // handle() adapter. Production code uses the exported `handler`.
-export const createApp = (): Hono<AuthEnv> => {
-  const app = new Hono<AuthEnv>();
+export const createApp = (): Hono<AppEnv> => {
+  const app = new Hono<AppEnv>();
+
+  // Logger middleware applied first — across all paths, before auth —
+  // so 401s and unmatched-route 404s also carry the requestId for log
+  // correlation against the API Gateway access log.
+  app.use("*", loggerMiddleware);
 
   // Cognito auth middleware applies to /api/*. The API Gateway HTTP
   // API JWT authorizer has already verified signature, iss, audience
