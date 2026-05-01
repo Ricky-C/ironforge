@@ -44,7 +44,7 @@ output "dns_hosted_zone_arn" {
 }
 
 output "dns_certificate_arn" {
-  description = "ARN of the validated wildcard ACM certificate for ironforge.rickycaballero.com (us-east-1)."
+  description = "ARN of the validated apex+wildcard ACM certificate for ironforge.rickycaballero.com (us-east-1). Covers BOTH the portal apex and every provisioned static-site subdomain via the wildcard SAN — no per-service cert issuance. Consumed cross-composition by the run-terraform Lambda (PR-C.6) when applying templates/static-site/terraform/."
   value       = module.dns.certificate_arn
 }
 

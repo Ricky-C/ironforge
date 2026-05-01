@@ -9,7 +9,7 @@ output "hosted_zone_arn" {
 }
 
 output "certificate_arn" {
-  description = "ARN of the validated wildcard ACM certificate. Use for CloudFront distributions, Cognito custom domain, or other consumers requiring a us-east-1 cert for the ironforge subdomain. Reads from the validation resource so consumers automatically wait for validation."
+  description = "ARN of the validated apex+wildcard ACM certificate (covers ironforge.rickycaballero.com AND *.ironforge.rickycaballero.com). Consumed by: (1) the portal CloudFront at the apex; (2) every provisioned static-site service's CloudFront at <name>.ironforge.rickycaballero.com via the wildcard SAN. Read from the validation resource so consumers automatically wait for validation."
   value       = aws_acm_certificate_validation.ironforge.certificate_arn
 }
 

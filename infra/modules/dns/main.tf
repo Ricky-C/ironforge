@@ -2,6 +2,18 @@
 # (manually managed, NS-delegated from the parent rickycaballero.com zone) and
 # issues a SAN ACM certificate for the apex + wildcard.
 #
+# The wildcard SAN (*.ironforge.rickycaballero.com) is **shared** between the
+# portal (which uses the apex) and every provisioned static-site service's
+# CloudFront distribution (which uses a per-service subdomain under the
+# wildcard). Per the PR-C.1 design conversation, all provisioned services
+# attach to this same cert ARN — no per-service ACM cert issuance, no
+# wait-for-cert polling step, no per-provision DNS validation.
+#
+# Per-service cert support is a deliberate Phase-1+ deferral; see
+# docs/tech-debt.md § "Per-service ACM cert as opt-in template input" for
+# the trigger and re-introduction plan if/when the platform demonstrates
+# the need for per-service isolation.
+#
 # Crucially: this module NEVER creates or modifies a Route53 hosted zone, and
 # never touches the parent zone. It only adds records inside the existing
 # subdomain zone. See docs/dns-setup.md.
