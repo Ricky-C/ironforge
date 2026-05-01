@@ -7,3 +7,11 @@ alert_email = "you@example.com"
 # budget_action_target_roles  = ["ironforge-ci", "ironforge-workflow-terraform-executor"]
 # budget_action_target_users  = []
 # budget_action_target_groups = []
+
+# GitHub App + org identifiers. Captured during the one-time GitHub org +
+# App registration (docs/runbook.md § "GitHub org + App registration").
+# Non-secret but tenant-specific — kept here per the env-specific-identifiers
+# convention rather than tracked Terraform.
+github_org_name            = "your-org-name"
+github_app_id              = "0000000"
+github_app_installation_id = "000000000"

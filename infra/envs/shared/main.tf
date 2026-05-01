@@ -62,3 +62,11 @@ module "portal_frontend" {
 module "cloudtrail" {
   source = "../../modules/cloudtrail"
 }
+
+module "github_app_secret" {
+  source = "../../modules/github-app-secret"
+
+  org_name        = var.github_org_name
+  app_id          = var.github_app_id
+  installation_id = var.github_app_installation_id
+}

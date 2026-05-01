@@ -48,6 +48,22 @@ Without a corresponding access-control or compliance benefit, this is over-engin
 
 **General pattern: audit logs are a strong fit for CMK.** When a resource holds the forensic record (CloudTrail logs, future security-event archives, regulated audit data), criterion 2 applies almost by definition — the decrypt events on the key become part of the audit trail. Criterion 1 typically pairs with it because the key policy can pin the legitimate service principal via an `EncryptionContext` condition that IAM alone cannot enforce.
 
+## CMK boundary tiering — when one CMK can encrypt multiple resources
+
+When a CMK is justified per the four criteria above, the next question is whether *this* resource gets a dedicated CMK or shares one with peers. The unit of separation is the **trust boundary**, not the resource:
+
+- **Tier 1 — Per-resource CMK.** Single high-impact resource with a distinct principal scope. The key's blast radius is exactly one resource: a leaked decrypt grant exposes that resource and nothing else. *Examples: GitHub App private key (PR #41), Terraform state CMK.*
+- **Tier 2 — Per-trust-boundary CMK.** Multiple resources accessed by exactly the same principal set with exactly the same key-policy needs. One key, one rotation surface, one policy surface. *Existing example: the CloudTrail CMK encrypts both the S3 log bucket and the CloudWatch log group — same audit data, same principals, same EncryptionContext-bound access pattern. Future example: per-environment Lambda runtime config secrets, if and when they exist.*
+- **Tier 3 — AWS-managed (AES256).** No principal-scoped access control needed. This is the default per the four criteria above.
+
+**Rule:** prefer Tier 2 over Tier 1 when resources *genuinely* share a trust boundary; prefer Tier 1 over Tier 2 when in doubt.
+
+**Reason for the asymmetry:** splitting a Tier 2 CMK into multiple Tier 1 CMKs later is operationally easy — decrypt with the old key, re-encrypt with the new key, swap consumers, then schedule the old key for deletion. Merging Tier 1 CMKs into a shared Tier 2 CMK requires either widening the original key's policy (potentially exposing all merged resources to the new principals) or migrating each resource individually — both are riskier and the merged policy is harder to undo if the assumption that the boundaries match turns out to be wrong. Choose the easier-to-undo direction when uncertain.
+
+**Test before adding a resource to an existing CMK:** "Are the principals that need to use this key *exactly* the principals already on it, with no foreseeable divergence?" If no, new CMK.
+
+CMK sprawl is real and worth tracking, but it's the lesser failure mode vs accidentally widening a key's blast radius by sharing it across boundaries that diverge later.
+
 ## Consequences
 
 **Positive:**

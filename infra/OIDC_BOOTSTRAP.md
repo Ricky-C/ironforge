@@ -265,6 +265,9 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "states:List*",
         "secretsmanager:Describe*",
         "secretsmanager:List*",
+        "ssm:Describe*",
+        "ssm:Get*",
+        "ssm:List*",
         "wafv2:Get*",
         "wafv2:List*",
         "wafv2:Describe*",
@@ -387,6 +390,7 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "logs:Describe*", "logs:Get*", "logs:List*",
         "states:Describe*", "states:List*",
         "secretsmanager:Describe*", "secretsmanager:List*",
+        "ssm:Describe*", "ssm:Get*", "ssm:List*",
         "wafv2:Get*", "wafv2:List*", "wafv2:Describe*",
         "apigateway:GET",
         "events:Describe*", "events:List*",
@@ -473,6 +477,76 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
       "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:ironforge/*"
     },
     {
+      "Sid": "WriteIronforgeSSM",
+      "Effect": "Allow",
+      "Action": "ssm:*",
+      "Resource": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/ironforge/*"
+    },
+    {
+      "Sid": "KMSCreateKeyOnlyManaged",
+      "Effect": "Allow",
+      "Action": "kms:CreateKey",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ironforge-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "KMSManageIronforgeManagedKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:PutKeyPolicy",
+        "kms:UpdateKeyDescription",
+        "kms:EnableKey",
+        "kms:DisableKey",
+        "kms:EnableKeyRotation",
+        "kms:DisableKeyRotation",
+        "kms:ScheduleKeyDeletion",
+        "kms:CancelKeyDeletion",
+        "kms:TagResource"
+      ],
+      "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ironforge-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "KMSUntagIronforgeManagedKeysExceptLoadBearing",
+      "Effect": "Allow",
+      "Action": "kms:UntagResource",
+      "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ironforge-managed": "true"
+        },
+        "ForAllValues:StringNotEquals": {
+          "aws:TagKeys": ["ironforge-managed"]
+        }
+      }
+    },
+    {
+      "Sid": "KMSManageIronforgeAliases",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateAlias",
+        "kms:UpdateAlias",
+        "kms:DeleteAlias"
+      ],
+      "Resource": [
+        "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:alias/ironforge-*",
+        "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ironforge-managed": "true"
+        }
+      }
+    },
+    {
       "Sid": "WriteAccountWideServicesIronforgeUses",
       "Effect": "Allow",
       "Action": [
@@ -480,7 +554,6 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "wafv2:*",
         "acm:*",
         "cognito-idp:*",
-        "kms:*",
         "budgets:*",
         "ce:CreateAnomaly*",
         "ce:UpdateAnomaly*",
@@ -522,7 +595,11 @@ aws iam put-role-policy \
   --policy-document file:///tmp/ironforge-ci-apply-policy.json
 ```
 
-Note on `cloudfront:*`, `wafv2:*`, `acm:*`, `cognito-idp:*`, `kms:*`: these services either don't support resource-level scoping in IAM, or scoping by resource ARN is impractical at create-time. The boundary's DENY list keeps the cost-runaway services blocked regardless. Future tightening — particularly around KMS key policies — is tracked in `docs/tech-debt.md`.
+Note on `cloudfront:*`, `wafv2:*`, `acm:*`, `cognito-idp:*`: these services either don't support resource-level scoping in IAM, or scoping by resource ARN is impractical at create-time. The boundary's DENY list keeps the cost-runaway services blocked regardless. Future tightening for these is tracked in `docs/tech-debt.md`.
+
+KMS got the tightening this round (the `KMS*` sids above). Structure: `kms:CreateKey` requires `aws:RequestTag/ironforge-managed=true` on the create call so every CMK the apply role can ever create carries the tag. Per-key write actions (`kms:PutKeyPolicy`, `kms:ScheduleKeyDeletion`, etc.) are scoped to keys with `aws:ResourceTag/ironforge-managed=true`, which auto-includes any new ironforge-managed CMK without enumeration. `kms:UntagResource` has an extra `ForAllValues:StringNotEquals aws:TagKeys=["ironforge-managed"]` clause so the load-bearing tag itself can't be removed (which would otherwise self-lock the role out of the key). Alias write actions are scoped by the `alias/ironforge-*` name prefix and the underlying key's tag; the alias resource itself is untaggable but the action's resource-level scoping requires permission on both the alias and the key.
+
+**Two-step manual procedure for adding new services to these roles:** the policy here is the source of truth, but `aws iam put-role-policy` against the live roles is what actually changes them. When a PR adds a new service usage (a new `ssm:*` grant, a new CMK, a new resource-level scope), the procedure is: (1) update this file in the PR; (2) run `aws iam put-role-policy --role-name ironforge-ci-{plan,apply} --policy-name ironforge-ci-{plan,apply}-permissions --policy-document file:///tmp/...json` with the updated JSON manually before merge; (3) merge → CI's first apply uses the updated permissions. Skipping step 2 surfaces as `AccessDenied` on the first CI apply.
 
 ## Step 5 — Configure GitHub Environment `production`
 
