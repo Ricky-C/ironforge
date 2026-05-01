@@ -518,7 +518,9 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "kms:DisableKeyRotation",
         "kms:ScheduleKeyDeletion",
         "kms:CancelKeyDeletion",
-        "kms:TagResource"
+        "kms:TagResource",
+        "kms:CreateGrant",
+        "kms:RetireGrant"
       ],
       "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/*",
       "Condition": {
@@ -552,12 +554,7 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
       "Resource": [
         "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:alias/ironforge-*",
         "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/*"
-      ],
-      "Condition": {
-        "StringEquals": {
-          "aws:ResourceTag/ironforge-managed": "true"
-        }
-      }
+      ]
     },
     {
       "Sid": "WriteAccountWideServicesIronforgeUses",
@@ -610,7 +607,7 @@ aws iam put-role-policy \
 
 Note on `cloudfront:*`, `wafv2:*`, `acm:*`, `cognito-idp:*`: these services either don't support resource-level scoping in IAM, or scoping by resource ARN is impractical at create-time. The boundary's DENY list keeps the cost-runaway services blocked regardless. Future tightening for these is tracked in `docs/tech-debt.md`.
 
-KMS got the tightening this round (the `KMS*` sids above). Structure: `kms:CreateKey` requires `aws:RequestTag/ironforge-managed=true` on the create call so every CMK the apply role can ever create carries the tag. Per-key write actions (`kms:PutKeyPolicy`, `kms:ScheduleKeyDeletion`, etc.) are scoped to keys with `aws:ResourceTag/ironforge-managed=true`, which auto-includes any new ironforge-managed CMK without enumeration. `kms:UntagResource` has an extra `ForAllValues:StringNotEquals aws:TagKeys=["ironforge-managed"]` clause so the load-bearing tag itself can't be removed (which would otherwise self-lock the role out of the key). Alias write actions are scoped by the `alias/ironforge-*` name prefix and the underlying key's tag; the alias resource itself is untaggable but the action's resource-level scoping requires permission on both the alias and the key.
+KMS got the tightening this round (the `KMS*` sids above). Structure: `kms:CreateKey` requires `aws:RequestTag/ironforge-managed=true` on the create call so every CMK the apply role can ever create carries the tag. Per-key write and grant actions (`kms:PutKeyPolicy`, `kms:ScheduleKeyDeletion`, `kms:CreateGrant`, `kms:RetireGrant`, etc.) are scoped to keys with `aws:ResourceTag/ironforge-managed=true`, which auto-includes any new ironforge-managed CMK without enumeration. `kms:CreateGrant`/`kms:RetireGrant` are required so Secrets Manager can create internal grants on a CMK at `CreateSecret` time (the SM-CMK integration uses grants rather than direct `kms:Decrypt` from the calling principal — preserving the consuming-principal design where only the workflow Lambda role decrypts). `kms:UntagResource` has an extra `ForAllValues:StringNotEquals aws:TagKeys=["ironforge-managed"]` clause so the load-bearing tag itself can't be removed (which would otherwise self-lock the role out of the key). Alias write actions are scoped by the `alias/ironforge-*` name prefix only — the underlying-key tag condition was removed after live IAM revealed that `aws:ResourceTag` is evaluated against the alias resource (untaggable, always fails) when the policy is attached to a multi-resource action; the IAM Policy Simulator misleadingly evaluated this as `allowed` per-resource. Residual: apply role can theoretically create an `alias/ironforge-rogue` pointing to a non-Ironforge key, but aliases are naming, not access.
 
 **Two-step manual procedure for adding new services to these roles:** the policy here is the source of truth, but `aws iam put-role-policy` against the live roles is what actually changes them. When a PR adds a new service usage (a new `ssm:*` grant, a new CMK, a new resource-level scope), the procedure is: (1) update this file in the PR; (2) run `aws iam put-role-policy --role-name ironforge-ci-{plan,apply} --policy-name ironforge-ci-{plan,apply}-permissions --policy-document file:///tmp/...json` with the updated JSON manually before merge; (3) merge → CI's first apply uses the updated permissions. Skipping step 2 surfaces as `AccessDenied` on the first CI apply.
 
