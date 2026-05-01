@@ -29,17 +29,19 @@ The principle:
 ## Entity → key map
 
 Each row lists the entity, its base-table keys, and any GSI1 entry it
-contributes. Entities marked _Documented for Phase 1 (not yet
-implemented)_ have their key shape committed here so the GSI1 sharing
-convention is captured up front; their write paths land with the
-provisioning workflow Lambdas.
+contributes. The **Status** column tracks _schema implementation_ in
+`packages/shared-types`, not write-path wiring — entities flagged
+_Schema implemented (PR-C.0)_ have their Zod schemas, key helpers, and
+TTL config in place but no Lambda yet performs the writes (those land
+in PR-C.2+ alongside the state machine).
 
-| Entity   | `PK`                    | `SK`                  | `GSI1PK`            | `GSI1SK`                                | Status                  |
-| -------- | ----------------------- | --------------------- | ------------------- | --------------------------------------- | ----------------------- |
-| Service  | `SERVICE#<id>`          | `META`                | `OWNER#<sub>`       | `SERVICE#<createdAt>#<id>`              | Implemented (PR-B)      |
-| Job      | `JOB#<id>`              | `META`                | `SERVICE#<svc-id>`  | `JOB#<createdAt>#<id>`                  | Documented for Phase 1  |
-| Job step | `JOB#<id>`              | `STEP#<step-name>`    | _none_              | _none_                                  | Documented for Phase 1  |
-| Audit    | `AUDIT#<yyyy-mm-dd>`    | `<iso-ts>#<event-id>` | _none_              | _none_                                  | Documented for Phase 1  |
+| Entity            | `PK`                    | `SK`                  | `GSI1PK`            | `GSI1SK`                                | Status                       |
+| ----------------- | ----------------------- | --------------------- | ------------------- | --------------------------------------- | ---------------------------- |
+| Service           | `SERVICE#<id>`          | `META`                | `OWNER#<sub>`       | `SERVICE#<createdAt>#<id>`              | Schema implemented (PR-B)    |
+| Job               | `JOB#<id>`              | `META`                | `SERVICE#<svc-id>`  | `JOB#<createdAt>#<id>`                  | Schema implemented (PR-C.0)  |
+| Job step          | `JOB#<id>`              | `STEP#<step-name>`    | _none_              | _none_                                  | Schema implemented (PR-C.0)  |
+| Idempotency       | `IDEMPOTENCY#<hash>`    | `META`                | _none_              | _none_                                  | Schema implemented (PR-C.0)  |
+| Audit             | `AUDIT#<yyyy-mm-dd>`    | `<iso-ts>#<event-id>` | _none_              | _none_                                  | Documented for future phase  |
 
 Notes on the entries:
 
@@ -48,6 +50,20 @@ Notes on the entries:
   creates would share `GSI1SK` and only one would land.
 - **Job step** is queried only by-job, so the base table's
   `PK = JOB#<id>` + `SK begins_with STEP#` covers it. No GSI entry.
+  The schema's `stepName` enum is co-evolved with the Step Functions
+  state machine — renaming a step requires updating both, which forces
+  a deliberate audit. See `packages/shared-types/src/job-step.ts`.
+- **Idempotency** records are HTTP-level cache entries for mutating POST
+  endpoints (CLAUDE.md § API Conventions § Idempotency). `<hash>` is
+  `sha256(idempotencyKey + bodyHash + scopeId)`; `scopeId` is the
+  Cognito sub of the requester so cross-tenant collision is impossible
+  by construction. Records carry an `expiresAt` Unix-epoch-seconds
+  attribute; DynamoDB TTL is enabled on the table for this attribute
+  (`infra/modules/dynamodb/main.tf`), so eviction happens within ~48 h
+  of expiry without write-path involvement. Default retention is 24 h —
+  the value is set at write time by `withIdempotencyKey()`. **Do not
+  rely on TTL for security-sensitive eviction** — DynamoDB's TTL SLA
+  is best-effort, not guaranteed-by-deadline.
 - **Audit** uses date partitioning to keep partition cardinality
   bounded and time-ordered scans cheap. No GSI entry.
 
@@ -75,6 +91,85 @@ Phase 1 will add (documented up front, not yet wired):
   by `JOB#<createdAt>#<id>` descending.
 - **List steps by job** — base table, `PK = JOB#<id>` AND
   `SK begins_with STEP#`.
+
+## Workflow → DynamoDB write contract
+
+The provisioning workflow is multiple task Lambdas writing into the
+single table. Each row below names what attributes a Lambda writes and,
+crucially, the **conditional-write check** that protects the
+transition from races and out-of-order execution. Reviewers checking
+workflow PRs verify the Conditional column against the state machine's
+transition graph; if the check is missing or wrong, two concurrent
+runs (or a stale Lambda re-fired by SFN retry) can corrupt state.
+
+### Per-step `JobStep` write pattern
+
+Every task Lambda's first action is to upsert its `JobStep` row with
+`status: "running"`, a fresh `startedAt`, and `attempts` incremented.
+SFN-driven retries overwrite the same row by primary-key uniqueness
+(`PK = JOB#<jobId>`, `SK = STEP#<stepName>`) — natural idempotency, no
+explicit conditional needed. On terminal success the same row is
+updated to `status: "succeeded"` with `completedAt` and the per-step
+`output`. On terminal failure it's updated to `status: "failed"` with
+`errorName`, `errorMessage` (sanitized — no AWS resource ARNs, no
+stack traces, per CLAUDE.md), and `retryable`.
+
+This row-write contract is uniform across every task Lambda (validate-
+inputs through cleanup-on-failure) and is therefore not repeated in
+the table below. Service / Job transitions are where the conditional
+check varies — those are what the table tracks.
+
+### Service / Job transition table
+
+| Trigger                                                | Service write                                                                          | Job write                                                                                            | Conditional-write check                                                                          |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `POST /api/services` — create                          | createIfNotExists: `status=pending`, `currentJobId=null`, owner-scoped fields          | —                                                                                                    | Service: `attribute_not_exists(PK)`.                                                              |
+| `POST /api/services` — kickoff (after StartExecution)  | transitionStatus `pending → provisioning`, set `currentJobId=jobId`                    | createIfNotExists `status=queued`, then update to `status=running`, `executionArn`, `startedAt`      | Service: `status=:pending AND currentJobId=:null`. Job create: `attribute_not_exists(PK)`.        |
+| Task Lambdas (validate-inputs … trigger-deploy)        | —                                                                                      | UpdateItem `currentStep=<step-name>`, `updatedAt=now`                                                | Job: `status=:running`.                                                                          |
+| `finalize`                                             | transitionStatus `provisioning → live`, set `liveUrl`, `provisionedAt`, `currentJobId=null` | transitionStatus `running → succeeded`, set `completedAt`                                            | Service: `status=:provisioning AND currentJobId=:jobId`. Job: `status=:running`.                  |
+| `cleanup-on-failure`                                   | transitionStatus `provisioning → failed`, set `failureReason`, `failedAt`, `currentJobId=null` | transitionStatus `running → failed`, set `failedAt`, `failureReason`, `failedStep`                   | Service: `status=:provisioning AND currentJobId=:jobId`. Job: `status=:running`.                  |
+
+The two conditional clauses on `Service.currentJobId` (the kickoff row
+and the two terminal rows) are what enforce the **one-active-Job
+invariant**: between `POST /api/services` create and finalize/cleanup,
+no second kickoff can win the `pending → provisioning` transition
+(`currentJobId=:null` fails), and no stale Lambda from a prior Job can
+finalize the wrong run (`currentJobId=:jobId` fails). Re-provisioning
+later (`live → provisioning → live`) starts a fresh Job; the
+finalize/cleanup of that fresh run are still bound to its own jobId.
+
+### Helper mapping
+
+The Conditional column above maps onto helpers in
+`@ironforge/shared-utils`:
+
+- `createIfNotExists()` — PutItem with `attribute_not_exists(PK)`. On
+  conflict, returns the existing row so the caller decides
+  idempotent-success vs. real conflict.
+- `transitionStatus()` — UpdateItem with `ConditionExpression` on the
+  current status; on condition fail, returns the actual current status
+  from a follow-up GetItem.
+- Plain `UpdateItem` (no helper) for non-status attribute updates that
+  still need a status guard (e.g. `currentStep` updates inside a
+  running Job).
+
+### Idempotency layering
+
+HTTP-level idempotency (the `Idempotency-Key` header on `POST
+/api/services`) is layered **on top of** the conditional-write
+contract above. `withIdempotencyKey()` caches the response shape so
+client retries replay rather than re-execute, but the underlying
+side-effect (the createIfNotExists in the table's first row) is
+itself idempotent on the natural PK. Two layers of safety: the cache
+suppresses redundant work; the conditional write suppresses
+redundant entities even if the cache misses.
+
+Workflow-level idempotency (SFN retries of task Lambdas) relies on
+the `JobStep` natural-key upsert pattern plus
+`awsIdempotencyToken()`-derived deterministic strings for AWS SDK
+`IdempotencyToken` / `CallerReference` fields (ACM cert requests,
+CloudFront distributions). See feedback memory "Two-pattern
+idempotency in Ironforge" for the full split.
 
 ## GSI1 sharing convention
 
@@ -275,7 +370,23 @@ Specifically:
 
 - [`service.ts`](../packages/shared-types/src/service.ts) — `Service`
   variants, key construction helpers (`buildServiceKeys` and friends),
-  `ServiceItem` type for the DynamoDB-side shape.
+  `ServiceItem` type for the DynamoDB-side shape, including the
+  `currentJobId` field that anchors the one-active-Job invariant.
+- [`job.ts`](../packages/shared-types/src/job.ts) — `Job` variants
+  (queued / running / succeeded / failed / cancelled), key helpers,
+  `JobItem`.
+- [`job-step.ts`](../packages/shared-types/src/job-step.ts) — `JobStep`
+  variants (running / succeeded / failed), `StepNameSchema` enum
+  co-evolved with the state machine, `JobStepItem`.
+- [`workflow.ts`](../packages/shared-types/src/workflow.ts) —
+  `WorkflowExecutionInputSchema`, the immutable snapshot passed at
+  Step Functions `StartExecution`.
+- [`idempotency.ts`](../packages/shared-types/src/idempotency.ts) —
+  `IdempotencyRecordSchema`, key helpers, the `expiresAt` TTL
+  attribute matched by the table's TTL config.
+- [`polling.ts`](../packages/shared-types/src/polling.ts) —
+  `PollResultSchema` for polling task Lambdas (wait-for-cert,
+  wait-for-cloudfront).
 - [`pagination.ts`](../packages/shared-types/src/pagination.ts) —
   `ServiceListCursorSchema`.
 - [`api.ts`](../packages/shared-types/src/api.ts) — `ApiResponseSchema`,

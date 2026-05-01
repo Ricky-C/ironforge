@@ -12,13 +12,13 @@ const baseClient = new DynamoDBClient({});
 
 // DocumentClient applies marshall/unmarshall automatically — handler
 // code reads/writes plain JS objects, not DynamoDB AttributeValue
-// wrappers. Validation against ServiceSchema (or other Zod schemas)
-// runs on the unmarshalled output before consumers trust the data.
+// wrappers. Validation against Zod schemas runs on the unmarshalled
+// output before consumers trust the data.
 export const docClient = DynamoDBDocumentClient.from(baseClient, {
   marshallOptions: {
     // Treat undefined as a "don't write this attribute" signal rather
-    // than throwing. Keeps Service entity writes ergonomic when state-
-    // specific fields (liveUrl, failureReason, etc.) are absent.
+    // than throwing. Keeps entity writes ergonomic when state-specific
+    // fields (liveUrl, failureReason, etc.) are absent.
     removeUndefinedValues: true,
   },
 });

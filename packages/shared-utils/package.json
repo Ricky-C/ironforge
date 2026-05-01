@@ -1,9 +1,15 @@
 {
-  "name": "@ironforge/api",
+  "name": "@ironforge/shared-utils",
   "version": "0.0.0",
   "private": true,
-  "description": "Ironforge portal API — Hono on Lambda. Initial scope: Cognito JWT auth middleware.",
+  "description": "AWS SDK clients, idempotency helpers, DynamoDB conditional-write helpers, polling backoff, and Powertools logger factory shared across Ironforge API and workflow Lambdas.",
   "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
   "scripts": {
     "build": "node ./build.mjs",
     "clean": "rm -rf dist",
@@ -15,15 +21,11 @@
     "@aws-sdk/client-dynamodb": "^3.1039.0",
     "@aws-sdk/lib-dynamodb": "^3.1039.0",
     "@ironforge/shared-types": "workspace:*",
-    "@ironforge/shared-utils": "workspace:*",
-    "hono": "^4.12.16",
     "zod": "^4.4.1"
   },
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.161",
     "@types/node": "^25.6.0",
     "aws-sdk-client-mock": "^4.1.0",
-    "esbuild": "^0.28.0",
     "typescript": "^6.0.3",
     "vite": "^7.3.2",
     "vitest": "^4.1.5"
