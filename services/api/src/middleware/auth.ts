@@ -1,70 +1,57 @@
+import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import type { MiddlewareHandler } from "hono";
 
 import { IronforgeUserSchema, type IronforgeUser } from "./claims.js";
 
-// Hono context env added by this middleware. Downstream handlers do
-// `new Hono<AuthEnv>()` to get a typed `c.get("user")`.
+// Hono bindings populated by @hono/aws-lambda. The production handler
+// (PR-B) wires the adapter; tests pass `{ event }` via the third arg
+// to app.request(...).
 export type AuthEnv = {
+  Bindings: {
+    event: APIGatewayProxyEventV2WithJWTAuthorizer;
+  };
   Variables: {
     user: IronforgeUser;
   };
 };
 
-// Structural interface so tests can pass a fake without instantiating
-// CognitoJwtVerifier (which would require a real user pool / JWKS endpoint).
-// The signature matches CognitoJwtVerifier#verify.
-export type TokenVerifier = {
-  verify(token: string): Promise<unknown>;
-};
-
-// Case-insensitive `Bearer` scheme (RFC 6750 §2.1), single non-empty token,
-// optional trailing whitespace. JWTs never contain spaces, so a single
-// `\S+` capture is sufficient.
-const BEARER_RE = /^Bearer\s+(\S+)\s*$/i;
-
-const unauthorized = (code: "MISSING_TOKEN" | "INVALID_TOKEN", message: string) => ({
+const unauthorized = () => ({
   ok: false as const,
-  error: { code, message },
+  error: { code: "INVALID_TOKEN" as const, message: "Invalid token" },
 });
 
-// Factory returning a Hono middleware bound to a specific verifier.
-// PR #2's handler scaffolding constructs the production verifier from
-// env-validated config and assigns the result to a module-scope singleton.
-export const createCognitoAuth = (verifier: TokenVerifier): MiddlewareHandler<AuthEnv> => {
-  return async (c, next) => {
-    const authHeader = c.req.header("authorization") ?? c.req.header("Authorization");
-    if (!authHeader) {
-      return c.json(unauthorized("MISSING_TOKEN", "Authentication required"), 401);
-    }
+// Claims-extraction middleware. The API Gateway HTTP API JWT authorizer
+// has already verified signature, iss, audience (aud or client_id), and
+// exp before this Lambda is invoked — see infra/modules/cognito/main.tf
+// SECURITY NOTE for the split. This middleware enforces the single
+// remaining check (token_use === "access", which the authorizer does
+// NOT cover) and shapes the verified claims into a typed user on the
+// Hono context.
+export const cognitoAuth: MiddlewareHandler<AuthEnv> = async (c, next) => {
+  const claims = c.env.event?.requestContext?.authorizer?.jwt?.claims;
+  if (!claims || typeof claims !== "object") {
+    // Reaching the Lambda without an authorizer-injected claims object
+    // means the route bypassed the JWT authorizer entirely (Terraform
+    // misconfiguration). Fail closed.
+    return c.json(unauthorized(), 401);
+  }
 
-    const match = BEARER_RE.exec(authHeader);
-    if (!match) {
-      return c.json(unauthorized("MISSING_TOKEN", "Authentication required"), 401);
-    }
-    const token = match[1] as string;
+  // The HTTP API JWT authorizer accepts ID tokens with matching `aud`
+  // alongside access tokens with matching `client_id` — see SECURITY
+  // NOTE. This is the one place ID tokens get rejected.
+  if ((claims as Record<string, unknown>)["token_use"] !== "access") {
+    return c.json(unauthorized(), 401);
+  }
 
-    let payload: unknown;
-    try {
-      payload = await verifier.verify(token);
-    } catch {
-      // aws-jwt-verify throws on signature mismatch, expired token, wrong
-      // client_id, or wrong token_use. All collapse to one client-facing
-      // code; structured logging of the cause belongs to the handler
-      // scaffolding (PR #2).
-      return c.json(unauthorized("INVALID_TOKEN", "Invalid token"), 401);
-    }
+  const parsed = IronforgeUserSchema.safeParse(claims);
+  if (!parsed.success) {
+    // Defense in depth against an authorizer payload whose shape we
+    // don't recognize. If this fires, either AWS changed the claim-
+    // injection format or IronforgeUserSchema drifted from reality.
+    return c.json(unauthorized(), 401);
+  }
 
-    const parsed = IronforgeUserSchema.safeParse(payload);
-    if (!parsed.success) {
-      // Defense in depth: a verified token whose claim shape we don't
-      // recognize must not reach handlers. If this fires in production,
-      // either the verifier accepted an unexpected payload or the schema
-      // drifted out of sync with reality.
-      return c.json(unauthorized("INVALID_TOKEN", "Invalid token"), 401);
-    }
-
-    c.set("user", parsed.data);
-    await next();
-    return;
-  };
+  c.set("user", parsed.data);
+  await next();
+  return;
 };
