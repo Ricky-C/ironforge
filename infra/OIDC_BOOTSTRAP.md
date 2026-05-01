@@ -186,6 +186,33 @@ aws iam create-role \
 
 Plan role identity policy: read-only across Ironforge resources + state-lock + state CMK access.
 
+> **`ReadAllForPlanDiff` action design.** Each `<service>:` group in the read sid
+> below follows one of three patterns. When extending the policy, pick the
+> pattern that matches — and audit each new service's `Get*` members for
+> high-blast-radius actions before reaching for the wildcard.
+>
+> 1. **Full triplet (`Describe*` + `Get*` + `List*`)** — used when the service
+>    spreads its read APIs across all three verbs AND `<service>:Get*` has no
+>    high-blast-radius members. Examples: `acm`, `cognito-idp`, `kms`,
+>    `cloudwatch`, `logs`, `cloudtrail`, `ssm`.
+> 2. **`Describe*` + `List*` only (no `Get*`)** — used when `<service>:Get*`
+>    includes a high-blast-radius action that Terraform refresh doesn't need.
+>    Examples: `dynamodb` (omits `Get*` to exclude `GetItem` / item-content
+>    read), `secretsmanager` (omits `Get*` to exclude `GetSecretValue` /
+>    secret-content read). The Terraform AWS provider's refresh path for
+>    these resources reaches everything it needs via `Describe*` + `List*`.
+> 3. **Specific `Get*` actions enumerated individually** — used when refresh
+>    needs a single safe `Get*` action and the broader `<service>:Get*` is
+>    unsafe. Example: `secretsmanager:GetResourcePolicy` is enumerated
+>    explicitly so the role doesn't gain `GetSecretValue`. Terraform's
+>    `aws_secretsmanager_secret` Read function calls `GetResourcePolicy` to
+>    populate the resource's `policy` attribute.
+>
+> Services that use `Get*` exclusively and have no `Describe*` (e.g.
+> `cloudfront`, `sns`, `scheduler`, `iam`, `route53`, `xray`) appear with
+> `Get*` + `List*` only — that is not pattern 2; it's pattern 1 with a
+> two-verb API surface.
+
 ```bash
 cat > /tmp/ironforge-ci-plan-policy.json <<EOF
 {
