@@ -1,146 +1,100 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 
-import { createCognitoAuth, type AuthEnv, type TokenVerifier } from "./auth.js";
+import { cognitoAuth, type AuthEnv } from "./auth.js";
 
-const validPayload = { sub: "user-123" };
-
-const okVerifier: TokenVerifier = {
-  verify: async () => validPayload,
-};
-
-const throwingVerifier = (message: string): TokenVerifier => ({
-  verify: async () => {
-    throw new Error(message);
-  },
-});
-
-const buildApp = (verifier: TokenVerifier) => {
+const buildApp = () => {
   const app = new Hono<AuthEnv>();
-  app.use("/protected", createCognitoAuth(verifier));
+  app.use("/protected", cognitoAuth);
   app.get("/protected", (c) => c.json({ ok: true, user: c.get("user") }));
   return app;
 };
 
-const callProtected = (verifier: TokenVerifier, headers: Record<string, string> = {}) =>
-  buildApp(verifier).request("/protected", { headers });
+const eventWithClaims = (claims: unknown): AuthEnv["Bindings"]["event"] =>
+  ({
+    requestContext: { authorizer: { jwt: { claims } } },
+  }) as unknown as AuthEnv["Bindings"]["event"];
 
-describe("createCognitoAuth — request gating", () => {
-  it("rejects requests with no Authorization header", async () => {
-    const res = await callProtected(okVerifier);
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({
-      ok: false,
-      error: { code: "MISSING_TOKEN", message: "Authentication required" },
-    });
+const callWithEvent = (event: unknown) =>
+  buildApp().request("/protected", {}, { event } as AuthEnv["Bindings"]);
+
+const callWithClaims = (claims: unknown) => callWithEvent(eventWithClaims(claims));
+
+const expectRejected = async (res: Response) => {
+  expect(res.status).toBe(401);
+  expect(await res.json()).toEqual({
+    ok: false,
+    error: { code: "INVALID_TOKEN", message: "Invalid token" },
+  });
+};
+
+describe("cognitoAuth — authorizer-misconfiguration defense", () => {
+  it("rejects requests with no authorizer event (route bypassed JWT authorizer)", async () => {
+    await expectRejected(await callWithEvent({}));
   });
 
-  it("rejects non-Bearer schemes", async () => {
-    const res = await callProtected(okVerifier, { Authorization: "Basic dXNlcjpwYXNz" });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "MISSING_TOKEN" } });
+  it("rejects requests with no claims object on the authorizer payload", async () => {
+    await expectRejected(
+      await callWithEvent({ requestContext: { authorizer: { jwt: {} } } }),
+    );
   });
 
-  it("rejects empty bearer (header present, token missing)", async () => {
-    const res = await callProtected(okVerifier, { Authorization: "Bearer " });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "MISSING_TOKEN" } });
-  });
-
-  it("accepts the Bearer scheme case-insensitively (RFC 6750)", async () => {
-    const res = await callProtected(okVerifier, { Authorization: "bearer abc.def.ghi" });
-    expect(res.status).toBe(200);
+  it("rejects requests where claims is null", async () => {
+    await expectRejected(await callWithClaims(null));
   });
 });
 
-describe("createCognitoAuth — verifier failure modes", () => {
-  it("returns INVALID_TOKEN when the verifier rejects the signature", async () => {
-    const res = await callProtected(throwingVerifier("JwtInvalidSignatureError"), {
-      Authorization: "Bearer tampered.token.value",
-    });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({
-      ok: false,
-      error: { code: "INVALID_TOKEN", message: "Invalid token" },
-    });
+describe("cognitoAuth — token_use enforcement (the BFF-misconfiguration check)", () => {
+  it("rejects ID tokens (token_use === 'id') even with otherwise-valid claims", async () => {
+    await expectRejected(await callWithClaims({ sub: "user-123", token_use: "id" }));
   });
 
-  it("returns INVALID_TOKEN when client_id mismatches (env-isolation check)", async () => {
-    const res = await callProtected(
-      throwingVerifier("JwtInvalidClaimError: client_id does not match expected"),
-      { Authorization: "Bearer dev.token.sent.to.prod" },
+  it("rejects payloads with no token_use claim at all", async () => {
+    await expectRejected(await callWithClaims({ sub: "user-123" }));
+  });
+
+  it("rejects unknown token_use values (e.g. 'refresh')", async () => {
+    await expectRejected(
+      await callWithClaims({ sub: "user-123", token_use: "refresh" }),
     );
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "INVALID_TOKEN" } });
-  });
-
-  it("returns INVALID_TOKEN when token_use mismatches (BFF sent ID instead of access)", async () => {
-    const res = await callProtected(
-      throwingVerifier("JwtInvalidClaimError: token_use must equal access"),
-      { Authorization: "Bearer id.token.value" },
-    );
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "INVALID_TOKEN" } });
-  });
-
-  it("returns INVALID_TOKEN when the token is expired", async () => {
-    const res = await callProtected(throwingVerifier("JwtExpiredError"), {
-      Authorization: "Bearer expired.token.value",
-    });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "INVALID_TOKEN" } });
   });
 });
 
-describe("createCognitoAuth — claim-shape validation (defense in depth)", () => {
-  const callWithPayload = (payload: unknown) =>
-    callProtected(
-      { verify: async () => payload },
-      { Authorization: "Bearer some.valid.token" },
-    );
-
+describe("cognitoAuth — claim-shape validation (defense in depth)", () => {
   it("rejects payloads missing sub", async () => {
-    const res = await callWithPayload({ token_use: "access", client_id: "abc" });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "INVALID_TOKEN" } });
+    await expectRejected(await callWithClaims({ token_use: "access" }));
   });
 
   it("rejects payloads where sub is a number", async () => {
-    const res = await callWithPayload({ sub: 12345 });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "INVALID_TOKEN" } });
+    await expectRejected(await callWithClaims({ sub: 12345, token_use: "access" }));
   });
 
   it("rejects payloads where sub is null", async () => {
-    const res = await callWithPayload({ sub: null });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "INVALID_TOKEN" } });
+    await expectRejected(await callWithClaims({ sub: null, token_use: "access" }));
   });
 
   it("rejects payloads where sub is the empty string", async () => {
-    const res = await callWithPayload({ sub: "" });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: { code: "INVALID_TOKEN" } });
+    await expectRejected(await callWithClaims({ sub: "", token_use: "access" }));
   });
 });
 
-describe("createCognitoAuth — happy path", () => {
-  it("attaches verified claims to the Hono context and proceeds to the handler", async () => {
-    const res = await callProtected(okVerifier, { Authorization: "Bearer good.token.value" });
+describe("cognitoAuth — happy path", () => {
+  it("attaches the verified user to context and proceeds to the handler", async () => {
+    const res = await callWithClaims({ sub: "user-123", token_use: "access" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, user: { sub: "user-123" } });
   });
 
-  it("strips extra claims not in the schema (only sub propagates to handlers)", async () => {
-    const verifier: TokenVerifier = {
-      verify: async () => ({
-        sub: "user-456",
-        client_id: "abc",
-        token_use: "access",
-        scope: "openid email profile",
-      }),
-    };
-    const res = await callProtected(verifier, { Authorization: "Bearer good.token.value" });
+  it("strips claims not in the schema (only sub propagates to handlers)", async () => {
+    const res = await callWithClaims({
+      sub: "user-456",
+      token_use: "access",
+      client_id: "abc",
+      iss: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xxx",
+      scope: "openid email profile",
+      auth_time: "1735689600",
+      exp: "1735693200",
+    });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, user: { sub: "user-456" } });
   });
