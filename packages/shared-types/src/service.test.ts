@@ -29,6 +29,7 @@ const baseFields = {
   createdAt: VALID_TIMESTAMP,
   updatedAt: VALID_TIMESTAMP,
   inputs: {},
+  currentJobId: null,
 };
 
 describe("ServiceNameSchema", () => {
@@ -158,6 +159,34 @@ describe("ServiceSchema variants", () => {
     const result = ServicePendingSchema.safeParse({
       ...baseFields,
       ownerId: "not-a-uuid",
+      status: "pending",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts currentJobId as a uuid (provisioning state)", () => {
+    const result = ServiceProvisioningSchema.safeParse({
+      ...baseFields,
+      status: "provisioning",
+      jobId: VALID_JOB_ID,
+      currentJobId: VALID_JOB_ID,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects currentJobId when missing entirely (must be present + null in non-provisioning)", () => {
+    const { currentJobId: _omitted, ...withoutCurrentJobId } = baseFields;
+    const result = ServicePendingSchema.safeParse({
+      ...withoutCurrentJobId,
+      status: "pending",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects currentJobId when not a uuid", () => {
+    const result = ServicePendingSchema.safeParse({
+      ...baseFields,
+      currentJobId: "not-a-uuid",
       status: "pending",
     });
     expect(result.success).toBe(false);

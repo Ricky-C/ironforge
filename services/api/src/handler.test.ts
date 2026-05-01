@@ -23,6 +23,7 @@ const sampleService = (overrides: Record<string, unknown> = {}) => ({
   createdAt: TIMESTAMP,
   updatedAt: TIMESTAMP,
   inputs: {},
+  currentJobId: null,
   status: "pending" as const,
   ...overrides,
 });

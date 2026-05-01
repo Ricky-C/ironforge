@@ -45,6 +45,14 @@ const ServiceInputsSchema = z.record(z.string(), z.unknown());
 
 // Common fields across all Service status variants. Variants extend this
 // with the literal `status` discriminator and any state-specific fields.
+//
+// `currentJobId` points at the active provisioning Job when the Service
+// is in `provisioning`. It's null in every other status (no active Job)
+// and serves the one-active-Job invariant: re-provisioning later
+// (live → provisioning → live) needs to know not just "is a Job
+// running?" (status answers that) but "which Job?" — without scanning.
+// See docs/data-model.md § Workflow → DynamoDB write contract for the
+// conditional-write protocol that protects state transitions.
 const ServiceBaseSchema = z.object({
   id: z.string().uuid(),
   name: ServiceNameSchema,
@@ -53,6 +61,7 @@ const ServiceBaseSchema = z.object({
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
   inputs: ServiceInputsSchema,
+  currentJobId: z.string().uuid().nullable(),
 });
 
 // State-specific fields are populated by the provisioning workflow;
