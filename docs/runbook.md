@@ -359,6 +359,247 @@ Sometimes the issue is local cache, not remote state. `rm -rf .terraform .terraf
 
 ---
 
+## 5. GitHub org + App registration
+
+### Symptom
+
+Either:
+
+- First-time Ironforge install: no GitHub org exists yet to hold provisioned repos, no GitHub App exists yet for the platform.
+- Recovery: existing App private key compromised and the App needs full re-registration (rare — usually rotation alone is enough; see § 7).
+
+### Diagnosis
+
+```bash
+# Does the org exist?
+curl -s "https://api.github.com/orgs/<org-name>" | jq .login
+# expect: "<org-name>" — null/error means org doesn't exist
+
+# Does the App exist? (visit settings page in browser; no clean CLI way without auth)
+# https://github.com/settings/apps for personal-account-owned Apps
+# https://github.com/organizations/<org-name>/settings/apps for org-owned
+
+# Is the App installed in the org?
+# https://github.com/organizations/<org-name>/settings/installations
+```
+
+### Recovery
+
+#### A. Create the GitHub org (skip if it exists)
+
+1. Visit https://github.com/account/organizations/new.
+2. Plan: **Free** (sufficient).
+3. Org name: pick aligned with `ironforge-svc-*` naming convention. Suggestion: `ironforge-svc`.
+4. Owner: your personal GitHub account.
+5. After creation, **Settings → Member privileges**: Base permissions = None; Repository creation = Disabled for members. (The App is the principal that creates repos here, not org members.)
+6. **Settings → Actions → General**: Allow all actions and reusable workflows.
+
+#### B. Register the GitHub App
+
+1. Go to https://github.com/settings/apps/new (registers under your personal account — simpler than org-owned for single-operator).
+2. Name: `Ironforge Provisioner` (or similar; globally unique on github.com).
+3. Homepage URL: `https://ironforge.rickycaballero.com`.
+4. **Callback URL: empty** — we use installation tokens, not the OAuth user-authorization flow.
+5. **Setup URL: empty.**
+6. **Webhook: UNCHECKED.** No event-driven flow in Phase 1; this avoids managing a webhook secret.
+7. **Repository permissions:**
+   - Administration: Read and write
+   - Contents: Read and write
+   - Workflows: Read and write
+   - Metadata: Read (mandatory)
+   - Actions: Read
+   - Pull requests: Read and write
+8. **Organization permissions:**
+   - Administration: Read and write (required for `POST /orgs/{org}/repos` to create repos in the org)
+   - Members: No access
+9. **Account permissions:** all No access.
+10. **Where can this GitHub App be installed?** **Only on this account.**
+11. Click **Create GitHub App**.
+12. Note the **App ID** (top of the App's settings page; numeric, not secret).
+13. **Private keys → Generate a private key.** Downloads a `.pem`. Save to `~/.ironforge-secrets/<app>.<timestamp>.pem` with the directory at `chmod 700`.
+
+#### C. Install the App into the org
+
+1. App settings page → **Install App** (left sidebar).
+2. Click **Install** next to the org.
+3. **Repository access: All repositories.** (Provisioned repos don't exist yet; the App needs blanket access in the org so it can create + manage every future provisioned repo. The org's own scope is the security boundary.)
+4. After install, capture the **Installation ID** from the URL: `https://github.com/organizations/<org>/settings/installations/<INSTALLATION_ID>`.
+
+#### D. Capture identifiers
+
+Write to a temp file (e.g., `~/.ironforge-secrets/step1.txt`, `chmod 600`):
+
+| Field | Sensitivity | Where it'll go |
+|---|---|---|
+| Org name | Not secret | `infra/envs/shared/terraform.tfvars` (gitignored) |
+| App ID | Not secret | Same |
+| Installation ID | Not secret | Same |
+| `.pem` path | **Secret** | Stays on disk only until § 6 lands it in Secrets Manager |
+
+### Prevention
+
+- **Don't enable webhooks** unless and until there's a real event-driven flow to subscribe to.
+- **Don't grant org-level Members write or any account-level permissions** to the App.
+- **Don't commit the `.pem`.** Verify your `.gitignore` excludes `*.pem` before starting.
+- **Don't paste the `.pem` into chat, email, Slack, or any GitHub Issue.**
+- **Don't lose the App ID + Installation ID.** They're not secret but are needed for every API call. The App settings page shows the App ID; the install page URL shows the Installation ID — see § 5 Diagnosis above to recover them.
+
+---
+
+## 6. GitHub App private key — initial install
+
+### Symptom
+
+GitHub App registered (§ 5 complete), `.pem` on local disk, ready to land in AWS Secrets Manager. The Terraform module `infra/modules/github-app-secret/` declares the CMK, alias, secret resource (metadata), and SSM params — but the secret value itself never flows through Terraform per `feedback_secrets_via_import.md`.
+
+### Diagnosis
+
+Confirm pre-conditions before starting:
+
+```bash
+# CMK alias not yet in AWS (we're about to create it)
+aws kms describe-key --key-id alias/ironforge-github-app-private-key 2>&1 | grep -E "(NotFound|Enabled)"
+# expect on first install: NotFoundException
+
+# Secret not yet in AWS
+aws secretsmanager describe-secret --secret-id ironforge/github-app/private-key 2>&1 | grep -E "(ResourceNotFound|ARN)"
+# expect: ResourceNotFoundException
+
+# .pem accessible and readable
+ls -la ~/.ironforge-secrets/*.pem
+
+# Branch is checked out with the github-app-secret module wired into envs/shared
+cd infra/envs/shared
+terraform init -backend-config=backend.hcl
+terraform validate
+```
+
+If the alias OR secret already exists from a prior failed attempt, don't proceed — figure out the prior state first (likely partial bootstrap; either complete the import or destroy + restart).
+
+### Recovery
+
+The bootstrap procedure. Run from `infra/envs/shared/` with admin AWS credentials.
+
+```bash
+cd infra/envs/shared
+```
+
+1. **Plan** — confirm what will be created (CMK, alias, secret resource, three SSM params).
+
+```bash
+terraform plan
+```
+
+2. **Targeted apply** — create everything *except* the secret resource. The secret is created out-of-band in step 4 with the actual `.pem` value, then imported in step 5.
+
+```bash
+terraform apply -target=module.github_app_secret.aws_kms_key.github_app -target=module.github_app_secret.aws_kms_alias.github_app -target=module.github_app_secret.aws_ssm_parameter.org_name -target=module.github_app_secret.aws_ssm_parameter.app_id -target=module.github_app_secret.aws_ssm_parameter.installation_id
+```
+
+3. **Verify CMK exists.**
+
+```bash
+aws kms describe-key --key-id alias/ironforge-github-app-private-key --query 'KeyMetadata.{State:KeyState, Arn:Arn, RotationEnabled:KeyRotationStatus}'
+```
+
+Expected: `State: Enabled`, `RotationEnabled: ...` (key rotation is enabled).
+
+4. **Manually create the secret** with the `.pem` value, encrypted with the CMK.
+
+```bash
+aws secretsmanager create-secret --name ironforge/github-app/private-key --description "Ironforge GitHub App private key (.pem) for repo creation in the org. Value managed out-of-band; rotate via update-secret." --secret-string file://${HOME}/.ironforge-secrets/<filename>.pem --kms-key-id alias/ironforge-github-app-private-key --tags Key=ironforge-managed,Value=true Key=ironforge-component,Value=github-app-auth Key=ironforge-environment,Value=shared
+```
+
+Capture the returned ARN.
+
+5. **Terraform import** the secret resource against the now-existing AWS secret.
+
+```bash
+terraform import 'module.github_app_secret.aws_secretsmanager_secret.github_app_private_key' ironforge/github-app/private-key
+```
+
+6. **Verification gate** — the load-bearing step.
+
+```bash
+terraform plan
+```
+
+Expected: `No changes. Your infrastructure matches the configuration.` If the plan shows changes (description mismatch, tag drift, recovery_window mismatch, etc.), **fix the module to match the imported state** before proceeding. Do NOT apply changes that would alter the imported secret's metadata mid-bootstrap.
+
+7. **Shred the local `.pem`.**
+
+```bash
+shred -u ~/.ironforge-secrets/<filename>.pem
+```
+
+(`shred -u` overwrites then unlinks. On macOS, use `srm` from the homebrew `secure-delete` package, or `rm -P` if available. If neither works, plain `rm` plus a full-disk encryption assumption is acceptable for a portfolio project but document the deviation.)
+
+8. **Push the branch + open the PR + merge.** CI's `infra-apply` runs against the now-imported state; expected output is no-op against the secret resource.
+
+### Prevention
+
+- **Don't `aws_secretsmanager_secret_version` ever for this secret.** Adding it routes the value through Terraform state. The module deliberately omits it; keep it omitted.
+- **Don't put the `.pem` content into `terraform.tfvars`** (or any tfvars file). The whole point of the import-based pattern is that the value never enters Terraform.
+- **Don't skip the verification-gate plan in step 6.** Static analysis can miss drift between module config and imported state; the empty plan is the only proof of bootstrap correctness.
+- **Don't apply without `-target` in step 2.** Without `-target`, Terraform will try to create the `aws_secretsmanager_secret` resource itself, succeeding with an empty secret — which then collides with the manual create in step 4.
+- **Rotation uses § 7, not this procedure.** Re-running this procedure on a key-already-installed leads to ambiguous state.
+
+---
+
+## 7. GitHub App private key rotation
+
+### Symptom
+
+Any of:
+
+- Periodic rotation (target cadence: every 12 months, aligned with the CMK's annual rotation).
+- Suspected compromise of the private key (key found in a leaked file, accidentally committed, laptop stolen, etc.) — emergency rotation.
+- GitHub forced rotation (rare; GitHub announces an issuer-key incident or the App is migrated).
+
+### Diagnosis
+
+```bash
+# Confirm the secret currently in Secrets Manager
+aws secretsmanager describe-secret --secret-id ironforge/github-app/private-key --query '{ARN:ARN, KmsKeyId:KmsKeyId, LastChanged:LastChangedDate, LastAccessed:LastAccessedDate}'
+
+# What does the consuming Lambda last successfully decrypt? (When that role lands.)
+# Future-Phase-1 diagnosis: check CloudWatch metrics on
+# `secretsmanager:GetSecretValue` failures or KMS Decrypt denies.
+```
+
+### Recovery
+
+1. **Generate a new private key in GitHub.** App settings page → **Private keys → Generate a private key**. Saves a new `.pem` to `~/.ironforge-secrets/<app>.<timestamp>.pem`.
+
+2. **Update the secret value via CLI.** Terraform never sees the new value — same discipline as the initial install.
+
+```bash
+aws secretsmanager update-secret --secret-id ironforge/github-app/private-key --secret-string file://${HOME}/.ironforge-secrets/<new-filename>.pem
+```
+
+This creates a new `AWSCURRENT` version while preserving the prior one as `AWSPREVIOUS` in case immediate rollback is needed. Consumers calling `GetSecretValue` without a version stage receive the new current.
+
+3. **(Optional) Delete the old GitHub-side private key.** App settings → Private keys → next to the old key, **Delete**. Important for emergency rotation; less critical for periodic. GitHub allows multiple active keys per App; deleting the old one is the actual revocation.
+
+4. **Verify a consuming Lambda can still mint installation tokens.** When that Lambda exists (Phase 1+), trigger a workflow that exercises the path. For now (Phase 1 pre-Lambda), no operational verification beyond `aws secretsmanager get-secret-value` succeeding for an admin principal.
+
+5. **Shred the new local `.pem`.**
+
+```bash
+shred -u ~/.ironforge-secrets/<new-filename>.pem
+```
+
+6. **Document the rotation.** Add an entry to a rotation log (TODO: create `docs/operations-log.md` when this happens for the first time) with: date, reason (periodic / compromise / forced), any anomalies. Future-you investigating an incident months later benefits from the trail.
+
+### Prevention
+
+- **Schedule the next rotation.** Use `/schedule` to set a 12-month reminder when this rotation completes.
+- **Never re-use a `.pem` across rotations.** Each rotation gets a fresh GitHub-generated key.
+- **Don't run `terraform apply` as part of rotation.** The Terraform module manages metadata; the value lives in Secrets Manager. There's nothing for Terraform to do during rotation.
+- **If the consuming Lambda fails after rotation, suspect IAM, not Terraform.** Most likely cause: the workflow Lambda's role has stale credentials cached, or `kms:Decrypt` permission has drifted. Force a Lambda concurrent execution to refresh the role's KMS grants.
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.

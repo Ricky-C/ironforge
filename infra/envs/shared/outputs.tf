@@ -87,3 +87,18 @@ output "cloudtrail_kms_key_arn" {
   description = "ARN of the CMK encrypting CloudTrail logs (both S3 bucket and CWL log group). Consumers must scope grants via the appropriate kms:EncryptionContext condition."
   value       = module.cloudtrail.kms_key_arn
 }
+
+output "github_app_secret_arn" {
+  description = "ARN of the GitHub App private key Secrets Manager entry. Workflow Lambda IAM grants for secretsmanager:GetSecretValue MUST scope to this exact ARN."
+  value       = module.github_app_secret.secret_arn
+}
+
+output "github_app_kms_key_arn" {
+  description = "ARN of the CMK encrypting the GitHub App private key. Workflow Lambda IAM grants for kms:Decrypt MUST scope to this ARN AND condition on kms:EncryptionContext:SecretARN matching github_app_secret_arn."
+  value       = module.github_app_secret.kms_key_arn
+}
+
+output "github_app_ssm_parameter_path" {
+  description = "Path prefix for tenant-specific GitHub App SSM parameters (/ironforge/github-app). Workflow Lambda IAM grants for ssm:GetParameter scope to this path."
+  value       = module.github_app_secret.ssm_parameter_path
+}

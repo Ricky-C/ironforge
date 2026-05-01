@@ -96,6 +96,9 @@ jobs:
         working-directory: infra/envs/${{ matrix.composition }}
         env:
           TF_VAR_alert_email: ${{ secrets.TF_VAR_ALERT_EMAIL }}
+          TF_VAR_github_org_name: ${{ secrets.TF_VAR_GITHUB_ORG_NAME }}
+          TF_VAR_github_app_id: ${{ secrets.TF_VAR_GITHUB_APP_ID }}
+          TF_VAR_github_app_installation_id: ${{ secrets.TF_VAR_GITHUB_APP_INSTALLATION_ID }}
         run: |
           terraform plan -input=false -no-color -out=tfplan
           terraform show -no-color tfplan > plan.txt
