@@ -634,8 +634,13 @@ Repo → **Settings** → **Secrets and variables** → **Actions** → **New re
 | `AWS_OIDC_APPLY_ROLE_ARN` | `arn:aws:iam::<account-id>:role/ironforge-ci-apply` |
 | `AWS_ACCOUNT_ID` | `<your-aws-account-id>` |
 | `TF_VAR_ALERT_EMAIL` | `<your alert recipient email>` |
+| `TF_VAR_GITHUB_ORG_NAME` | `<your GitHub org for provisioned repos, e.g. ironforge-svc>` |
+| `TF_VAR_GITHUB_APP_ID` | `<your GitHub App's numeric App ID>` |
+| `TF_VAR_GITHUB_APP_INSTALLATION_ID` | `<the App's installation ID in the org>` |
 
 `AWS_ACCOUNT_ID` is technically not a secret, but storing it as a secret keeps it consistent with the env-specific-identifiers convention. The plan/apply role ARNs include the account ID; storing those as secrets prevents the account ID from leaking into workflow logs even indirectly.
+
+The three `TF_VAR_GITHUB_*` secrets are not secrets in the cryptographic sense — App IDs and Installation IDs are visible in GitHub URLs. Storing them as repo secrets follows the env-specific-identifiers convention (the App ID for *this* Ironforge install lives outside source) and lets the workflows pass them in via `TF_VAR_*` env vars without a per-run UI prompt.
 
 ## Verification
 
