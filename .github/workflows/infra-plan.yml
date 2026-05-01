@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "infra/**"
+      - "services/api/**"
       - "services/cost-reporter/**"
       - ".github/workflows/infra-plan.yml"
 
@@ -64,6 +65,11 @@ jobs:
         # Required for shared composition's data.archive_file to find dist/index.js.
         if: matrix.composition == 'shared'
         run: pnpm --filter @ironforge/cost-reporter build
+
+      - name: Build api Lambda
+        # Required for dev/prod composition's data.archive_file to find dist/handler.js.
+        if: matrix.composition == 'dev' || matrix.composition == 'prod'
+        run: pnpm --filter @ironforge/api build
 
       - name: Configure AWS credentials (OIDC plan role)
         uses: aws-actions/configure-aws-credentials@v6
