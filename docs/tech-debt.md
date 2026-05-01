@@ -183,6 +183,20 @@ Each entry has:
 - **Action:** For each section, expand into prose covering: precise symptom strings to grep for, the AWS CLI commands with explanatory context (not just the command), the rollback path if recovery fails, and a "things you might be tempted to do but shouldn't" warning block. Add a top-level decision tree: "I'm seeing X, go to section Y."
 - **Where:** `docs/runbook.md`.
 
+### Build / deployment
+
+#### Migrate Lambda code deployment from `archive_file` to S3-hosted sha-pinned artifacts
+
+- **What:** PR-B.2's `infra/modules/lambda` zips the function source via the `archive_file` data source at `terraform plan` time. CI runs `pnpm -F @ironforge/<service> build` before `terraform plan`, then Terraform packages the resulting `dist/` directory and creates the function with an inline filename. Simple and self-contained but couples the build to the apply pipeline.
+- **Why deferred:** archive_file works for MVP (single Lambda, small bundle, straightforward CI). Migrating to S3-hosted artifacts adds a build/upload pipeline, sha-pinning logic, and an artifacts-bucket dependency before any of those costs are paying for themselves. Matches PR-B.2's "ship the boring path" trade.
+- **When to revisit:** Whichever of these comes first:
+  1. **Function zip exceeds 30MB.** Lambda's `filename`-based deploys are capped at 50MB; 30MB is the early-warning trigger before the cap forces the migration in panic mode. (Current API bundle: ~600KB pre-zip; far away from this limit.)
+  2. **Release-immutability becomes a requirement.** Once the apply pipeline needs sha-pinned releases (e.g., for one-click rollback to a previous Lambda version, or audit-trail evidence that "version X was deployed at time Y"), inline filename deploys stop being good enough. archive_file's hash changes on every source change but the artifact itself isn't independently addressable.
+  3. **Artifacts cross-env bucket policy redesign lands** (see § "Re-enable artifacts cross-env bucket policy after refresh-cascade redesign"). The same redesign session is the right moment to flip Lambda artifact hosting onto the same bucket — coordinated change, single review surface.
+- **Action:** CI builds → uploads to `s3://ironforge-artifacts/<env>/lambda/<function>/<sha>.zip` → Terraform consumes via `s3_bucket` + `s3_key` (computed from a sha file in the build, OR passed as a tfvar from the workflow). Add the upload step to `.github/workflows/infra-apply.yml` between the `pnpm build` step and `terraform plan`. Keep archive_file available as the local-dev path for engineers running terraform locally without CI; conditional on a tfvar (e.g., `lambda_artifact_source = "local" | "s3"`).
+- **Estimated effort:** 4-8 hours including CI workflow update, Terraform refactor, and one full apply cycle to verify the new pipeline.
+- **Where:** `infra/modules/lambda/main.tf` (the `archive_file` data source), `.github/workflows/infra-apply.yml` (the build + upload step), `infra/envs/<env>/main.tf` (the api_lambda module call's `source_dir` argument is replaced or supplemented by `s3_bucket`/`s3_key`).
+
 ### Lint / type discipline
 
 #### Enforce discriminated-union exhaustiveness via `@typescript-eslint/switch-exhaustiveness-check`
