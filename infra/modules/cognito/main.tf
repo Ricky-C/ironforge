@@ -1,21 +1,26 @@
 # SECURITY NOTE — Per-environment isolation depends on application-layer
-# JWT audience verification.
+# JWT verification of the `client_id` claim on access tokens.
 #
 # This module creates ONE shared Cognito user pool with multiple app
-# clients (one per env). Tokens issued by Cognito carry an `aud` claim
-# naming the client_id that requested them. The Next.js app's JWT
-# verifier MUST validate `aud` matches the expected client ID for the
-# env it's serving — without this check, a token issued via the dev
-# client will authenticate against the prod app.
+# clients (one per env). Per ADR-005, the shared-resource default uses
+# audience-claim verification for cryptographic env isolation. For
+# Cognito ACCESS tokens, the audience-equivalent claim is `client_id`
+# (the `aud` claim is present only on ID tokens).
 #
-# When the auth middleware lands (Phase 1), confirm:
-#   1. JWT signature verified against Cognito's JWKS endpoint
-#   2. `aud` claim equals the env's expected client_id (CRITICAL)
-#   3. `iss` claim equals the user pool issuer URL
-#   4. `token_use` claim is "access" or "id" as expected
+# Token-type policy: the portal BFF MUST forward Cognito ACCESS tokens
+# (not ID tokens) to API Gateway. With NextAuth/Auth.js this requires
+# explicit JWT-callback wiring to expose `account.access_token` on the
+# session.
+#
+# The API's auth middleware MUST verify:
+#   1. JWT signature against Cognito's JWKS endpoint
+#   2. `iss` claim equals the user pool issuer URL
+#   3. `client_id` claim equals the env's expected client_id (CRITICAL —
+#      this is what isolates dev tokens from prod APIs; see ADR-005)
+#   4. `token_use` claim equals "access"
 #   5. `exp` claim hasn't passed
 #
-# If `aud` verification is skipped or buggy, env isolation is broken.
+# If `client_id` verification is skipped or buggy, env isolation is broken.
 # This is the trade-off accepted in exchange for a single shared pool.
 
 data "aws_caller_identity" "current" {}
