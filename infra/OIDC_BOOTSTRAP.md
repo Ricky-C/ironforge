@@ -268,6 +268,7 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "states:Describe*",
         "states:List*",
         "secretsmanager:Describe*",
+        "secretsmanager:GetResourcePolicy",
         "secretsmanager:List*",
         "ssm:Describe*",
         "ssm:Get*",
