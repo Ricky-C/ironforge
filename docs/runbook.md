@@ -452,33 +452,45 @@ Write to a temp file (e.g., `~/.ironforge-secrets/step1.txt`, `chmod 600`):
 
 GitHub App registered (§ 5 complete), `.pem` on local disk, ready to land in AWS Secrets Manager. The Terraform module `infra/modules/github-app-secret/` declares the CMK, alias, secret resource (metadata), and SSM params — but the secret value itself never flows through Terraform per `feedback_secrets_via_import.md`.
 
+Two valid bootstrap paths cover the two states the AWS-side resources can be in:
+
+- **Path A (canonical) — fresh install, nothing in AWS yet.** Apply the CMK + alias + SSM params via targeted apply, then `aws secretsmanager create-secret` with the `.pem`, then `terraform import` the secret. Discipline-pure: Terraform never sees the value at any point.
+- **Path B (recovery) — CI ran a full apply and created an empty secret first.** Happens when the github-app-secret module merges and `infra-apply` runs against shared composition end-to-end before the operator has a chance to do Path A. Same security property (value never in Terraform state), reached via `aws secretsmanager put-secret-value` against the already-existing empty secret resource.
+
+Both paths achieve "the secret value never flows through tfvars/state/plan." Path A is preferred when achievable; Path B is the inevitable result of a normal merge-and-apply flow when Path A wasn't preempted.
+
 ### Diagnosis
 
-Confirm pre-conditions before starting:
+Determine which path applies:
 
 ```bash
-# CMK alias not yet in AWS (we're about to create it)
+# Does the CMK alias exist in AWS yet?
 aws kms describe-key --key-id alias/ironforge-github-app-private-key 2>&1 | grep -E "(NotFound|Enabled)"
-# expect on first install: NotFoundException
 
-# Secret not yet in AWS
+# Does the secret resource exist?
 aws secretsmanager describe-secret --secret-id ironforge/github-app/private-key 2>&1 | grep -E "(ResourceNotFound|ARN)"
-# expect: ResourceNotFoundException
 
-# .pem accessible and readable
+# If the secret exists, does it have a current version?
+aws secretsmanager list-secret-version-ids --secret-id ironforge/github-app/private-key 2>&1 | grep -E "(VersionId|ResourceNotFound)"
+
+# .pem accessible
 ls -la ~/.ironforge-secrets/*.pem
-
-# Branch is checked out with the github-app-secret module wired into envs/shared
-cd infra/envs/shared
-terraform init -backend-config=backend.hcl
-terraform validate
 ```
 
-If the alias OR secret already exists from a prior failed attempt, don't proceed — figure out the prior state first (likely partial bootstrap; either complete the import or destroy + restart).
+Decision matrix:
 
-### Recovery
+| CMK alias | Secret exists | Secret has version | Path |
+|---|---|---|---|
+| NotFound | NotFound | n/a | **A — fresh install** |
+| Enabled | NotFound | n/a | **A — partial state**, complete from step 4 |
+| Enabled | Yes | No | **B — empty secret from CI apply**, populate via put-secret-value |
+| Enabled | Yes | Yes | Already bootstrapped — see § 7 if rotating |
 
-The bootstrap procedure. Run from `infra/envs/shared/` with admin AWS credentials.
+If any state is unexpected (e.g., `NotFound` on the CMK but secret exists), don't proceed — figure out the prior state first.
+
+### Recovery — Path A (canonical, fresh install)
+
+Run from `infra/envs/shared/` with admin AWS credentials. Discipline-pure: Terraform never holds the value.
 
 ```bash
 cd infra/envs/shared
@@ -536,13 +548,52 @@ shred -u ~/.ironforge-secrets/<filename>.pem
 
 8. **Push the branch + open the PR + merge.** CI's `infra-apply` runs against the now-imported state; expected output is no-op against the secret resource.
 
+### Recovery — Path B (CI-bootstrapped, populate empty secret)
+
+Used when CI's `infra-apply` ran end-to-end after the github-app-secret module merged. Terraform created the empty `aws_secretsmanager_secret` resource (no version) — the value just needs to be added.
+
+This is the path used during PR #41's initial deployment (2026-04-30): the operator merged before doing the targeted-apply dance, so CI created the empty secret first.
+
+1. **Verify the secret exists with no current version.**
+
+```bash
+aws secretsmanager describe-secret --secret-id ironforge/github-app/private-key --query '{ARN:ARN, KmsKeyId:KmsKeyId, VersionStages:VersionIdsToStages}'
+```
+
+Expected: `ARN` populated, `KmsKeyId` is the github-app CMK ARN, `VersionStages` is empty/null.
+
+2. **Add the first version with the `.pem` value.**
+
+```bash
+aws secretsmanager put-secret-value --secret-id ironforge/github-app/private-key --secret-string file://${HOME}/.ironforge-secrets/<filename>.pem
+```
+
+Output includes the new `VersionId`; AWS sets it as `AWSCURRENT` automatically since this is the first version.
+
+3. **Verify the version is now `AWSCURRENT`.**
+
+```bash
+aws secretsmanager describe-secret --secret-id ironforge/github-app/private-key --query 'VersionIdsToStages'
+```
+
+Expected: one VersionId mapped to `["AWSCURRENT"]`.
+
+4. **Shred the local `.pem`** (same as Path A step 7).
+
+```bash
+shred -u ~/.ironforge-secrets/<filename>.pem
+```
+
+Path B does NOT involve `terraform plan`/`apply` — Terraform manages the secret's metadata only, and its view of the resource is unchanged by `put-secret-value`. The next CI run will plan+apply with `No changes` for the secret.
+
 ### Prevention
 
-- **Don't `aws_secretsmanager_secret_version` ever for this secret.** Adding it routes the value through Terraform state. The module deliberately omits it; keep it omitted.
-- **Don't put the `.pem` content into `terraform.tfvars`** (or any tfvars file). The whole point of the import-based pattern is that the value never enters Terraform.
-- **Don't skip the verification-gate plan in step 6.** Static analysis can miss drift between module config and imported state; the empty plan is the only proof of bootstrap correctness.
-- **Don't apply without `-target` in step 2.** Without `-target`, Terraform will try to create the `aws_secretsmanager_secret` resource itself, succeeding with an empty secret — which then collides with the manual create in step 4.
-- **Rotation uses § 7, not this procedure.** Re-running this procedure on a key-already-installed leads to ambiguous state.
+- **Don't add `aws_secretsmanager_secret_version` to the module ever.** Adding it routes the value through Terraform state. The module deliberately omits it; keep it omitted. This is the load-bearing invariant that makes both Path A and Path B safe.
+- **Don't put the `.pem` content into `terraform.tfvars`** (or any tfvars file). Both bootstrap paths exist precisely so the value never enters Terraform.
+- **For Path A, don't skip the verification-gate `terraform plan` in step 6.** Static analysis can miss drift between module config and imported state; the empty plan is the only proof of bootstrap correctness.
+- **For Path A, don't apply without `-target` in step 2.** Without `-target`, Terraform creates an empty `aws_secretsmanager_secret` itself — which is actually fine (it puts you on Path B), but defeats the purpose of choosing Path A in the first place.
+- **For Path B, don't use `aws secretsmanager create-secret` after the empty resource exists.** AWS rejects with `ResourceExistsException`. Use `put-secret-value`.
+- **Rotation uses § 7, not this procedure.** Re-running this procedure on a key-already-installed (current `AWSCURRENT` version exists) leads to ambiguous state.
 
 ---
 
