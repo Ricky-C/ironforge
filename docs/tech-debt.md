@@ -183,6 +183,16 @@ Each entry has:
 - **Action:** For each section, expand into prose covering: precise symptom strings to grep for, the AWS CLI commands with explanatory context (not just the command), the rollback path if recovery fails, and a "things you might be tempted to do but shouldn't" warning block. Add a top-level decision tree: "I'm seeing X, go to section Y."
 - **Where:** `docs/runbook.md`.
 
+### Lint / type discipline
+
+#### Enforce discriminated-union exhaustiveness via `@typescript-eslint/switch-exhaustiveness-check`
+
+- **What:** `docs/data-model.md` § "Discriminated-union exhaustiveness" mandates that every `switch` on a discriminated-union discriminator (e.g., `Service.status`) ends with a `default: { const _exhaustive: never = service; throw ... }` so future variant additions fail at compile time. This is currently a documented convention only — there is no automated enforcement. A handler author who reaches for `if`/`else if` instead of `switch`, or who omits the `never`-typed default, will silently degrade the type-level guarantee.
+- **Why deferred:** PR-B.1 introduces the convention but does not yet contain any switch on a discriminated union (no handlers in PR-B.1). Adding ESLint config in PR-B.1 with no rule violations to fix is configuration-without-purpose; adding it inside PR-B.3 alongside the first switch conflates "wire the lint" with "implement the handlers" in one review surface.
+- **When to revisit:** Whichever of these comes first — (a) the first ESLint configuration commit on the repo (currently no `.eslintrc` / `eslint.config.{js,mjs}` exists at the root), or (b) the first PR that adds a `switch` on a discriminated-union type. PR-B.3 will hit (b) almost certainly. Do not let either trigger pass without configuring the rule.
+- **Action:** Add `@typescript-eslint/switch-exhaustiveness-check` at `error` severity in the root ESLint config covering all TypeScript packages (`apps/web`, `services/*`, `packages/*`). The rule is part of `@typescript-eslint/eslint-plugin`; it requires type-aware linting (`parserOptions.project` pointing at each package's `tsconfig.json` or a root `tsconfig` referencing them). Verify the rule fires on a deliberately-incomplete switch over `Service.status` as a smoke test before merging the config. Estimated effort: ~15 minutes including the smoke test.
+- **Where:** Root ESLint config (path TBD — likely `eslint.config.mjs` for flat-config). Reference from `docs/data-model.md` § "Discriminated-union exhaustiveness" once enabled (replace the "must use" prose with "lint-enforced via …").
+
 ### Diagnostics breadcrumbs
 
 These aren't deferred work — they're institutional knowledge captured at the point the lesson was learned, so future-Ricky troubleshooting a similar failure benefits from the breadcrumb. Adapted from the standard entry shape: Symptom / Cause / How to diagnose.
