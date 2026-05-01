@@ -10,13 +10,13 @@ import {
   type Service,
   type ServiceListCursor,
 } from "@ironforge/shared-types";
+import { docClient, getTableName } from "@ironforge/shared-utils";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { flattenError } from "zod";
 
 import type { AppEnv } from "../env.js";
 import { decodeServiceListCursor, encodeServiceListCursor } from "../lib/cursor.js";
-import { docClient, getTableName } from "../lib/dynamodb.js";
 
 export const servicesRoutes = new Hono<AppEnv>();
 

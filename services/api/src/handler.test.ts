@@ -1,9 +1,9 @@
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { docClient } from "@ironforge/shared-utils";
 import { mockClient } from "aws-sdk-client-mock";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { decodeServiceListCursor } from "./lib/cursor.js";
-import { docClient } from "./lib/dynamodb.js";
 import type { AuthEnv } from "./middleware/auth.js";
 import { createApp } from "./handler.js";
 
