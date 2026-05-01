@@ -43,6 +43,18 @@ resource "aws_dynamodb_table" "ironforge" {
     enabled = true
   }
 
+  # TTL drives auto-eviction of IdempotencyRecord rows (PK = IDEMPOTENCY#<hash>)
+  # 24 h after their write time — see docs/data-model.md § "Workflow → DynamoDB
+  # write contract" and packages/shared-types/src/idempotency.ts. The attribute
+  # name is shared by every entity that opts in; non-idempotency entities
+  # simply never set it and are not subject to expiry. Eviction is best-effort
+  # (typically <48 h after expiresAt); do not rely on it for security-sensitive
+  # eviction.
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
   # AWS-managed encryption (alias/aws/dynamodb). Per ADR-003, CMK is reserved
   # for content with specific access-control or compliance needs. Single-tenant
   # operational data accessed only by Ironforge IAM principals doesn't qualify.
