@@ -1,0 +1,14 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Defensive — no JS toolchain in this template, but if you add one later
+# these are common artifacts you don't want committed.
+node_modules/
+.env
+.env.local
