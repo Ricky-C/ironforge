@@ -62,6 +62,14 @@ resource "aws_ecr_repository" "run_terraform" {
 # Bounds storage cost + repo scan time without losing rollback
 # capability. Tag-based filtering matches every image (we use immutable
 # digest references at the Lambda; tags are convenience only).
+#
+# Rollback window bounded by image_retention_count × deploy frequency.
+# At 10 retained images and 1 deploy/day, ~10 days of rollback
+# capability. Older image references in deployed Lambdas survive on
+# AWS's image cache (per-region cache backing Lambda image pulls), but
+# any cold start that needs to re-pull a deleted image will fail.
+# Bumping image_retention_count is the lever for longer rollback
+# windows; cost is ~$0.10/GB/month per retained image (~200MB each).
 resource "aws_ecr_lifecycle_policy" "run_terraform" {
   repository = aws_ecr_repository.run_terraform.name
 

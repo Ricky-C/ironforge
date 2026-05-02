@@ -165,7 +165,7 @@ The migration: switch run-terraform's deploy artifact from zip+layer to a Docker
 
 1. **Smallest architectural delta.** Container image is a binary delivery change. Every other ADR-009 decision (execution model, IAM derivation, state storage, error handling) survives unchanged. CodeBuild would require a different SFN state shape (`.waitForTaskToken`), a separate IAM role, source delivery from Lambda to S3 to CodeBuild, and 1-2 weeks of migration per the ADR's own estimate.
 
-2. **The triggers ADR-009 listed for CodeBuild were timing-based, not size-based.** The four reconsideration triggers in § "When to reconsider" focused on "single apply exceeds 8 minutes," "new template's nominal apply exceeds 5 minutes," etc. — all timing constraints. Container Lambda solves the size constraint while keeping the timing constraints addressable by the same ADR-009 triggers. CodeBuild remains the documented response IF a timing trigger fires later.
+2. **ADR-009 listed CodeBuild as the response to the binary-footprint trigger but didn't enumerate alternatives.** Container image Lambda is an alternative the original ADR didn't consider — it solves the same constraint with a smaller architectural delta. The original ADR's framing wasn't wrong; it was incomplete. CodeBuild remains the documented response if container Lambda's own constraints are exceeded (see new triggers below).
 
 3. **Container Lambda is well-trodden.** AWS provides official base images, ECR is well-understood, the Docker build pattern is documented. The ~half-day setup cost is bounded.
 
@@ -183,8 +183,8 @@ These costs are bounded compared to CodeBuild's 1-2 week migration. They are rea
 
 - **Image size approaches 5GB.** AWS allows up to 10GB but image pulls slow significantly past 5GB cold-start cost becomes painful. Migrate to CodeBuild (which has no image size constraint).
 - **Cold start cost becomes user-visible.** If wizard UX surfaces the per-Lambda cold-start as a perceptible pause, the cumulative ~2-5s × N-Lambda overhead matters. CodeBuild's per-build container is also slow but doesn't cumulatively pay across workflow steps.
-- **Multiple workflow Lambdas need containers.** If PR-C.7+ also need container-image delivery (e.g., wait-for-cloudfront with a custom polling tool), the operational surface (multiple ECR repos, multiple Docker builds in CI) starts to favor consolidating onto CodeBuild's per-build container model.
-- **Image-build-time exceeds CI's tolerance.** Container builds add minutes to every CI run; CodeBuild's separate compute substrate runs the heavy work outside the merge gate.
+- **2+ workflow Lambdas require container-image delivery.** If PR-C.7+ also need container-image delivery (e.g., wait-for-cloudfront with a custom polling tool), the operational surface (multiple ECR repos, multiple Docker builds in CI, multiple lifecycle policies) becomes substantial. At that point evaluate whether CodeBuild's unified compute substrate is operationally simpler than N container Lambdas — not because CodeBuild "consolidates" by some inherent property, but because one CodeBuild project can run different terraform invocations vs maintaining N parallel container-build pipelines.
+- **Image build time exceeds 5 minutes per CI run.** Current build is ~90s (download + verify terraform + provider + docker build + push). If provider growth, additional binary tools, or lockfile resolution push past 5 minutes, CodeBuild's separate compute substrate runs the heavy work outside the merge gate.
 
 When any of these fires, the ADR's original CodeBuild migration plan applies — the patterns from PR-C.6 (template-derived IAM, dedicated tfstate bucket, error taxonomy) survive the migration unchanged.
 

@@ -19,6 +19,13 @@
 # All version pinning lives in build-image.sh; this Dockerfile just
 # stages whatever the script provides.
 
+# Floating tag (not digest-pinned) so security updates to the base
+# image land automatically. Trade-off: builds aren't byte-reproducible
+# across base image updates — same source produces a different image
+# if AWS publishes a new nodejs:22 patch version. Acceptable because
+# the immutable image digest captured at push time IS what the Lambda
+# function references; deploy reproducibility lives at the deploy
+# layer, not the build layer.
 FROM public.ecr.aws/lambda/nodejs:22
 
 # Terraform binary at /opt/bin (added to PATH by Lambda runtime).
