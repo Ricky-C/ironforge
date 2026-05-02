@@ -1,12 +1,7 @@
-import { stubTask } from "@ironforge/workflow-stub-lib";
+import { buildHandler } from "./handle-event.js";
 
-// PR-C.2 stub. Replaced at PR-C.5 with the template renderer that
-// substitutes __IRONFORGE_<NAME>__ placeholders and pushes the
-// rendered tree to the user's repo.
-export const handler = stubTask({
-  stepName: "generate-code",
-  buildOutput: () => ({
-    commitSha: "0000000000000000000000000000000000000000",
-    filesPushed: 0,
-  }),
-});
+// Lambda entry point. Wires production deps (real getInstallationToken,
+// real buildAuthenticatedOctokit, env-var-backed config, build-time
+// starter-code snapshot). Tests use buildHandler directly with injected
+// dependencies — see handle-event.test.ts.
+export const handler = buildHandler();
