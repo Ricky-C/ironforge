@@ -70,6 +70,10 @@ data "aws_iam_policy_document" "permission_boundary" {
       "dynamodb:DeleteItem",
       "dynamodb:BatchGetItem",
       "dynamodb:BatchWriteItem",
+      # TransactWriteItems is its own IAM action distinct from PutItem;
+      # POST /api/services uses it to atomically create Service + Job
+      # rows. PR-C.2 added.
+      "dynamodb:TransactWriteItems",
       "dynamodb:Query",
       "dynamodb:Scan",
       "dynamodb:DescribeTable",
@@ -110,8 +114,8 @@ data "aws_iam_policy_document" "permission_boundary" {
   }
 
   statement {
-    sid    = "AllowSNSPublishOnIronforgeTopics"
-    effect = "Allow"
+    sid     = "AllowSNSPublishOnIronforgeTopics"
+    effect  = "Allow"
     actions = ["sns:Publish"]
     resources = [
       "arn:aws:sns:${local.region}:${local.account_id}:ironforge-*",
@@ -133,8 +137,8 @@ data "aws_iam_policy_document" "permission_boundary" {
   }
 
   statement {
-    sid    = "AllowSecretsManagerOnIronforgeSecrets"
-    effect = "Allow"
+    sid     = "AllowSecretsManagerOnIronforgeSecrets"
+    effect  = "Allow"
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
       "arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:ironforge/*",
@@ -151,8 +155,8 @@ data "aws_iam_policy_document" "permission_boundary" {
   }
 
   statement {
-    sid    = "AllowLambdaInvokeOnIronforgeFunctions"
-    effect = "Allow"
+    sid     = "AllowLambdaInvokeOnIronforgeFunctions"
+    effect  = "Allow"
     actions = ["lambda:InvokeFunction"]
     resources = [
       "arn:aws:lambda:${local.region}:${local.account_id}:function:ironforge-*",
