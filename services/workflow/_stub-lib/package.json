@@ -1,0 +1,32 @@
+{
+  "name": "@ironforge/workflow-stub-lib",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Stub-task wrappers for PR-C.2's state-machine end-to-end exercise. Each task Lambda's handler is a thin facade over stubTask / finalizeStub / cleanupStub from this package. PR-C.3+ replaces each handler with real logic; this package is deletable once all 8 stubs are replaced (PR-C.9).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "node -e \"console.log('@ironforge/workflow-stub-lib: source-only — build is a no-op')\"",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ironforge/shared-types": "workspace:*",
+    "@ironforge/shared-utils": "workspace:*",
+    "zod": "^4.4.1"
+  },
+  "devDependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.1039.0",
+    "@types/node": "^25.6.0",
+    "aws-sdk-client-mock": "^4.1.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5"
+  }
+}

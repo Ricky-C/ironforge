@@ -1,0 +1,21 @@
+{
+  "name": "@ironforge/workflow-cleanup-on-failure",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workflow task Lambda — cleanup-on-failure. PR-C.2 stub: re-exports cleanupStub from @ironforge/workflow-stub-lib (status writes only; no destroy chain — see docs/tech-debt.md § Cleanup-on-failure destroy chain).",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ironforge/shared-types": "workspace:*",
+    "@ironforge/workflow-stub-lib": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@ironforge/workflow-finalize",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workflow task Lambda — finalize. PR-C.2 stub: re-exports finalizeStub from @ironforge/workflow-stub-lib (which writes Service.liveUrl + status=live, Job.status=succeeded). Replaced at PR-C.9 with real terminal-success behavior (audit event emit + customer notification).",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ironforge/shared-types": "workspace:*",
+    "@ironforge/workflow-stub-lib": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
+  }
+}
