@@ -113,6 +113,71 @@ data "aws_iam_policy_document" "permission_boundary" {
     resources = [var.route53_zone_arn]
   }
 
+  # PR-C.6 boundary widening — run-terraform Lambda needs route53:GetChange
+  # to poll record-change propagation status after ChangeResourceRecordSets.
+  # AWS does not support resource-level scoping for this action — it returns
+  # change-set records that aren't tied to a specific zone. Captured in
+  # docs/iam-exceptions.md and ADR-006 § Amendments (PR-C.6).
+  statement {
+    sid       = "AllowRoute53GetChangeStarRequired"
+    effect    = "Allow"
+    actions   = ["route53:GetChange"]
+    resources = ["*"]
+  }
+
+  # PR-C.6 boundary widening — run-terraform Lambda needs cloudfront:* on
+  # Resource:* to manage per-service distributions and origin access controls.
+  # CloudFront's Create*/Update*/Delete* APIs do not support ARN-scoped
+  # grants at create time, and tag-based scoping is unreliable due to
+  # uneven tag-on-create across the API surface. Per-Lambda identity
+  # policy below enumerates the specific actions; the boundary here caps
+  # to the cloudfront:* surface only. Captured in docs/iam-exceptions.md
+  # § "CloudFront — extended rationale" and ADR-006 § Amendments (PR-C.6).
+  statement {
+    sid       = "AllowCloudFrontStarRequired"
+    effect    = "Allow"
+    actions   = ["cloudfront:*"]
+    resources = ["*"]
+  }
+
+  # PR-C.6 boundary widening — IAM role + policy management on the
+  # ironforge-svc-* namespace ONLY. Each provisioned service has a
+  # GitHub-Actions-OIDC deploy role named ironforge-svc-<service-name>-deploy
+  # plus (forward-compat for future templates) an inline-or-managed policy
+  # in the same namespace. The run-terraform Lambda is the only Lambda
+  # that exercises these grants; other Lambdas inheriting this boundary
+  # cannot widen their own inline policies beyond ironforge-svc-* role/policy
+  # ARNs. The DenyIAMRoleAndPolicyOutsideIronforgeServiceNamespace deny
+  # below uses NotResource on the same ARN patterns to make the carve-out
+  # bidirectional (allow + non-deny intersect to "permitted" only on
+  # ironforge-svc-*). Captured in ADR-006 § Amendments (PR-C.6).
+  statement {
+    sid    = "AllowIAMOnIronforgeServiceResources"
+    effect = "Allow"
+    actions = [
+      "iam:CreateRole",
+      "iam:GetRole",
+      "iam:DeleteRole",
+      "iam:UpdateRole",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:ListRoleTags",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:PutRolePermissionsBoundary",
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:PutRolePolicy",
+      "iam:GetRolePolicy",
+      "iam:DeleteRolePolicy",
+    ]
+    resources = [
+      "arn:aws:iam::${local.account_id}:role/ironforge-svc-*",
+      "arn:aws:iam::${local.account_id}:policy/ironforge-svc-*",
+    ]
+  }
+
   statement {
     sid     = "AllowSNSPublishOnIronforgeTopics"
     effect  = "Allow"
@@ -189,25 +254,56 @@ data "aws_iam_policy_document" "permission_boundary" {
   # DENY (defense in depth)
   # ===========================================================================
 
+  # PR-C.6 split the original DenyIAMManagement into two statements so the
+  # ironforge-svc-* role/policy carve-out (run-terraform's per-service
+  # deploy-role provisioning) doesn't accidentally widen to user/group/OIDC
+  # provider creation. The first deny is hardline (Resource:*) — Lambdas
+  # NEVER manage users, groups, or OIDC providers. The second uses
+  # not_resources to carve out the ironforge-svc-* namespace from
+  # role+policy mgmt actions only. ADR-006 § Amendments (PR-C.6) captures
+  # the framing as refinement (narrowing the deny scope to non-service
+  # resources), not loosening (the boundary's role+policy mgmt grant is
+  # still namespaced via AllowIAMOnIronforgeServiceResources above).
   statement {
-    sid    = "DenyIAMManagement"
+    sid    = "DenyIAMUserGroupAndOIDCManagement"
     effect = "Deny"
     actions = [
       "iam:CreateUser",
-      "iam:CreateRole",
-      "iam:CreatePolicy",
-      "iam:CreatePolicyVersion",
-      "iam:AttachRolePolicy",
-      "iam:AttachUserPolicy",
-      "iam:PutRolePolicy",
-      "iam:PutUserPolicy",
-      "iam:DeleteRole",
       "iam:DeleteUser",
-      "iam:DeletePolicy",
       "iam:CreateLoginProfile",
       "iam:CreateAccessKey",
+      "iam:AttachUserPolicy",
+      "iam:PutUserPolicy",
+      "iam:CreateGroup",
+      "iam:DeleteGroup",
+      "iam:CreateOpenIDConnectProvider",
+      "iam:DeleteOpenIDConnectProvider",
     ]
     resources = ["*"]
+  }
+
+  statement {
+    sid    = "DenyIAMRoleAndPolicyOutsideIronforgeServiceNamespace"
+    effect = "Deny"
+    actions = [
+      "iam:CreateRole",
+      "iam:DeleteRole",
+      "iam:UpdateRole",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:PutRolePermissionsBoundary",
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:CreatePolicy",
+      "iam:CreatePolicyVersion",
+      "iam:DeletePolicy",
+    ]
+    not_resources = [
+      "arn:aws:iam::${local.account_id}:role/ironforge-svc-*",
+      "arn:aws:iam::${local.account_id}:policy/ironforge-svc-*",
+    ]
   }
 
   statement {

@@ -213,16 +213,159 @@ module "task_generate_code" {
 # captured in the .image-uri sentinel file. terraform plan reads that
 # file via local_file data source — local plans without docker need to
 # stage the file manually (captured as a tech-debt entry).
-#
-# IAM grants for terraform's actual workload (cloudfront, route53,
-# s3:CreateBucket on ironforge-svc-* names, iam:CreateRole, etc.) are
-# template-derived via @ironforge/template-renderer's
-# generateRunTerraformPolicy() and applied in the next commit alongside
-# permission boundary widening (ADR-006 amendment Pattern B for the
-# ironforge-svc-* IAM namespace carve-out + cloudfront + route53:GetChange).
-# This commit wires the handler + container image + env vars only.
 data "local_file" "run_terraform_image_uri" {
   filename = "${path.root}/../../modules/terraform-lambda-image/.image-uri"
+}
+
+# Per-Lambda inline IAM grants for the terraform workload itself.
+# Mirrors @ironforge/template-renderer's generateRunTerraformPolicy()
+# output for the static-site template's allowedResourceTypes whitelist
+# (templates/static-site/ironforge.yaml), with resourcePrefix=ironforge-svc-*
+# (wildcard because service names are per-invocation, not deploy-time).
+# The prefix wildcard is the security boundary; per-service uniqueness
+# falls out of CreateBucket / CreateRole returning 409 on collision.
+#
+# Source-of-truth alignment: the JS-side RESOURCE_TYPE_TO_IAM mapping
+# is unit-tested in packages/template-renderer/src/iam-policy.test.ts;
+# this HCL is the deployed copy. Drift between the two is captured in
+# docs/tech-debt.md § "Drift detection: run-terraform IAM grants vs
+# RESOURCE_TYPE_TO_IAM mapping" — automation TBD. Adding a resource
+# type to the manifest requires updating BOTH this block AND the JS
+# mapping in the same PR.
+#
+# Boundary widening (PR-C.6, ADR-006 amendment) caps these:
+# AllowCloudFrontStarRequired permits cloudfront:* on Resource:*;
+# AllowRoute53GetChangeStarRequired permits route53:GetChange on Resource:*;
+# AllowIAMOnIronforgeServiceResources permits iam:Role* + iam:RolePolicy*
+# on ironforge-svc-* role/policy ARNs only. This identity policy
+# narrows further with specific actions per resource type.
+locals {
+  run_terraform_extra_statements = [
+    # ── S3 bucket lifecycle ────────────────────────────────────────────────
+    {
+      sid = "S3BucketCRUD"
+      actions = [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:GetBucketLocation",
+        "s3:GetBucketTagging",
+        "s3:PutBucketTagging",
+        "s3:ListBucket",
+      ]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
+    {
+      sid = "S3BucketVersioning"
+      actions = [
+        "s3:GetBucketVersioning",
+        "s3:PutBucketVersioning",
+      ]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
+    {
+      sid = "S3BucketEncryption"
+      actions = [
+        "s3:GetEncryptionConfiguration",
+        "s3:PutEncryptionConfiguration",
+      ]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
+    {
+      sid = "S3BucketPublicAccessBlock"
+      actions = [
+        "s3:GetBucketPublicAccessBlock",
+        "s3:PutBucketPublicAccessBlock",
+      ]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
+    {
+      sid = "S3BucketLifecycle"
+      actions = [
+        "s3:GetLifecycleConfiguration",
+        "s3:PutLifecycleConfiguration",
+      ]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
+    {
+      sid = "S3BucketPolicy"
+      actions = [
+        "s3:GetBucketPolicy",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+      ]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
+    # ── CloudFront (ID-based ARNs, no resource-level scoping) ──────────────
+    {
+      sid = "CloudFrontOACManagement"
+      actions = [
+        "cloudfront:CreateOriginAccessControl",
+        "cloudfront:GetOriginAccessControl",
+        "cloudfront:UpdateOriginAccessControl",
+        "cloudfront:DeleteOriginAccessControl",
+        "cloudfront:ListOriginAccessControls",
+      ]
+      resources = ["*"]
+    },
+    {
+      sid = "CloudFrontDistributionManagement"
+      actions = [
+        "cloudfront:CreateDistribution",
+        "cloudfront:GetDistribution",
+        "cloudfront:GetDistributionConfig",
+        "cloudfront:UpdateDistribution",
+        "cloudfront:DeleteDistribution",
+        "cloudfront:TagResource",
+        "cloudfront:UntagResource",
+        "cloudfront:ListTagsForResource",
+      ]
+      resources = ["*"]
+    },
+    # ── Route53 (record set actions scope to hosted zone ARN) ──────────────
+    {
+      sid = "Route53RecordManagement"
+      actions = [
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets",
+      ]
+      resources = [data.terraform_remote_state.shared.outputs.dns_hosted_zone_arn]
+    },
+    {
+      sid       = "Route53GetChangeStarRequired"
+      actions   = ["route53:GetChange"]
+      resources = ["*"]
+    },
+    # ── IAM (deploy role + inline role policy, ironforge-svc-* namespace) ─
+    {
+      sid = "IAMRoleManagement"
+      actions = [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:DeleteRole",
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:ListRoleTags",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary",
+      ]
+      resources = ["arn:aws:iam::${local.account_id}:role/ironforge-svc-*-deploy"]
+    },
+    {
+      sid = "IAMRolePolicyManagement"
+      actions = [
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:ListRolePolicies",
+      ]
+      resources = ["arn:aws:iam::${local.account_id}:role/ironforge-svc-*-deploy"]
+    },
+  ]
 }
 
 module "task_run_terraform" {
@@ -263,10 +406,14 @@ module "task_run_terraform" {
     IRONFORGE_PERMISSION_BOUNDARY_ARN  = data.terraform_remote_state.shared.outputs.permission_boundary_arn
   })
 
-  # Baseline DynamoDB grants for JobStep upserts. Template-derived
-  # terraform-workload grants (cloudfront/route53/s3/iam) land in the
-  # next commit.
-  iam_grants = local.task_lambda_iam_grants
+  # Baseline DynamoDB grants for JobStep upserts + per-resource-type
+  # grants for the terraform workload (12 statements, see
+  # local.run_terraform_extra_statements above).
+  iam_grants = {
+    dynamodb_read    = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write   = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = local.run_terraform_extra_statements
+  }
 }
 
 module "task_wait_for_cloudfront" {

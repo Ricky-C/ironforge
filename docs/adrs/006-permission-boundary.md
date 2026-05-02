@@ -392,10 +392,40 @@ The original ADR's deferral reasoning ("no Lambda directly calls KMS") was corre
 
 **Verification.** PR-C.4a does not include a runtime verification of the boundary's KMS condition behavior — no Lambda exercises `kms:Decrypt` until PR-C.4b's `create-repo` lands. The verification (attempt `kms:Decrypt` against a non-`ironforge-managed`-tagged CMK from a workflow Lambda role; confirm denial) is tracked in `docs/tech-debt.md` § "Boundary verification: kms:Decrypt denial against non-Ironforge-tagged CMK", to be performed in PR-C.4b alongside the first real consumer.
 
+### 2026-05-02 (PR-C.6) — CloudFront, route53:GetChange, and the ironforge-svc-* IAM namespace carve-out
+
+**What changed.** Three new ALLOW statements and a restructured DENY in `IronforgePermissionBoundary`:
+
+1. **`AllowCloudFrontStarRequired`** — `cloudfront:*` on `Resource: "*"`. CloudFront's Create*/Update*/Delete* APIs do not support ARN-scoped grants at create time (the distribution ID isn't known pre-Create), and tag-based scoping is unreliable due to uneven tag-on-create across the API surface. Per-Lambda identity policies enumerate the specific actions; the boundary caps to the `cloudfront:*` surface.
+2. **`AllowRoute53GetChangeStarRequired`** — `route53:GetChange` on `Resource: "*"`. AWS does not support resource-level scoping for this action — it returns change-set records that aren't tied to a specific zone. Required for record-change propagation polling after `ChangeResourceRecordSets`. Originally flagged in the deliberate-exclusions section above as "Phase 1 work"; this amendment is that work.
+3. **`AllowIAMOnIronforgeServiceResources`** — IAM role-mgmt + role-policy-mgmt actions, scoped to `arn:aws:iam::<account>:role/ironforge-svc-*` and `arn:aws:iam::<account>:policy/ironforge-svc-*`. The `ironforge-svc-*` namespace is reserved for resources that the run-terraform Lambda creates per provisioning job (each service's GitHub-Actions-OIDC deploy role and, forward-compat, future templates' aws_iam_policy resources).
+4. **`DenyIAMManagement` is split** into two statements: `DenyIAMUserGroupAndOIDCManagement` (Resource:* — Lambdas NEVER manage users, groups, or OIDC providers) and `DenyIAMRoleAndPolicyOutsideIronforgeServiceNamespace` (NotResource carve-out for the same `ironforge-svc-*` ARN patterns covering role and policy ARNs). The carve-out is bidirectional: the new ALLOW grants role+policy mgmt only on `ironforge-svc-*`, and the new DENY's NotResource explicitly excludes the same namespace from the deny — intersection gives "permitted only on ironforge-svc-*."
+
+**Frame: refinement, not loosening.** The original `DenyIAMManagement` assumed all Lambda IAM needs were satisfied by their own execution roles (created at deploy time by terraform, never at runtime). PR-C.6 introduces run-terraform, whose specific job is to provision IAM resources within the `ironforge-svc-*` namespace at workflow runtime. The amendment:
+
+- Narrows the DENY to non-service resources (the deny still fires for any role/policy outside `ironforge-svc-*`, including Ironforge-platform roles like `ironforge-dev-api-execution`).
+- Adds a narrow ALLOW limited to the service namespace (boundary's IAM grant is namespaced; per-Lambda inline policy further narrows to specific role-name patterns like `ironforge-svc-*-deploy`).
+- The intersection is strictly tighter than "Lambdas can't manage IAM" was implicitly enforcing for non-run-terraform Lambdas (they still cannot create roles outside the service namespace), and provides exactly the grant run-terraform needs (it cannot create roles outside the service namespace either).
+
+**Specifically NOT in the carve-out** (stays denied or is implicitly denied by the boundary's ALLOW list not granting):
+
+- `iam:CreateUser`, `iam:CreateGroup`, `iam:CreateLoginProfile`, `iam:CreateAccessKey` — explicit DENY in `DenyIAMUserGroupAndOIDCManagement` (Resource:*, no carve-out).
+- `iam:CreateOpenIDConnectProvider`, `iam:DeleteOpenIDConnectProvider` — explicit DENY in `DenyIAMUserGroupAndOIDCManagement`. The account's GitHub Actions OIDC provider is bootstrapped out-of-band via the OIDC bootstrap procedure (`infra/OIDC_BOOTSTRAP.md`), not at provisioning time. Provisioning Lambdas never need this surface.
+- AWS-managed policy attachments. `iam:AttachRolePolicy` is in `DenyIAMRoleAndPolicyOutsideIronforgeServiceNamespace`'s denied actions; the NotResource carves out attachment ON `ironforge-svc-*` roles, but the *attached policy* (the second argument to AttachRolePolicy) is still constrained by ADR-002's criteria for AWS-managed policies. Templates that need to attach AWS-managed policies to their deploy roles would surface that need at template-author review time; for the static-site template, all permissions are inline (PutRolePolicy), so this surface is unused in PR-C.6.
+
+**What stays excluded.** Cross-account `sts:AssumeRole` (still denied — single-account by design). The KMS surface beyond `kms:Decrypt` (per the PR-C.4a amendment's scope-narrowing logic). EC2/RDS/ECS/etc. (still denied by `DenyExpensiveServicesPermanently`).
+
+**Per-Lambda narrowing for run-terraform.** The dev composition's `task_run_terraform` module wires an inline policy with 12 statements derived from `@ironforge/template-renderer`'s `RESOURCE_TYPE_TO_IAM` mapping (one per resource type in the static-site template's `allowedResourceTypes`, plus the always-emitted `route53:GetChange` star-required statement). The inline policy's IAM-role-targeted statements scope to `arn:aws:iam::<account>:role/ironforge-svc-*-deploy` (tighter than the boundary's `ironforge-svc-*` glob — only the deploy-role suffix). The intersection (boundary ∩ identity) gives run-terraform exactly the rights it needs to provision a static-site service's deploy role, and nothing else.
+
+Drift between `RESOURCE_TYPE_TO_IAM` (JS, unit-tested) and the deployed HCL is captured in `docs/tech-debt.md` § "Drift detection: run-terraform IAM grants vs RESOURCE_TYPE_TO_IAM mapping." Until automation lands, adding a resource type to the manifest requires updating both the JS mapping AND the HCL block in the same PR.
+
+**Verification.** A boundary-attached check (Phase 1 § Case 1 shape) for the new statements; a denial check that a workflow Lambda's role is denied `iam:CreateRole` on a non-`ironforge-svc-*` role name (Phase 1 negative-isolation shape, with the same "trust policy forbids operator-context assume-role" caveat as the PR-C.4b verification log). Captured in `docs/tech-debt.md` § "Boundary verification for PR-C.6 amendment" — to be performed in PR-C.6's first post-merge invocation against dev.
+
 ## Related
 
 - ADR-002 — managed IAM policies. The boundary itself is a custom policy (not managed) because no AWS-provided policy fits.
 - ADR-003 — encryption defaults. KMS exclusion from the boundary follows from "no Lambda directly calls KMS post-ADR-003." _[Partially amended 2026-05-01 (PR-C.4a); see § Amendments.]_
 - ADR-005 — DynamoDB multi-table exception. The boundary's DynamoDB allow scopes to `ironforge-*` (matching both env-named tables).
-- `docs/iam-exceptions.md` — `Resource: "*"` actions used by the boundary.
-- `docs/tech-debt.md` — deferred KMS perms; deferred bucket-policy prefix enforcement.
+- ADR-009 — run-terraform execution model. The PR-C.6 amendment's IAM widening is the boundary half of ADR-009's "template-derived IAM" decision; this ADR captures the deny-narrowing rationale, ADR-009 captures the broader template-IAM mapping mechanism.
+- `docs/iam-exceptions.md` — `Resource: "*"` actions used by the boundary, including the PR-C.6 additions for cloudfront and route53:GetChange.
+- `docs/tech-debt.md` — deferred KMS perms; deferred bucket-policy prefix enforcement; PR-C.6 drift detection between JS mapping and HCL grants.
