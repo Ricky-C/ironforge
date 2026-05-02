@@ -1,11 +1,7 @@
-import { stubTask } from "@ironforge/workflow-stub-lib";
+import { buildHandler } from "./handle-event.js";
 
-// PR-C.2 stub. Replaced at PR-C.4b with real Octokit-backed repo
-// creation (existing-repo handling: re-use if owner matches).
-export const handler = stubTask({
-  stepName: "create-repo",
-  buildOutput: (event) => ({
-    repoUrl: `https://github.com/ironforge-svc/${event.serviceName}`,
-    repoId: 0,
-  }),
-});
+// Lambda entry point. Wires the production deps (real
+// getInstallationToken from shared-utils, real buildAuthenticatedOctokit,
+// env-var-backed config). Tests use buildHandler directly with injected
+// dependencies — see handle-event.test.ts.
+export const handler = buildHandler();

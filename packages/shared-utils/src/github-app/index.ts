@@ -11,6 +11,11 @@ export {
 } from "./build-authenticated-octokit.js";
 export {
   IronforgeGitHubAuthError,
+  IronforgeGitHubProvisionError,
+  IronforgeGitHubRateLimitedError,
+  IronforgeGitHubRepoConflictError,
   type GitHubAuthErrorContext,
   type GitHubAuthMintType,
+  type GitHubOperationContext,
+  type GitHubProvisionOperation,
 } from "./errors.js";

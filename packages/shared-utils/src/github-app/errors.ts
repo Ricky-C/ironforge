@@ -52,3 +52,85 @@ export class IronforgeGitHubAuthError extends Error {
     super(message);
   }
 }
+
+// Errors thrown by GitHub-talking workflow Lambdas (create-repo,
+// trigger-deploy). All custom-named so SFN's state-level Retry block
+// (Lambda.* family only) doesn't loop on permanent failures —
+// CleanupOnFailure handles them. JobStep.errorMessage is sanitized;
+// CloudWatch structured log carries operator-visible detail.
+
+export type GitHubOperationContext = {
+  // GitHub API endpoint where the failure surfaced (e.g.,
+  // "POST /orgs/ironforge-svc/repos"). String literal — never
+  // user-supplied input.
+  endpoint: string;
+  appId: string;
+  installationId: string;
+  // GitHub HTTP status when the call reached GitHub. Absent for
+  // pre-HTTP failures (rare; mostly captured by IronforgeGitHubAuthError).
+  status?: number;
+};
+
+// Repo with the requested name already exists but its
+// `custom_properties["ironforge-job-id"]` does not match THIS job.
+// Means a prior provisioning under the same name left an orphan
+// (cleanup-on-failure destroy chain not yet implemented — see
+// docs/tech-debt.md), or a manual operator action created the repo.
+// Resolution: operator deletes the orphan repo, retries provisioning.
+//
+// Context deliberately does NOT include the existing repo's job-id —
+// that's an internal cross-tenant identifier and should not flow into
+// this Lambda's error path. Operators correlate via CloudWatch log
+// + the GitHub repo itself, not via JobStep.errorMessage.
+export class IronforgeGitHubRepoConflictError extends Error {
+  override readonly name = "IronforgeGitHubRepoConflictError";
+
+  constructor(
+    message: string,
+    public readonly context: GitHubOperationContext & { repoName: string },
+  ) {
+    super(message);
+  }
+}
+
+// GitHub returned 403 with X-RateLimit-Remaining: 0. Distinct from
+// IronforgeGitHubAuthError ("Bad credentials") because it's recoverable
+// (just transient — primary or secondary rate limit window will reset).
+// Past-participle naming matches AWS SDK conventions (Throttled,
+// RateLimited).
+//
+// X-RateLimit-Reset (Unix timestamp when the limit window resets) goes
+// to CloudWatch via console.error — never into the error context, per
+// the sanitization principle. Operator visibility, not user-facing.
+export class IronforgeGitHubRateLimitedError extends Error {
+  override readonly name = "IronforgeGitHubRateLimitedError";
+
+  constructor(
+    message: string,
+    public readonly context: GitHubOperationContext,
+  ) {
+    super(message);
+  }
+}
+
+// Catch-all for unexpected GitHub responses that don't fit the more
+// specific error classes above. Operations that can throw this:
+// repo creation, repo lookup, custom-property reads. The `operation`
+// discriminator helps operators correlate with the specific call site.
+export type GitHubProvisionOperation =
+  | "get-repo"
+  | "create-repo"
+  | "unknown";
+
+export class IronforgeGitHubProvisionError extends Error {
+  override readonly name = "IronforgeGitHubProvisionError";
+
+  constructor(
+    message: string,
+    public readonly context: GitHubOperationContext & {
+      operation: GitHubProvisionOperation;
+    },
+  ) {
+    super(message);
+  }
+}
