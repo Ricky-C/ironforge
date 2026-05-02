@@ -24,6 +24,8 @@
     "@aws-sdk/lib-dynamodb": "^3.1039.0",
     "@ironforge/shared-types": "workspace:*",
     "@octokit/auth-app": "^7.1.5",
+    "@octokit/plugin-retry": "^8.0.1",
+    "@octokit/rest": "^22.0.0",
     "zod": "^4.4.1"
   },
   "devDependencies": {

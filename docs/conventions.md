@@ -30,11 +30,13 @@ If a future PR finds itself fighting a convention, the right response is one of:
 
 - PR-C.3 (PR #56, 2026-05-01) — `services/workflow/validate-inputs/src/handler.ts` parses the bundled template manifest YAML at module load via `IronforgeManifestSchema.parse(yaml.load(manifestYamlText))`. A malformed manifest fails Lambda init, surfacing as `InitError` before any user request lands.
 - PR-C.4a (2026-05-01) — `packages/shared-utils/src/github-app/get-installation-token.ts` lazily fetches the GitHub App PEM from Secrets Manager on first call, parses it (shape check), caches the parsed key in module scope. Token minting on subsequent invocations reuses the parsed key without re-fetching.
+- PR-C.4b (2026-05-02) — `services/workflow/create-repo/src/handle-event.ts` `getConfig()` caches the four GitHub App env vars (secret ARN, app ID, installation ID, org name) at module scope on first call, fail-fast on any missing value. Same pattern; different kind of static config (env vars vs fetched).
 
 **Applied by.**
 
 - `services/workflow/validate-inputs/src/handler.ts`
 - `packages/shared-utils/src/github-app/get-installation-token.ts`
+- `services/workflow/create-repo/src/handle-event.ts`
 
 **Rationale.** Three properties matter, in this order:
 

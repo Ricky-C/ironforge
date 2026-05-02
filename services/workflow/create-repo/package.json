@@ -2,20 +2,26 @@
   "name": "@ironforge/workflow-create-repo",
   "version": "0.0.0",
   "private": true,
-  "description": "Workflow task Lambda — create-repo. PR-C.2 stub: thin facade over @ironforge/workflow-stub-lib's stubTask. Replaced with real GitHub repo creation at PR-C.4b (consumes PR-C.4a's GitHub App auth helper).",
+  "description": "Workflow task Lambda — create-repo. Creates the per-service GitHub repo via the App helper from @ironforge/shared-utils/github-app. Idempotent via custom_properties[\"ironforge-job-id\"].",
   "license": "UNLICENSED",
   "scripts": {
     "build": "node ./build.mjs",
     "clean": "rm -rf dist",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ironforge/shared-types": "workspace:*",
-    "@ironforge/workflow-stub-lib": "workspace:*"
+    "@ironforge/shared-utils": "workspace:*"
   },
   "devDependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.1039.0",
     "@types/node": "^25.6.0",
+    "aws-sdk-client-mock": "^4.1.0",
     "esbuild": "^0.28.0",
-    "typescript": "^6.0.3"
+    "nock": "^14.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5"
   }
 }

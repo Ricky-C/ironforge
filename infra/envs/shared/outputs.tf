@@ -99,6 +99,6 @@ output "github_app_kms_key_arn" {
 }
 
 output "github_app_ssm_parameter_path" {
-  description = "Path prefix for tenant-specific GitHub App SSM parameters (/ironforge/github-app). Workflow Lambda IAM grants for ssm:GetParameter scope to this path."
+  description = "Path prefix for tenant-specific GitHub App SSM parameters (/ironforge/github-app). Workflow Lambda IAM grants for ssm:GetParameter scope to this path. Env compositions read individual parameters by appending the suffix (e.g., /app-id, /installation-id, /org-name) — these names match the github-app-secret module's aws_ssm_parameter resource names and are part of the module's stable contract."
   value       = module.github_app_secret.ssm_parameter_path
 }
