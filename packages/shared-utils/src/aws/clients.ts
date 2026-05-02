@@ -1,5 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SFNClient } from "@aws-sdk/client-sfn";
 
 // Module-level singletons. aws-sdk-client-mock intercepts at the SDK
@@ -30,6 +31,12 @@ export const docClient = DynamoDBDocumentClient.from(baseClient, {
 // SFN but don't invoke it), but exporting a singleton here keeps the
 // SDK-client surface in one place.
 export const sfnClient = new SFNClient({});
+
+// Secrets Manager client. Used by the github-app helper to fetch the
+// GitHub App PEM at cold start. Singleton for connection-reuse per AWS
+// SDK guidance; aws-sdk-client-mock intercepts at the middleware layer
+// so tests don't need DI.
+export const secretsManagerClient = new SecretsManagerClient({});
 
 // Table name resolved from Lambda env. Reads happen at request time
 // (not import time) so test environments can override via env without
