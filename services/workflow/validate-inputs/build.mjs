@@ -25,6 +25,12 @@ await esbuild.build({
   sourcemap: false,
   minify: false,
   external: ["@aws-sdk/*", "@smithy/*"],
+  // Manifest YAML is bundled as a text string at build time; the handler
+  // parses+validates it at module load (cold start) so a malformed
+  // manifest fails the Lambda init rather than the first user request.
+  // See docs/data-model.md § "Template artifact storage" for the
+  // per-artifact-type rationale.
+  loader: { ".yaml": "text" },
   logLevel: "info",
 });
 

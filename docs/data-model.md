@@ -248,13 +248,44 @@ packages/shared-types/src/templates/<future>.ts      (when added)
 Per-template schemas are consumed by:
 
 - The wizard form on `apps/web` (form-level validation before submit).
-- The `validate-inputs` workflow Lambda (server-side validation before
-  provisioning).
+- The API handler at `POST /api/services` (first-pass validation
+  before kicking off the workflow).
+- The `validate-inputs` workflow Lambda (workflow-time re-validation,
+  guarding against schema drift between API and Lambda deploys).
 - The `template-renderer` package (knows what fields to substitute into
   generated code).
 
+All consumers resolve `templateId → InputsSchema` through
+`TEMPLATE_REGISTRY` in `@ironforge/shared-types`. Single source of
+truth — no parallel maps per consumer.
+
 The Service entity stays stable as templates are added. New templates
 mean new files under `templates/`, not changes to `ServiceSchema`.
+
+## Template artifact storage
+
+Storage is per-artifact-type, not project-wide. Each PR optimizes for
+the artifact's runtime characteristics; the philosophy is "match the
+storage to the access pattern," not "one bucket for everything."
+
+| Artifact          | Storage                  | Decided in |
+| ----------------- | ------------------------ | ---------- |
+| Manifest YAML     | Bundled in Lambda dist   | PR-C.3     |
+| Starter code      | TBD                      | PR-C.5     |
+| Terraform module  | TBD                      | PR-C.6     |
+
+Manifest YAML is bundled into the validate-inputs Lambda at esbuild
+time via `loader: { ".yaml": "text" }` and parsed + validated at module
+load. Rationale: manifest changes are rare and always accompany a
+template terraform/code change, which already requires a Lambda
+redeploy — bundling adds no friction. Cold-start parse cost is
+negligible.
+
+The manifest's `inputsSchema` field (a path-with-fragment string like
+`packages/shared-types/src/templates/static-site.ts#StaticSiteInputsSchema`)
+is documentation-only — it tells humans where the schema lives.
+Runtime resolution goes through `TEMPLATE_REGISTRY`, not by parsing
+that path string.
 
 ## OwnerId convention
 

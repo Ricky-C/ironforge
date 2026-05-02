@@ -2,20 +2,27 @@
   "name": "@ironforge/workflow-validate-inputs",
   "version": "0.0.0",
   "private": true,
-  "description": "Workflow task Lambda — validate-inputs. PR-C.2 stub: thin facade over @ironforge/workflow-stub-lib's stubTask. Replaced with real validation logic at PR-C.3.",
+  "description": "Workflow task Lambda — validate-inputs. Validates the user's wizard inputs against the per-template inputs schema declared in TEMPLATE_REGISTRY (@ironforge/shared-types).",
   "license": "UNLICENSED",
   "scripts": {
     "build": "node ./build.mjs",
     "clean": "rm -rf dist",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ironforge/shared-types": "workspace:*",
-    "@ironforge/workflow-stub-lib": "workspace:*"
+    "@ironforge/shared-utils": "workspace:*",
+    "js-yaml": "^4.1.0"
   },
   "devDependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.1039.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.6.0",
+    "aws-sdk-client-mock": "^4.1.0",
     "esbuild": "^0.28.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5"
   }
 }
