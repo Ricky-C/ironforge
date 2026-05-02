@@ -6,6 +6,7 @@ on:
       - "infra/**"
       - "services/api/**"
       - "services/cost-reporter/**"
+      - "services/workflow/**"
       - ".github/workflows/infra-plan.yml"
 
 permissions:
@@ -70,6 +71,14 @@ jobs:
         # Required for dev/prod composition's data.archive_file to find dist/handler.js.
         if: matrix.composition == 'dev' || matrix.composition == 'prod'
         run: pnpm --filter @ironforge/api build
+
+      - name: Build workflow task Lambdas
+        # Required for dev/prod composition's 8 task Lambda archive_file
+        # data sources. Glob matches the 8 services/workflow/<step>/
+        # workspaces; @ironforge/workflow-stub-lib is also matched but its
+        # build is a no-op (source-only, consumed via "exports" field).
+        if: matrix.composition == 'dev' || matrix.composition == 'prod'
+        run: pnpm --filter "@ironforge/workflow-*" build
 
       - name: Configure AWS credentials (OIDC plan role)
         uses: aws-actions/configure-aws-credentials@v6
