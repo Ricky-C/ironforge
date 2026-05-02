@@ -1,0 +1,23 @@
+{
+  "name": "@ironforge/template-renderer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Map-driven placeholder substitution for Ironforge template starter-code. Substitutes __IRONFORGE_<NAME>__ markers from a caller-supplied map and validates no markers remain post-render. Consumed by the generate-code workflow Lambda.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5"
+  }
+}

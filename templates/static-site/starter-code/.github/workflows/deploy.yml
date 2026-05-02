@@ -8,6 +8,12 @@ on:
 # Action versions are pinned to major tags. Do NOT switch to @main or
 # @latest — supply-chain hygiene. To upgrade, bump the major version
 # explicitly after reviewing the changelog.
+#
+# Repo secrets used below are populated by the Ironforge platform's
+# trigger-deploy step the first time deployment runs after provisioning,
+# and re-populated automatically on infrastructure rotations. See
+# docs/conventions.md § "Template substitution boundary" in the Ironforge
+# repo for the build-time vs runtime placeholder convention.
 
 permissions:
   id-token: write
@@ -23,12 +29,12 @@ jobs:
       - name: Configure AWS credentials (OIDC deploy role)
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: __IRONFORGE_DEPLOY_ROLE_ARN__
+          role-to-assume: ${{ secrets.IRONFORGE_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
       - name: Sync site to S3
         run: |
-          aws s3 sync . s3://__IRONFORGE_BUCKET_NAME__ \
+          aws s3 sync . s3://${{ secrets.IRONFORGE_BUCKET_NAME }} \
             --delete \
             --exclude '.git/*' \
             --exclude '.github/*' \
@@ -37,5 +43,5 @@ jobs:
       - name: Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id __IRONFORGE_DISTRIBUTION_ID__ \
+            --distribution-id ${{ secrets.IRONFORGE_DISTRIBUTION_ID }} \
             --paths '/*'
