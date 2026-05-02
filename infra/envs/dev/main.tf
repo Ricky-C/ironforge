@@ -138,16 +138,26 @@ module "task_create_repo" {
 # SSM data sources for GitHub App identifiers. Read at terraform plan
 # time and baked into the create-repo Lambda's env vars. The apply role
 # has ssm:Get* on /ironforge/* from PR #41 hardening.
+# Parameter names constructed as ${path_prefix}/${suffix}. The path
+# prefix output (github_app_ssm_parameter_path) is already in shared's
+# applied state from PR #41; the suffixes match the github-app-secret
+# module's aws_ssm_parameter resource names verbatim. Going through the
+# applied prefix output (vs hardcoding `/ironforge/github-app/`) keeps
+# the path convention's source of truth in the module that owns it.
+locals {
+  github_app_ssm_path = data.terraform_remote_state.shared.outputs.github_app_ssm_parameter_path
+}
+
 data "aws_ssm_parameter" "github_app_id" {
-  name = data.terraform_remote_state.shared.outputs.github_app_ssm_app_id_param
+  name = "${local.github_app_ssm_path}/app-id"
 }
 
 data "aws_ssm_parameter" "github_app_installation_id" {
-  name = data.terraform_remote_state.shared.outputs.github_app_ssm_installation_id_param
+  name = "${local.github_app_ssm_path}/installation-id"
 }
 
 data "aws_ssm_parameter" "github_org_name" {
-  name = data.terraform_remote_state.shared.outputs.github_app_ssm_org_name_param
+  name = "${local.github_app_ssm_path}/org-name"
 }
 
 module "task_generate_code" {

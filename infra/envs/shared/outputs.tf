@@ -99,25 +99,6 @@ output "github_app_kms_key_arn" {
 }
 
 output "github_app_ssm_parameter_path" {
-  description = "Path prefix for tenant-specific GitHub App SSM parameters (/ironforge/github-app). Workflow Lambda IAM grants for ssm:GetParameter scope to this path."
+  description = "Path prefix for tenant-specific GitHub App SSM parameters (/ironforge/github-app). Workflow Lambda IAM grants for ssm:GetParameter scope to this path. Env compositions read individual parameters by appending the suffix (e.g., /app-id, /installation-id, /org-name) — these names match the github-app-secret module's aws_ssm_parameter resource names and are part of the module's stable contract."
   value       = module.github_app_secret.ssm_parameter_path
-}
-
-# Individual SSM parameter names re-exported so env compositions can
-# read parameter values via aws_ssm_parameter data sources at plan time
-# without re-deriving the parameter paths. PR-C.4b: dev's create-repo
-# Lambda bakes these values into env vars.
-output "github_app_ssm_org_name_param" {
-  description = "SSM parameter name holding the GitHub org name."
-  value       = module.github_app_secret.ssm_org_name_param
-}
-
-output "github_app_ssm_app_id_param" {
-  description = "SSM parameter name holding the GitHub App's App ID."
-  value       = module.github_app_secret.ssm_app_id_param
-}
-
-output "github_app_ssm_installation_id_param" {
-  description = "SSM parameter name holding the GitHub App's installation ID in the org."
-  value       = module.github_app_secret.ssm_installation_id_param
 }
