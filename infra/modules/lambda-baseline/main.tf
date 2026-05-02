@@ -145,6 +145,28 @@ data "aws_iam_policy_document" "permission_boundary" {
     ]
   }
 
+  # kms:Decrypt added in PR-C.4a. ADR-006 originally excluded KMS from
+  # the boundary on the basis that no Lambda directly called KMS post-
+  # ADR-003; PR-C.4a's GitHub App helper is the first such Lambda
+  # (Secrets Manager + CMK integration evaluates kms:Decrypt against
+  # the caller's permissions). Resource-tag condition is reliable for
+  # kms:Decrypt across all key operations — alias-name conditions
+  # (which the original ADR flagged as inconsistent) are deliberately
+  # not used. Per-Lambda identity policies in PR-C.4b / PR-C.8 narrow
+  # further with specific CMK ARN + EncryptionContext:SecretARN
+  # binding. See ADR-006 § Amendments.
+  statement {
+    sid       = "AllowKmsDecryptOnIronforgeManagedKeys"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ResourceTag/ironforge-managed"
+      values   = ["true"]
+    }
+  }
+
   # ce:GetCostAndUsage is account-scoped per AWS service authorization
   # reference. See docs/iam-exceptions.md.
   statement {
