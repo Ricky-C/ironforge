@@ -122,6 +122,14 @@ module "tfstate_prod" {
   ]
 }
 
+module "terraform_lambda_image" {
+  source = "../../modules/terraform-lambda-image"
+  # Versions take the module defaults (terraform 1.10.4, aws provider
+  # 5.83.0, arm64). Bumping requires updating both build-image.sh
+  # constants AND the module variable defaults — the variables are
+  # documentation; the script's constants are the truth.
+}
+
 module "github_app_secret" {
   source = "../../modules/github-app-secret"
 

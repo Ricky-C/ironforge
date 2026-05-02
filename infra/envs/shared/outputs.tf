@@ -137,3 +137,13 @@ output "tfstate_prod_kms_key_arn" {
   description = "ARN of the CMK encrypting the prod environment's terraform state."
   value       = module.tfstate_prod.kms_key_arn
 }
+
+output "terraform_lambda_image_repository_url" {
+  description = "ECR repository URL for the run-terraform Lambda's container image. CI's build-image.sh pushes here; the Lambda function references the image by URI + digest."
+  value       = module.terraform_lambda_image.repository_url
+}
+
+output "terraform_lambda_image_repository_arn" {
+  description = "ECR repository ARN for the run-terraform Lambda's container image. The build-image.sh pipeline IAM grants for ecr:GetAuthorizationToken / PutImage / etc. scope to this ARN."
+  value       = module.terraform_lambda_image.repository_arn
+}

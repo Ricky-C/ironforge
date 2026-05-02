@@ -145,6 +145,51 @@ Estimated migration effort: **1-2 weeks of focused work**. The state storage and
 
 This deferral is tracked in `docs/tech-debt.md` § "Future migration: run-terraform to CodeBuild execution model" with the four triggers above.
 
+## Amendments
+
+### 2026-05-02 (PR-C.6) — Binary-footprint trigger fired earlier than expected; container image Lambda chosen as deferral, NOT CodeBuild migration
+
+**What triggered.** The architectural trigger from § "When to reconsider" — "A template's terraform module requires resource types that exceed Lambda's bundled-binary footprint" — fired during PR-C.6 commit 4's first attempt to build the Lambda layer. Empirical measurement against pinned terraform 1.10.4 + AWS provider 5.83.0 (linux_arm64):
+
+- Unpacked layer size: **667MB** (Lambda layer cap: 250MB)
+- Compressed zip: **144MB** (direct upload cap: 50MB; S3-hosted upload cap: 250MB)
+- AWS provider 5.83.0 binary alone: **585MB**
+
+The original ADR estimated provider footprint at ~150MB based on outdated information. The provider has bloated significantly — every minor version since 5.0 has added resource types (and the Go binary compiles them all in; there's no resource-level trimming). Even pinning to older 5.x versions does not bring the footprint within the layer cap.
+
+**What changed.** The chosen response is **container image Lambda**, not the CodeBuild migration the ADR documented as the trigger response. AWS Lambda supports container images up to 10GB; this delivery mechanism solves the size constraint while preserving every other architectural decision in this ADR (Lambda direct execution, single Lambda, no `.waitForTaskToken` SFN coordination, template-derived IAM, dedicated tfstate bucket).
+
+The migration: switch run-terraform's deploy artifact from zip+layer to a Docker image hosted in ECR. The `infra/modules/lambda` module gains support for `package_type = "Image"`. A new `infra/modules/terraform-lambda-image/` module wraps the Docker build (downloads + verifies terraform binary + provider via the same SHA256SUMS pattern; assembles into a Lambda-compatible container image; pushes to ECR). The Lambda handler logic — bundled via esbuild as before — gets copied into the image alongside the binaries.
+
+**Why container image, not CodeBuild.** Three reasons:
+
+1. **Smallest architectural delta.** Container image is a binary delivery change. Every other ADR-009 decision (execution model, IAM derivation, state storage, error handling) survives unchanged. CodeBuild would require a different SFN state shape (`.waitForTaskToken`), a separate IAM role, source delivery from Lambda to S3 to CodeBuild, and 1-2 weeks of migration per the ADR's own estimate.
+
+2. **The triggers ADR-009 listed for CodeBuild were timing-based, not size-based.** The four reconsideration triggers in § "When to reconsider" focused on "single apply exceeds 8 minutes," "new template's nominal apply exceeds 5 minutes," etc. — all timing constraints. Container Lambda solves the size constraint while keeping the timing constraints addressable by the same ADR-009 triggers. CodeBuild remains the documented response IF a timing trigger fires later.
+
+3. **Container Lambda is well-trodden.** AWS provides official base images, ECR is well-understood, the Docker build pattern is documented. The ~half-day setup cost is bounded.
+
+**Honest about container-image costs.** This is not a free swap from the layer approach:
+
+- New ECR repository (additional infra surface; separate IAM for the build pipeline).
+- Docker build complexity in CI (additional build step, larger CI artifacts, Docker daemon dependency).
+- Image lifecycle policies needed to prevent unbounded image accumulation in ECR (cost + repo scan time grow without retention).
+- Multi-platform considerations: image is built for `linux/arm64` to match Lambda baseline; cross-platform builds require buildx setup if a developer's local machine differs.
+- Cold start cumulative cost: container Lambdas have ~2-5s slower cold starts than zip Lambdas. For a single 4-minute provisioning, that's invisible. **If multiple workflow Lambdas later adopt the container pattern**, the cumulative cold-start cost grows.
+
+These costs are bounded compared to CodeBuild's 1-2 week migration. They are real costs, not zero.
+
+**This is a deferral, not a permanent answer.** Container image Lambda is the right move for shipping Phase 1 efficiently; it is NOT a refutation of the ADR's CodeBuild stance. CodeBuild remains the documented escalation. New triggers for the next escalation, calibrated against container Lambda's specific constraints:
+
+- **Image size approaches 5GB.** AWS allows up to 10GB but image pulls slow significantly past 5GB cold-start cost becomes painful. Migrate to CodeBuild (which has no image size constraint).
+- **Cold start cost becomes user-visible.** If wizard UX surfaces the per-Lambda cold-start as a perceptible pause, the cumulative ~2-5s × N-Lambda overhead matters. CodeBuild's per-build container is also slow but doesn't cumulatively pay across workflow steps.
+- **Multiple workflow Lambdas need containers.** If PR-C.7+ also need container-image delivery (e.g., wait-for-cloudfront with a custom polling tool), the operational surface (multiple ECR repos, multiple Docker builds in CI) starts to favor consolidating onto CodeBuild's per-build container model.
+- **Image-build-time exceeds CI's tolerance.** Container builds add minutes to every CI run; CodeBuild's separate compute substrate runs the heavy work outside the merge gate.
+
+When any of these fires, the ADR's original CodeBuild migration plan applies — the patterns from PR-C.6 (template-derived IAM, dedicated tfstate bucket, error taxonomy) survive the migration unchanged.
+
+**Tracked.** `docs/tech-debt.md` § "Future migration: run-terraform to CodeBuild execution model" updated with both the original timing triggers and these new container-Lambda-specific triggers.
+
 ## Related
 
 - **ADR-002** — managed IAM policies. The template-derived IAM is a custom policy generated programmatically; this ADR establishes that programmatic generation as the canonical pattern when manifest-derived constraints exist.

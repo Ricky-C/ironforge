@@ -80,6 +80,23 @@ jobs:
         if: matrix.composition == 'dev' || matrix.composition == 'prod'
         run: pnpm --filter "@ironforge/workflow-*" build
 
+      - name: Set up Docker Buildx
+        # Required for the run-terraform container image build (linux/arm64
+        # cross-platform from the GitHub Actions runner). See ADR-009
+        # § Amendments (PR-C.6 binary-footprint trigger).
+        if: matrix.composition == 'dev' || matrix.composition == 'prod'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build run-terraform container image
+        # Required for dev composition's task_run_terraform Lambda (which
+        # uses package_type=Image). Downloads + verifies pinned terraform
+        # 1.10.4 + AWS provider 5.83.0 (linux_arm64); bundles the handler
+        # via the workflow-build step above; assembles into a container
+        # image; pushes to ECR. Output: .image-uri file the dev composition
+        # reads at plan time. See ADR-009 § Amendments.
+        if: matrix.composition == 'dev' || matrix.composition == 'prod'
+        run: bash infra/modules/terraform-lambda-image/build-image.sh
+
       - name: Configure AWS credentials (OIDC plan role)
         uses: aws-actions/configure-aws-credentials@v6
         with:
