@@ -60,44 +60,45 @@ data "aws_iam_policy_document" "kms_key" {
     resources = ["*"]
   }
 
-  # ---- DEFERRED: consuming-principal grant ----
+  # Consuming-principal grant for workflow Lambdas that mint GitHub App
+  # installation tokens (create-repo, trigger-deploy, etc.). Activated in
+  # PR-C.4b once the first consumer's role lands; gated on a non-empty
+  # `var.workflow_lambda_role_arns` so this module continues to apply
+  # cleanly in environments without consumers (the original PR #41
+  # standalone-shared invariant).
   #
-  # No principal other than account root can decrypt this secret right now.
-  # The `AllowWorkflowLambdaDecrypt` statement below grants `kms:Decrypt` to
-  # the workflow Lambda role that mints GitHub App installation tokens; it
-  # lands in the same commit that introduces that role.
+  # `kms:EncryptionContext:SecretARN` binds the grant to this specific
+  # secret — even with `kms:Decrypt` on the CMK ARN, a Lambda role can't
+  # decrypt some other secret that happens to use the same key. The ARN
+  # is stable (manually created at bootstrap, imported by Terraform) so
+  # `StringEquals` is exact-match, not a wildcard.
   #
-  # Tracked in `docs/tech-debt.md` § "GitHub App private key — add
-  # consuming-principal grant when workflow Lambda role lands". The secret
-  # ARN is already stable at this point (created out-of-band, imported by
-  # the bootstrap procedure), so the future binding uses StringEquals
-  # against the exact ARN — no wildcard.
-  #
-  # To activate: uncomment, supply the workflow Lambda role ARN as a module
-  # input (probably `var.workflow_lambda_role_arn`), and remove this header.
-  #
-  # statement {
-  #   sid    = "AllowWorkflowLambdaDecrypt"
-  #   effect = "Allow"
-  #
-  #   principals {
-  #     type        = "AWS"
-  #     identifiers = [var.workflow_lambda_role_arn]
-  #   }
-  #
-  #   actions = [
-  #     "kms:Decrypt",
-  #     "kms:DescribeKey",
-  #   ]
-  #
-  #   resources = ["*"]
-  #
-  #   condition {
-  #     test     = "StringEquals"
-  #     variable = "kms:EncryptionContext:SecretARN"
-  #     values   = [aws_secretsmanager_secret.github_app_private_key.arn]
-  #   }
-  # }
+  # `kms:DescribeKey` is intentionally NOT granted — Secrets Manager-
+  # mediated decrypt doesn't require it, and the boundary's KMS allow
+  # (ADR-006 amendment) only covers `kms:Decrypt`. If a future consumer
+  # needs DescribeKey, the boundary needs widening too — see ADR-006
+  # § Amendments for the precedent.
+  dynamic "statement" {
+    for_each = length(var.workflow_lambda_role_arns) > 0 ? [1] : []
+    content {
+      sid    = "AllowWorkflowLambdaDecrypt"
+      effect = "Allow"
+
+      principals {
+        type        = "AWS"
+        identifiers = var.workflow_lambda_role_arns
+      }
+
+      actions   = ["kms:Decrypt"]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:EncryptionContext:SecretARN"
+        values   = [aws_secretsmanager_secret.github_app_private_key.arn]
+      }
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------

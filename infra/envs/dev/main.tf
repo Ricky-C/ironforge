@@ -92,8 +92,62 @@ module "task_create_repo" {
   environment             = var.environment
   permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
   source_dir              = "${path.root}/../../../services/workflow/create-repo/dist"
-  environment_variables   = local.task_lambda_env
-  iam_grants              = local.task_lambda_iam_grants
+
+  # PR-C.4b: real handler. Adds GitHub App-related env vars + IAM grants
+  # for Secrets Manager + KMS. SSM-backed identifiers (app id,
+  # installation id, org name) are resolved at terraform plan time and
+  # baked into the env vars; runtime SSM access is not needed and not
+  # granted. Rotation requires a redeploy — acceptable for Phase 1.
+  environment_variables = merge(local.task_lambda_env, {
+    GITHUB_APP_SECRET_ARN      = data.terraform_remote_state.shared.outputs.github_app_secret_arn
+    GITHUB_APP_ID              = data.aws_ssm_parameter.github_app_id.value
+    GITHUB_APP_INSTALLATION_ID = data.aws_ssm_parameter.github_app_installation_id.value
+    GITHUB_ORG_NAME            = data.aws_ssm_parameter.github_org_name.value
+  })
+
+  # The boundary widening (PR-C.4a, ADR-006 amendment) caps these
+  # actions broadly with tag conditions; the per-Lambda statements
+  # below narrow further with specific ARNs + EncryptionContext binding.
+  # Intersection (which permission-boundary semantics evaluate) gives
+  # this Lambda only github-app-secret decryption right.
+  iam_grants = {
+    dynamodb_read  = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = [
+      {
+        sid       = "GetGitHubAppSecret"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+      },
+      {
+        sid       = "DecryptGitHubAppSecret"
+        actions   = ["kms:Decrypt"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_kms_key_arn]
+        conditions = [
+          {
+            test     = "StringEquals"
+            variable = "kms:EncryptionContext:SecretARN"
+            values   = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+          },
+        ]
+      },
+    ]
+  }
+}
+
+# SSM data sources for GitHub App identifiers. Read at terraform plan
+# time and baked into the create-repo Lambda's env vars. The apply role
+# has ssm:Get* on /ironforge/* from PR #41 hardening.
+data "aws_ssm_parameter" "github_app_id" {
+  name = data.terraform_remote_state.shared.outputs.ssm_app_id_param
+}
+
+data "aws_ssm_parameter" "github_app_installation_id" {
+  name = data.terraform_remote_state.shared.outputs.ssm_installation_id_param
+}
+
+data "aws_ssm_parameter" "github_org_name" {
+  name = data.terraform_remote_state.shared.outputs.ssm_org_name_param
 }
 
 module "task_generate_code" {
