@@ -531,6 +531,12 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
       ]
     },
     {
+      "Sid": "ValidateStateMachineDefinitionAccountWide",
+      "Effect": "Allow",
+      "Action": "states:ValidateStateMachineDefinition",
+      "Resource": "*"
+    },
+    {
       "Sid": "WriteIronforgeSecrets",
       "Effect": "Allow",
       "Action": "secretsmanager:*",
