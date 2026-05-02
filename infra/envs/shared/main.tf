@@ -17,6 +17,7 @@ locals {
   # consumer = first invocation auth-fails loudly) is low and recoverable.
   github_app_consuming_lambda_function_names = [
     "ironforge-dev-create-repo",
+    "ironforge-dev-generate-code",
     # PR-C.8 will add: "ironforge-dev-trigger-deploy"
   ]
 }

@@ -167,8 +167,42 @@ module "task_generate_code" {
   environment             = var.environment
   permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
   source_dir              = "${path.root}/../../../services/workflow/generate-code/dist"
-  environment_variables   = local.task_lambda_env
-  iam_grants              = local.task_lambda_iam_grants
+
+  # PR-C.5: real handler. Same GitHub App access pattern as create-repo
+  # (PR-C.4b): env vars from SSM/shared outputs at plan time, identity
+  # policy with secretsmanager + kms:Decrypt narrowed via
+  # EncryptionContext binding. Boundary widening from PR-C.4a caps the
+  # actions; identity policy narrows to this Lambda's specific use.
+  environment_variables = merge(local.task_lambda_env, {
+    GITHUB_APP_SECRET_ARN      = data.terraform_remote_state.shared.outputs.github_app_secret_arn
+    GITHUB_APP_ID              = data.aws_ssm_parameter.github_app_id.value
+    GITHUB_APP_INSTALLATION_ID = data.aws_ssm_parameter.github_app_installation_id.value
+    GITHUB_ORG_NAME            = data.aws_ssm_parameter.github_org_name.value
+  })
+
+  iam_grants = {
+    dynamodb_read  = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = [
+      {
+        sid       = "GetGitHubAppSecret"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+      },
+      {
+        sid       = "DecryptGitHubAppSecret"
+        actions   = ["kms:Decrypt"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_kms_key_arn]
+        conditions = [
+          {
+            test     = "StringEquals"
+            variable = "kms:EncryptionContext:SecretARN"
+            values   = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+          },
+        ]
+      },
+    ]
+  }
 }
 
 module "task_run_terraform" {
