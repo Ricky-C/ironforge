@@ -145,3 +145,36 @@ export const buildServiceKeys = (service: {
   GSI1PK: buildServiceGSI1PK(service.ownerId),
   GSI1SK: buildServiceGSI1SK(service.createdAt, service.id),
 });
+
+// Template registry. Adding a template means adding its id here AND
+// landing the corresponding `templates/<id>/` directory + per-template
+// inputs schema. The handler resolves templateId → manifest →
+// per-template InputsSchema at request time.
+export const TEMPLATE_IDS = ["static-site"] as const;
+export const TemplateIdSchema = z.enum(TEMPLATE_IDS);
+export type TemplateId = (typeof TEMPLATE_IDS)[number];
+
+// POST /api/services request body. The first-stage validation only —
+// `inputs` is opaque here and gets validated against the per-template
+// InputsSchema (lookup keyed on `templateId`) in the second stage.
+//
+// Two-stage validation ordering matters: a UNKNOWN_TEMPLATE error
+// must surface before any attempt to apply an inputs schema, so a
+// caller asking "did my template work?" gets a deterministic answer
+// before any per-template schema variations enter the picture. See
+// services/api/src/routes/services.ts (POST handler) for the resolved
+// pipeline.
+export const CreateServiceRequestSchema = z.object({
+  name: ServiceNameSchema,
+  templateId: TemplateIdSchema,
+  inputs: z.record(z.string(), z.unknown()),
+});
+export type CreateServiceRequest = z.infer<typeof CreateServiceRequestSchema>;
+
+// 201 Created response shape: both the new Service and the Job that
+// kicks off provisioning. Lets clients link to job-status polling
+// without an extra fetch.
+export type CreateServiceResponse = {
+  service: Service;
+  job: import("./job.js").Job;
+};

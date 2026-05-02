@@ -1,0 +1,21 @@
+{
+  "name": "@ironforge/workflow-validate-inputs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workflow task Lambda — validate-inputs. PR-C.2 stub: thin facade over @ironforge/workflow-stub-lib's stubTask. Replaced with real validation logic at PR-C.3.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ironforge/shared-types": "workspace:*",
+    "@ironforge/workflow-stub-lib": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
+  }
+}

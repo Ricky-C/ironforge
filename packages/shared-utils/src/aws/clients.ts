@@ -1,9 +1,10 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { SFNClient } from "@aws-sdk/client-sfn";
 
-// Module-level singleton. aws-sdk-client-mock intercepts at the SDK
+// Module-level singletons. aws-sdk-client-mock intercepts at the SDK
 // middleware layer regardless of which client instance the handler
-// holds, so this singleton is testable without dependency injection.
+// holds, so these singletons are testable without dependency injection.
 //
 // Region is resolved from the default credential/config chain. In Lambda
 // that's AWS_REGION (set by the runtime); locally it's the standard
@@ -23,6 +24,13 @@ export const docClient = DynamoDBDocumentClient.from(baseClient, {
   },
 });
 
+// Step Functions client. Used by the POST /api/services handler to
+// call StartExecution on the provisioning state machine. Workflow
+// Lambdas don't currently use SFN directly (they receive input from
+// SFN but don't invoke it), but exporting a singleton here keeps the
+// SDK-client surface in one place.
+export const sfnClient = new SFNClient({});
+
 // Table name resolved from Lambda env. Reads happen at request time
 // (not import time) so test environments can override via env without
 // re-importing the module.
@@ -34,4 +42,17 @@ export const getTableName = (): string => {
     );
   }
   return name;
+};
+
+// State machine ARN resolved from Lambda env. POST /api/services calls
+// StartExecution against this ARN. Workflow Lambdas don't need this —
+// they live INSIDE an execution and read $$.Execution if anything.
+export const getStateMachineArn = (): string => {
+  const arn = process.env["PROVISIONING_STATE_MACHINE_ARN"];
+  if (!arn) {
+    throw new Error(
+      "PROVISIONING_STATE_MACHINE_ARN env var is not set. Lambda config must populate it.",
+    );
+  }
+  return arn;
 };

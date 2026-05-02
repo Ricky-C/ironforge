@@ -1,6 +1,7 @@
 # Dev environment composition root.
 
 data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 
 # Shared (account-level) composition outputs. Same state bucket as this
 # composition; different state key. Per ADR-001's composition split:
@@ -14,21 +15,188 @@ data "terraform_remote_state" "shared" {
   }
 }
 
+locals {
+  account_id = data.aws_caller_identity.current.account_id
+  region     = data.aws_region.current.name
+
+  # State machine ARN computed up-front so the API Lambda can scope its
+  # states:StartExecution grant before the state machine resource exists
+  # (terraform graph dependency: API Lambda role → state machine name,
+  # state machine → 8 task Lambda ARNs). Naming has to match the
+  # step-functions module's local.state_machine_name exactly.
+  state_machine_name = "ironforge-${var.environment}-provisioning"
+  state_machine_arn  = "arn:aws:states:${local.region}:${local.account_id}:stateMachine:${local.state_machine_name}"
+}
+
 module "dynamodb" {
   source = "../../modules/dynamodb"
 
   environment = var.environment
 }
 
-# Read-only API Lambda. Stub in PR-B.2 (see services/api/src/handler.ts);
-# PR-B.3 replaces the route bodies with DynamoDB-backed logic. The
-# Lambda's IAM grants already include dynamodb_read against the env
-# table + GSI1 in anticipation of PR-B.3 — no IAM changes needed when
-# the real handlers land.
+# ===========================================================================
+# Workflow task Lambdas (PR-C.2 stubs — see services/workflow/_stub-lib)
+# ===========================================================================
+#
+# 8 task Lambdas, one per state in the provisioning state machine. Each is
+# a thin facade over @ironforge/workflow-stub-lib for PR-C.2; PR-C.3+
+# replaces handlers one at a time. IAM grants are uniform across the 6
+# simple stubs (DynamoDB read+write for JobStep upserts); finalize and
+# cleanup-on-failure also need Service/Job transitions but use the same
+# table ARN, so the grants set is identical.
+#
+# CI runs `pnpm -r --filter "@ironforge/workflow-*" build` before plan
+# so each dist/ directory exists when archive_file zips it.
+
+locals {
+  # Shared environment variables for every task Lambda. DynamoDB table
+  # name is the only required env; stub-lib reads tableName via
+  # getTableName() at request time.
+  task_lambda_env = {
+    DYNAMODB_TABLE_NAME     = module.dynamodb.table_name
+    IRONFORGE_ENV           = var.environment
+    POWERTOOLS_SERVICE_NAME = "ironforge-workflow"
+    LOG_LEVEL               = "INFO"
+  }
+
+  # Shared iam_grants: every task Lambda reads + writes the env's
+  # DynamoDB table (JobStep upserts; finalize/cleanup also do
+  # transitionStatus on Service/Job). GSI1 access is included for
+  # symmetry — finalize doesn't currently use it but PR-C.9 may.
+  task_lambda_iam_grants = {
+    dynamodb_read = [
+      module.dynamodb.table_arn,
+      "${module.dynamodb.table_arn}/index/*",
+    ]
+    dynamodb_write = [
+      module.dynamodb.table_arn,
+    ]
+  }
+}
+
+module "task_validate_inputs" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-validate-inputs"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/validate-inputs/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+module "task_create_repo" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-create-repo"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/create-repo/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+module "task_generate_code" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-generate-code"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/generate-code/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+module "task_run_terraform" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-run-terraform"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/run-terraform/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+module "task_wait_for_cloudfront" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-wait-for-cloudfront"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/wait-for-cloudfront/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+module "task_trigger_deploy" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-trigger-deploy"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/trigger-deploy/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+module "task_finalize" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-finalize"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/finalize/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+module "task_cleanup_on_failure" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-cleanup-on-failure"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/cleanup-on-failure/dist"
+  environment_variables   = local.task_lambda_env
+  iam_grants              = local.task_lambda_iam_grants
+}
+
+# ===========================================================================
+# Provisioning state machine
+# ===========================================================================
+
+module "provisioning_state_machine" {
+  source = "../../modules/step-functions"
+
+  environment = var.environment
+
+  task_lambda_arns = {
+    validate_inputs     = module.task_validate_inputs.function_arn
+    create_repo         = module.task_create_repo.function_arn
+    generate_code       = module.task_generate_code.function_arn
+    run_terraform       = module.task_run_terraform.function_arn
+    wait_for_cloudfront = module.task_wait_for_cloudfront.function_arn
+    trigger_deploy      = module.task_trigger_deploy.function_arn
+    finalize            = module.task_finalize.function_arn
+    cleanup_on_failure  = module.task_cleanup_on_failure.function_arn
+  }
+}
+
+# ===========================================================================
+# API Lambda
+# ===========================================================================
+# PR-C.2 expands the API Lambda's surface from read-only (PR-B.3) to
+# include POST /api/services. New IAM:
+#   - dynamodb_write on the env table for Service+Job creation +
+#     IdempotencyRecord cache writes + kickoff transitions
+#   - extra_statements for states:StartExecution scoped to the
+#     provisioning state machine ARN
+# Boundary (lambda-baseline) gained dynamodb:TransactWriteItems in this
+# PR — required for the create-Service+create-Job atomic write.
 #
 # CI must run `pnpm -F @ironforge/api build` before `terraform plan` so
-# services/api/dist/ exists when archive_file zips it. The build is part
-# of the apply pipeline; local applies require the same step.
+# services/api/dist/ exists when archive_file zips it.
 module "api_lambda" {
   source = "../../modules/lambda"
 
@@ -40,16 +208,27 @@ module "api_lambda" {
   source_dir = "${path.root}/../../../services/api/dist"
 
   environment_variables = {
-    DYNAMODB_TABLE_NAME     = module.dynamodb.table_name
-    IRONFORGE_ENV           = var.environment
-    POWERTOOLS_SERVICE_NAME = "ironforge-api"
-    LOG_LEVEL               = "INFO"
+    DYNAMODB_TABLE_NAME            = module.dynamodb.table_name
+    PROVISIONING_STATE_MACHINE_ARN = local.state_machine_arn
+    IRONFORGE_ENV                  = var.environment
+    POWERTOOLS_SERVICE_NAME        = "ironforge-api"
+    LOG_LEVEL                      = "INFO"
   }
 
   iam_grants = {
     dynamodb_read = [
       module.dynamodb.table_arn,
       "${module.dynamodb.table_arn}/index/*",
+    ]
+    dynamodb_write = [
+      module.dynamodb.table_arn,
+    ]
+    extra_statements = [
+      {
+        sid       = "StartProvisioningExecution"
+        actions   = ["states:StartExecution"]
+        resources = [local.state_machine_arn]
+      },
     ]
   }
 }

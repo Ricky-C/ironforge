@@ -93,6 +93,9 @@ importers:
       '@aws-sdk/client-dynamodb':
         specifier: ^3.1039.0
         version: 3.1041.0
+      '@aws-sdk/client-sfn':
+        specifier: ^3.1039.0
+        version: 3.1041.0
       '@aws-sdk/lib-dynamodb':
         specifier: ^3.1039.0
         version: 3.1041.0(@aws-sdk/client-dynamodb@3.1041.0)
@@ -125,6 +128,9 @@ importers:
         specifier: ^2.10.0
         version: 2.33.0
       '@aws-sdk/client-dynamodb':
+        specifier: ^3.1039.0
+        version: 3.1041.0
+      '@aws-sdk/client-sfn':
         specifier: ^3.1039.0
         version: 3.1041.0
       '@aws-sdk/lib-dynamodb':
@@ -196,6 +202,189 @@ importers:
         specifier: ^4.1.5
         version: 4.1.5(@types/node@25.6.0)(vite@7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0))
 
+  services/workflow/_stub-lib:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/shared-utils':
+        specifier: workspace:*
+        version: link:../../../packages/shared-utils
+      zod:
+        specifier: ^4.4.1
+        version: 4.4.1
+    devDependencies:
+      '@aws-sdk/lib-dynamodb':
+        specifier: ^3.1039.0
+        version: 3.1041.0(@aws-sdk/client-dynamodb@3.1041.0)
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      aws-sdk-client-mock:
+        specifier: ^4.1.0
+        version: 4.1.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.5(@types/node@25.6.0)(vite@7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0))
+
+  services/workflow/cleanup-on-failure:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  services/workflow/create-repo:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  services/workflow/finalize:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  services/workflow/generate-code:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  services/workflow/run-terraform:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  services/workflow/trigger-deploy:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  services/workflow/validate-inputs:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  services/workflow/wait-for-cloudfront:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/workflow-stub-lib':
+        specifier: workspace:*
+        version: link:../_stub-lib
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
 packages:
 
   '@alloc/quick-lru@5.2.0':
@@ -235,6 +424,10 @@ packages:
 
   '@aws-sdk/client-dynamodb@3.1041.0':
     resolution: {integrity: sha512-q0dhIfdm3R9EEElaUXvoLD0EBm4KYPcJC4So/skToMPACiznNgVI2Vup4PKM716KTaDsIcF8V1EA7s33H7oWMg==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-sfn@3.1041.0':
+    resolution: {integrity: sha512-13IXU/aoxY0do8SjIOlpU8FouoPclhrJEqrox3fzynk2jz4ccdPxYLQM+rSQJxpDTUdQ6HfdvOtIvaFRK8DQMA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-sns@3.1039.0':
@@ -3357,6 +3550,50 @@ snapshots:
       '@smithy/util-retry': 4.3.6
       '@smithy/util-utf8': 4.2.2
       '@smithy/util-waiter': 4.3.0
+      tslib: 2.8.1
+    transitivePeerDependencies:
+      - aws-crt
+
+  '@aws-sdk/client-sfn@3.1041.0':
+    dependencies:
+      '@aws-crypto/sha256-browser': 5.2.0
+      '@aws-crypto/sha256-js': 5.2.0
+      '@aws-sdk/core': 3.974.8
+      '@aws-sdk/credential-provider-node': 3.972.39
+      '@aws-sdk/middleware-host-header': 3.972.10
+      '@aws-sdk/middleware-logger': 3.972.10
+      '@aws-sdk/middleware-recursion-detection': 3.972.11
+      '@aws-sdk/middleware-user-agent': 3.972.38
+      '@aws-sdk/region-config-resolver': 3.972.13
+      '@aws-sdk/types': 3.973.8
+      '@aws-sdk/util-endpoints': 3.996.8
+      '@aws-sdk/util-user-agent-browser': 3.972.10
+      '@aws-sdk/util-user-agent-node': 3.973.24
+      '@smithy/config-resolver': 4.4.17
+      '@smithy/core': 3.23.17
+      '@smithy/fetch-http-handler': 5.3.17
+      '@smithy/hash-node': 4.2.14
+      '@smithy/invalid-dependency': 4.2.14
+      '@smithy/middleware-content-length': 4.2.14
+      '@smithy/middleware-endpoint': 4.4.32
+      '@smithy/middleware-retry': 4.5.7
+      '@smithy/middleware-serde': 4.2.20
+      '@smithy/middleware-stack': 4.2.14
+      '@smithy/node-config-provider': 4.3.14
+      '@smithy/node-http-handler': 4.6.1
+      '@smithy/protocol-http': 5.3.14
+      '@smithy/smithy-client': 4.12.13
+      '@smithy/types': 4.14.1
+      '@smithy/url-parser': 4.2.14
+      '@smithy/util-base64': 4.3.2
+      '@smithy/util-body-length-browser': 4.2.2
+      '@smithy/util-body-length-node': 4.2.3
+      '@smithy/util-defaults-mode-browser': 4.3.49
+      '@smithy/util-defaults-mode-node': 4.2.54
+      '@smithy/util-endpoints': 3.4.2
+      '@smithy/util-middleware': 4.2.14
+      '@smithy/util-retry': 4.3.6
+      '@smithy/util-utf8': 4.2.2
       tslib: 2.8.1
     transitivePeerDependencies:
       - aws-crt

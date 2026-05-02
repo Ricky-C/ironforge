@@ -7,6 +7,7 @@ on:
       - "infra/**"
       - "services/api/**"
       - "services/cost-reporter/**"
+      - "services/workflow/**"
       - ".github/workflows/infra-apply.yml"
 
 permissions:
@@ -118,6 +119,13 @@ jobs:
       - name: Build api Lambda
         # Required for dev composition's data.archive_file to find dist/handler.js.
         run: pnpm --filter @ironforge/api build
+
+      - name: Build workflow task Lambdas
+        # Required for dev composition's 8 task Lambda archive_file data
+        # sources. Glob matches the 8 services/workflow/<step>/ workspaces;
+        # @ironforge/workflow-stub-lib is also matched but its build is a
+        # no-op (source-only, consumed via "exports" field).
+        run: pnpm --filter "@ironforge/workflow-*" build
 
       - name: Configure AWS credentials (OIDC apply role)
         uses: aws-actions/configure-aws-credentials@v6

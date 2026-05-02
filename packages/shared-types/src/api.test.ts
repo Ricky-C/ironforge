@@ -16,6 +16,12 @@ describe("ApiErrorCodeSchema", () => {
   it("rejects unknown codes", () => {
     expect(ApiErrorCodeSchema.safeParse("MYSTERY").success).toBe(false);
   });
+
+  it("includes POST /api/services error codes (PR-C.2)", () => {
+    expect(API_ERROR_CODES).toContain("UNKNOWN_TEMPLATE");
+    expect(API_ERROR_CODES).toContain("INVALID_INPUTS");
+    expect(API_ERROR_CODES).toContain("CONFLICT");
+  });
 });
 
 describe("ApiErrorSchema", () => {

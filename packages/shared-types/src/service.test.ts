@@ -5,6 +5,7 @@ import {
   buildServiceGSI1SK,
   buildServiceKeys,
   buildServicePK,
+  CreateServiceRequestSchema,
   ServiceArchivedSchema,
   ServiceFailedSchema,
   ServiceLiveSchema,
@@ -14,6 +15,8 @@ import {
   ServiceSchema,
   SERVICE_SK_META,
   SERVICE_STATUSES,
+  TemplateIdSchema,
+  TEMPLATE_IDS,
 } from "./service.js";
 
 const VALID_SUB = "11111111-1111-4111-8111-111111111111";
@@ -235,5 +238,68 @@ describe("key construction helpers", () => {
       createdAt: VALID_TIMESTAMP,
     });
     expect(keys.SK).toBe("META");
+  });
+});
+
+describe("TemplateIdSchema", () => {
+  it.each(TEMPLATE_IDS)("accepts %s", (id) => {
+    expect(TemplateIdSchema.safeParse(id).success).toBe(true);
+  });
+
+  it("rejects unknown template id", () => {
+    expect(TemplateIdSchema.safeParse("static-site-nextjs").success).toBe(false);
+  });
+});
+
+describe("CreateServiceRequestSchema", () => {
+  const validRequest = {
+    name: "my-site",
+    templateId: "static-site",
+    inputs: {},
+  };
+
+  it("accepts a well-formed request", () => {
+    expect(CreateServiceRequestSchema.safeParse(validRequest).success).toBe(true);
+  });
+
+  it("accepts non-empty inputs (per-template schemas validate the shape)", () => {
+    expect(
+      CreateServiceRequestSchema.safeParse({
+        ...validRequest,
+        inputs: { framework: "next" },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects when name is invalid (uppercase)", () => {
+    expect(
+      CreateServiceRequestSchema.safeParse({ ...validRequest, name: "MySite" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects when name is too short", () => {
+    expect(
+      CreateServiceRequestSchema.safeParse({ ...validRequest, name: "ab" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects when templateId is unknown (UNKNOWN_TEMPLATE territory)", () => {
+    expect(
+      CreateServiceRequestSchema.safeParse({
+        ...validRequest,
+        templateId: "static-site-nextjs",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects when inputs is not an object", () => {
+    expect(
+      CreateServiceRequestSchema.safeParse({ ...validRequest, inputs: "string" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects when inputs is missing", () => {
+    const { inputs: _omit, ...withoutInputs } = validRequest;
+    expect(CreateServiceRequestSchema.safeParse(withoutInputs).success).toBe(false);
   });
 });

@@ -16,7 +16,20 @@ import { Hono } from "hono";
 import { flattenError } from "zod";
 
 import type { AppEnv } from "../env.js";
+import { createService } from "../lib/create-service.js";
 import { decodeServiceListCursor, encodeServiceListCursor } from "../lib/cursor.js";
+
+const STATE_MACHINE_ARN_ENV = "PROVISIONING_STATE_MACHINE_ARN";
+
+const getStateMachineArnFromEnv = (): string => {
+  const arn = process.env[STATE_MACHINE_ARN_ENV];
+  if (!arn) {
+    throw new Error(
+      "PROVISIONING_STATE_MACHINE_ARN env var is not set. Lambda config must populate it.",
+    );
+  }
+  return arn;
+};
 
 export const servicesRoutes = new Hono<AppEnv>();
 
@@ -121,6 +134,42 @@ const parseOrder = (raw: string | undefined): OrderResult => {
   }
   return { ok: false, raw };
 };
+
+// -----------------------------------------------------------------------
+// POST /api/services — create a Service + Job + kick off provisioning
+// -----------------------------------------------------------------------
+
+servicesRoutes.post("/", async (c) => {
+  const user = c.get("user");
+  const idempotencyKey = c.req.header("Idempotency-Key");
+
+  let rawBody: unknown;
+  try {
+    rawBody = await c.req.json();
+  } catch {
+    const body: ApiFailure = {
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "request body is not valid JSON" },
+    };
+    return c.json(body, 400);
+  }
+
+  try {
+    const result = await createService({
+      tableName: getTableName(),
+      stateMachineArn: getStateMachineArnFromEnv(),
+      ownerId: user.sub,
+      body: rawBody,
+      idempotencyKey,
+    });
+
+    const status = result.statusCode as 200 | 201 | 400 | 409 | 500;
+    return c.json(result.body as Record<string, unknown>, status);
+  } catch (err) {
+    logDynamoError(err, c, "POST /api/services");
+    return c.json(INTERNAL_BODY, 500);
+  }
+});
 
 // -----------------------------------------------------------------------
 // GET /api/services — list owner-scoped services, cursor-paginated

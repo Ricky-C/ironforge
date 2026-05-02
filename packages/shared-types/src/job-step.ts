@@ -19,12 +19,18 @@ const IsoTimestampSchema = z
 // schema and the state machine co-evolve; renaming a step requires
 // updating this enum, which forces a deliberate audit. New steps land
 // here when the state machine adds them.
+//
+// `wait-for-cert` was originally listed here (PR-C.0) but was dropped
+// from the workflow at PR-C.1 design conversation when the cert
+// strategy switched to the shared `*.ironforge.rickycaballero.com`
+// wildcard cert. Re-introduction would happen in tandem with the
+// per-service cert opt-in feature tracked in `docs/tech-debt.md` —
+// extending this enum is one of the change-set items there.
 export const STEP_NAMES = [
   "validate-inputs",
   "create-repo",
   "generate-code",
   "run-terraform",
-  "wait-for-cert",
   "wait-for-cloudfront",
   "trigger-deploy",
   "finalize",

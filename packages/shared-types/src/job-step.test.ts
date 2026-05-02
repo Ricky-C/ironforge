@@ -30,6 +30,13 @@ describe("StepNameSchema", () => {
   it("rejects unknown step name", () => {
     expect(StepNameSchema.safeParse("not-a-step").success).toBe(false);
   });
+
+  it("rejects wait-for-cert (dropped at PR-C.1)", () => {
+    // wait-for-cert was removed from the workflow when the cert
+    // strategy switched to the shared wildcard. Confirming the
+    // enum no longer accepts it prevents an accidental re-add.
+    expect(StepNameSchema.safeParse("wait-for-cert").success).toBe(false);
+  });
 });
 
 describe("JobStepSchema variants", () => {
