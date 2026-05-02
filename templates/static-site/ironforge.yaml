@@ -23,9 +23,13 @@ version: 1
 # fields) be staged behind compatibleIronforgeVersion bumps.
 compatibleIronforgeVersion: 1
 
-# Path to the Zod schema that validates per-template inputs. The
-# validate-inputs Lambda (PR-C.3) reads this path to know which schema
-# to apply against the user's wizard submission.
+# Documentation-only pointer to the Zod schema that validates this
+# template's per-template inputs. Runtime resolution does NOT parse this
+# path — both the API handler (POST /api/services) and the validate-
+# inputs Lambda look up the schema via TEMPLATE_REGISTRY in
+# @ironforge/shared-types. This field tells humans where the schema
+# lives; updating it without updating the registry is a no-op at
+# runtime. See docs/data-model.md § Template artifact storage.
 inputsSchema: packages/shared-types/src/templates/static-site.ts#StaticSiteInputsSchema
 
 # Path to the terraform outputs file. The state-machine consumers
