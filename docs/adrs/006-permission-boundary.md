@@ -57,7 +57,7 @@ Belt-and-suspenders. The ALLOW list doesn't include these, so they would be deni
 
 ## Deliberate exclusions
 
-**KMS.** Post-ADR-003 most Ironforge resources use AWS-managed encryption (handled transparently by data-plane services). No current Lambda directly calls KMS. Adding KMS perms speculatively risks the tag/alias condition pitfalls — boundary KMS conditions have inconsistent behavior across operations. `docs/tech-debt.md` § "KMS permissions absent from the IronforgePermissionBoundary" tracks the deferral and how to add them safely when the first direct-KMS-access Lambda lands.
+**KMS.** Post-ADR-003 most Ironforge resources use AWS-managed encryption (handled transparently by data-plane services). No current Lambda directly calls KMS. Adding KMS perms speculatively risks the tag/alias condition pitfalls — boundary KMS conditions have inconsistent behavior across operations. `docs/tech-debt.md` § "KMS permissions absent from the IronforgePermissionBoundary" tracks the deferral and how to add them safely when the first direct-KMS-access Lambda lands. _[Partially amended 2026-05-01 (PR-C.4a) — `kms:Decrypt` was added; see § Amendments. `kms:GenerateDataKey`, `kms:DescribeKey`, and the rest remain excluded.]_
 
 **`route53:GetChange`.** Phase 1 workflow Lambdas (wait-for-cert step) will need this with `Resource: "*"` for ACM cert validation polling. Saved memory `project_phase1_route53_getchange.md` flags it for the Phase 1 boundary update.
 
@@ -249,10 +249,28 @@ aws s3 rm "s3://${BUCKET}/prod/verify-test"
 
 - Roles created before Commit 10 (cost-reporter) get the boundary retroactively via the `permissions_boundary_arn` variable threaded through. Once applied, the cost-reporter still works because its inline policy is well within the boundary's ALLOW list.
 
+## Amendments
+
+### 2026-05-01 (PR-C.4a) — `kms:Decrypt` added for GitHub App secret access
+
+**What changed.** `IronforgePermissionBoundary` gains a new `AllowKmsDecryptOnIronforgeManagedKeys` statement: `kms:Decrypt` on `Resource: "*"` with condition `kms:ResourceTag/ironforge-managed = "true"`. No other KMS actions added; `kms:GenerateDataKey`, `kms:DescribeKey`, and the rest remain excluded under the original "deliberate exclusions" reasoning.
+
+**Why.** PR-C.4a introduces `@ironforge/shared-utils/github-app/getInstallationToken`, the first helper that triggers a direct-`kms:Decrypt` evaluation against an Ironforge CMK. The flow: Lambda calls `secretsmanager:GetSecretValue` on `ironforge/github-app/private-key-*`; Secrets Manager decrypts the secret using the github-app CMK, which evaluates `kms:Decrypt` against the *caller's* permissions (per AWS's documented Secrets Manager + CMK integration semantics). Without `kms:Decrypt` in the boundary, the Lambda's identity-policy grant for it would be capped to nothing, and the secret fetch would fail with a key-policy denial that's hard to attribute (the error surfaces at the Secrets Manager call site, not at a KMS call site).
+
+The original ADR's deferral reasoning ("no Lambda directly calls KMS") was correct at write time. PR-C.4a is the first-direct-KMS-access trigger the deferral anticipated. The action plan in `docs/tech-debt.md` § "KMS permissions absent from the IronforgePermissionBoundary" specified exactly this work; the entry tightens to scope-narrowing the residual exclusions (`GenerateDataKey`, `DescribeKey`) for whenever a future Lambda needs them.
+
+**Tag-condition pitfall mitigation.** The original ADR cited "tag/alias-condition pitfalls — boundary KMS conditions have inconsistent behavior across operations" as a reason for deferral. The amendment uses a `ResourceTag` condition, not an `AliasName` condition, deliberately. Per AWS's KMS authorization documentation, `kms:ResourceTag/<key>` is reliably evaluated for `kms:Decrypt` on the customer-managed-key resource (the tag is on the CMK itself, set at creation by Terraform). The alternative — `kms:RequestAlias` or alias-name pattern matching — has the inconsistency the original ADR flagged: aliases are mutable, alias-condition evaluation differs between operations that operate on the alias resource vs the underlying key. The chosen pattern sidesteps that surface by binding to a property (the tag) that is stable and consistently evaluated across KMS operations on the same key.
+
+**Boundary-vs-identity narrowing.** The boundary widening is deliberately broader than any single Lambda needs: it permits `kms:Decrypt` against *any* `ironforge-managed=true` CMK, not just the github-app CMK. Per-Lambda identity policies in PR-C.4b (create-repo) and PR-C.8 (trigger-deploy) narrow this further by adding `Resource: <github-app-cmk-arn>` and `kms:EncryptionContext:SecretARN = <secret-arn>` conditions. The intersection (which is what permission-boundary semantics evaluate) gives each Lambda only the github-app-secret decryption right, even though the boundary itself is broader. This split — boundary as cap, identity policy as narrow grant — matches the existing convention for other resource types in the boundary (see `AllowDynamoDBOnIronforgeTables`, `AllowArtifactsBucketAccess`).
+
+**What stays excluded.** `kms:GenerateDataKey`, `kms:DescribeKey`, `kms:Encrypt`, and the rest of the KMS surface remain off the boundary. No current Phase 1 Lambda needs them. When one does, the same amendment shape applies: identify the trigger, narrow the action, document the rationale.
+
+**Verification.** PR-C.4a does not include a runtime verification of the boundary's KMS condition behavior — no Lambda exercises `kms:Decrypt` until PR-C.4b's `create-repo` lands. The verification (attempt `kms:Decrypt` against a non-`ironforge-managed`-tagged CMK from a workflow Lambda role; confirm denial) is tracked in `docs/tech-debt.md` § "Boundary verification: kms:Decrypt denial against non-Ironforge-tagged CMK", to be performed in PR-C.4b alongside the first real consumer.
+
 ## Related
 
 - ADR-002 — managed IAM policies. The boundary itself is a custom policy (not managed) because no AWS-provided policy fits.
-- ADR-003 — encryption defaults. KMS exclusion from the boundary follows from "no Lambda directly calls KMS post-ADR-003."
+- ADR-003 — encryption defaults. KMS exclusion from the boundary follows from "no Lambda directly calls KMS post-ADR-003." _[Partially amended 2026-05-01 (PR-C.4a); see § Amendments.]_
 - ADR-005 — DynamoDB multi-table exception. The boundary's DynamoDB allow scopes to `ironforge-*` (matching both env-named tables).
 - `docs/iam-exceptions.md` — `Resource: "*"` actions used by the boundary.
 - `docs/tech-debt.md` — deferred KMS perms; deferred bucket-policy prefix enforcement.
