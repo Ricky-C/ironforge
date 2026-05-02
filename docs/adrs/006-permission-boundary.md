@@ -232,6 +232,94 @@ aws s3 rm "s3://${BUCKET}/dev/verify-test"
 aws s3 rm "s3://${BUCKET}/prod/verify-test"
 ```
 
+### Phase 1 — KMS condition behavior (boundary tag + per-Lambda EncryptionContext)
+
+Verifies the two-layer KMS denial path established in PR-C.4a (boundary widening, ADR-006 § Amendments) and PR-C.4b (per-Lambda EncryptionContext narrowing on the create-repo role). Run after `terraform apply` of shared and dev compositions, after the github-app secret bootstrap, and after the GitHub custom-property bootstrap.
+
+The four cases test different layers of the defense:
+
+1. **Boundary attached.** The new `AllowKmsDecryptOnIronforgeManagedKeys` statement appears in the boundary's policy document.
+2. **Boundary tag-condition denies non-Ironforge keys.** Even with a permissive identity policy, the boundary's `ironforge-managed=true` condition prevents `kms:Decrypt` against an untagged CMK.
+3. **Per-Lambda EncryptionContext binding denies wrong-context decrypts.** Even against the right CMK, the per-Lambda identity policy's `kms:EncryptionContext:SecretARN` condition fails the call if the context doesn't match.
+4. **End-to-end happy path.** With the right key + right context, `kms:Decrypt` succeeds via Secrets Manager `GetSecretValue` against the github-app secret. Plus an end-to-end check of the custom-property idempotency: helper creates a test repo, sets `ironforge-job-id`, GET reads it back, second invocation with same jobId is treated as idempotent retry.
+
+Setup variables (ARNs are environment-specific; substitute):
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ironforge-dev-create-repo-execution"
+GITHUB_APP_SECRET_ARN=$(aws ssm get-parameter --name /ironforge/github-app/org-name --query Parameter.Name --output text >/dev/null && \
+  aws secretsmanager describe-secret --secret-id ironforge/github-app/private-key --query ARN --output text)
+GITHUB_APP_KMS_KEY_ID=$(aws kms describe-key --key-id alias/ironforge-github-app-private-key --query KeyMetadata.KeyId --output text)
+```
+
+**Case 1 — boundary attached.**
+
+```bash
+aws iam get-policy --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/IronforgePermissionBoundary --query Policy.DefaultVersionId --output text | xargs -I {} aws iam get-policy-version --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/IronforgePermissionBoundary --version-id {} --query 'PolicyVersion.Document.Statement[?Sid==`AllowKmsDecryptOnIronforgeManagedKeys`]'
+```
+
+Expected: a single statement with `Action: "kms:Decrypt"` and `Condition.StringEquals."kms:ResourceTag/ironforge-managed": "true"`.
+
+**Case 2 — boundary tag-condition denial against non-Ironforge-tagged CMK.** Create a throwaway CMK (no `ironforge-managed` tag) for this test, then attempt decrypt as the create-repo role:
+
+```bash
+THROWAWAY_KEY_ID=$(aws kms create-key --description "Throwaway for boundary verification — delete immediately" --query KeyMetadata.KeyId --output text)
+
+CREDS=$(aws sts assume-role --role-arn "$ROLE_ARN" --role-session-name boundary-kms-deny-verify --query 'Credentials' --output json)
+
+# Encrypt with the throwaway key as the operator (not via the role)
+THROWAWAY_CIPHERTEXT=$(aws kms encrypt --key-id $THROWAWAY_KEY_ID --plaintext "test" --query CiphertextBlob --output text)
+
+# Attempt decrypt as the role — should be denied at the boundary
+AWS_ACCESS_KEY_ID=$(echo "$CREDS" | jq -r .AccessKeyId) \
+AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r .SecretAccessKey) \
+AWS_SESSION_TOKEN=$(echo "$CREDS" | jq -r .SessionToken) \
+aws kms decrypt --ciphertext-blob "$THROWAWAY_CIPHERTEXT" --key-id $THROWAWAY_KEY_ID 2>&1 | grep -E "AccessDeniedException|denied"
+```
+
+Expected: `AccessDeniedException` with the boundary cited as the denial source. Cleanup: `aws kms schedule-key-deletion --key-id $THROWAWAY_KEY_ID --pending-window-in-days 7`.
+
+**Case 3 — per-Lambda EncryptionContext denial against the right CMK with wrong context.** Encrypt a payload under the github-app CMK with a non-matching EncryptionContext, then attempt decrypt as the create-repo role:
+
+```bash
+WRONG_CONTEXT_CIPHERTEXT=$(aws kms encrypt --key-id $GITHUB_APP_KMS_KEY_ID --plaintext "test" --encryption-context "SecretARN=arn:aws:secretsmanager:us-east-1:000000000000:secret:not-our-secret" --query CiphertextBlob --output text)
+
+AWS_ACCESS_KEY_ID=$(echo "$CREDS" | jq -r .AccessKeyId) \
+AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r .SecretAccessKey) \
+AWS_SESSION_TOKEN=$(echo "$CREDS" | jq -r .SessionToken) \
+aws kms decrypt --ciphertext-blob "$WRONG_CONTEXT_CIPHERTEXT" --key-id $GITHUB_APP_KMS_KEY_ID --encryption-context "SecretARN=arn:aws:secretsmanager:us-east-1:000000000000:secret:not-our-secret" 2>&1 | grep -E "AccessDeniedException|denied"
+```
+
+Expected: `AccessDeniedException` with the per-Lambda identity policy's EncryptionContext condition cited. The boundary allowed it through (key is `ironforge-managed`); the identity policy's narrower condition is what denies.
+
+**Case 4 — end-to-end happy path: secret fetch + custom-property idempotency.** Invoke create-repo via SFN with a test serviceName, verify the repo gets created with the custom property, invoke again with the same jobId, verify idempotent return:
+
+```bash
+JOB_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+SERVICE_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+SERVICE_NAME="boundary-verify-$(date +%s)"
+
+INPUT=$(jq -n \
+  --arg sid "$SERVICE_ID" --arg jid "$JOB_ID" --arg sname "$SERVICE_NAME" \
+  '{serviceId: $sid, jobId: $jid, executionName: $jid, serviceName: $sname, ownerId: "00000000-0000-4000-8000-000000000000", templateId: "static-site", inputs: {}}')
+
+aws lambda invoke --function-name ironforge-dev-create-repo --payload "$INPUT" /tmp/create-repo-out.json --cli-binary-format raw-in-base64-out
+cat /tmp/create-repo-out.json | jq
+
+# Second invocation — should return the same repo (idempotent)
+aws lambda invoke --function-name ironforge-dev-create-repo --payload "$INPUT" /tmp/create-repo-out-2.json --cli-binary-format raw-in-base64-out
+diff <(jq -S . /tmp/create-repo-out.json) <(jq -S . /tmp/create-repo-out-2.json)
+```
+
+Expected: first invocation returns `{repoFullName, repoUrl, defaultBranch, repoId, createdAt}`; second invocation returns identical output (the diff is empty).
+
+Cleanup the test repo:
+
+```bash
+gh api -X DELETE "/repos/ironforge-svc/${SERVICE_NAME}"
+```
+
 ## Consequences
 
 **Positive:**

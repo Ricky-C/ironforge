@@ -651,6 +651,72 @@ shred -u ~/.ironforge-secrets/<new-filename>.pem
 
 ---
 
+## 8. GitHub custom property bootstrap (PR-C.4b prerequisite)
+
+### Symptom
+
+`create-repo` Lambda invocations fail with the GitHub API rejecting `custom_properties: {"ironforge-job-id": ...}` in the create-repo POST body — typically with a 422 response and a message like "ironforge-job-id is not a valid custom property name."
+
+### Diagnosis
+
+The org's custom property schema does not include the `ironforge-job-id` property. GitHub validates `custom_properties` values against the org's defined property schemas at create-repo time; an unknown property name is rejected.
+
+This is a **one-time pre-merge step** for PR-C.4b — the org-level property must exist before the first invocation. Subsequent provisionings reuse the same property; no per-provisioning setup.
+
+```bash
+# Confirm the property does NOT exist (gh CLI uses the User personal access
+# token, not the App; org admin permissions required for this list)
+gh api -X GET "/orgs/ironforge-svc/properties/schema" | jq '.[] | select(.property_name == "ironforge-job-id")'
+```
+
+Empty output → property is missing. Non-empty output → property exists and the Lambda failure is something else (likely a permissions issue on the App's "Custom properties" permission — see § "App permissions check" below).
+
+### Recovery
+
+#### A. Define the custom property at the org level
+
+Manual click-through (no API path that works without org-admin OAuth scope, and the App can't define properties — only set values on existing ones):
+
+1. Navigate to `https://github.com/organizations/ironforge-svc/settings/custom_properties`.
+2. Click "New property."
+3. Fill in:
+   - **Name:** `ironforge-job-id`
+   - **Type:** `Text`
+   - **Required:** unchecked
+   - **Default value:** leave empty
+   - **Allowed values:** leave empty (free-text — UUIDs go in)
+   - **Description:** `Set by Ironforge platform on repo creation. Identifies the provisioning job that created this repo. Do not edit manually — Ironforge uses this for idempotent retry.`
+4. Click "Save property."
+
+Verification:
+
+```bash
+gh api -X GET "/orgs/ironforge-svc/properties/schema" | jq '.[] | select(.property_name == "ironforge-job-id")'
+```
+
+Expected: a single object with `property_name: "ironforge-job-id"`, `value_type: "string"`, `required: false`.
+
+#### B. App permissions check
+
+The Ironforge GitHub App must have the "Custom properties" permission set to "Write" (org-level) for it to set property values on repo creation.
+
+1. Navigate to `https://github.com/organizations/ironforge-svc/settings/installations` (or the App's settings page).
+2. Find the Ironforge App, click "Configure."
+3. Scroll to "Permissions" → "Organization permissions" → "Custom properties."
+4. If currently "Read" or "No access," change to "Write."
+5. Save changes. The org admin must approve the new permission scope (GitHub prompts on save).
+
+If you change permissions, the App's existing installation may need to be re-acknowledged in the org admin UI before changes take effect.
+
+### Prevention
+
+- **This is a one-time per-org setup.** Once the property is defined, all subsequent create-repo invocations work without further bootstrap.
+- **If a future template needs additional org-level metadata** (`ironforge-template-id`, `ironforge-owner-id`, `ironforge-managed`, etc.), follow the same procedure — add to the schema before the first invocation that sets the property.
+- **Do not delete the property post-bootstrap.** Existing repos retain their `ironforge-job-id` values; deleting the property schema would unbind those values (GitHub keeps the data but stops surfacing it in API responses), breaking idempotency for any retry of an in-flight provisioning workflow.
+- **Schedule a quarterly check** that the property still exists. Org-admin actions can drop it; the App can't recreate it.
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.

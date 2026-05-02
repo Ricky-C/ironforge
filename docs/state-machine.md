@@ -60,10 +60,34 @@ exponential doubling — for every state.
 ### Custom application errors (terminal)
 
 Lambda code throws errors with custom names — `IronforgeValidationError`,
+`IronforgeGitHubAuthError`, `IronforgeGitHubRepoConflictError`,
+`IronforgeGitHubRateLimitedError`, `IronforgeGitHubProvisionError`,
 `ProvisioningError`, etc. — for known business-logic failures that
 should NOT be retried. SFN's Retry block above explicitly does NOT
 include these names; they fall through to the state's `Catch` block,
 which routes execution to `CleanupOnFailure`.
+
+The GitHub-specific class is the largest cluster (introduced in
+PR-C.4a/PR-C.4b for create-repo, extended in PR-C.8 for trigger-deploy):
+
+- `IronforgeGitHubAuthError` — 401 / 403 from GitHub on token mint or
+  API call. Auth failures are permanent (PEM wrong, installation revoked,
+  permissions reduced). Retry would not help.
+- `IronforgeGitHubRepoConflictError` — repo with the requested name
+  exists but its `custom_properties["ironforge-job-id"]` does not match
+  this provisioning's jobId. Means a prior failed provisioning left an
+  orphan, or a manual operator action created the repo. Operator
+  cleanup required.
+- `IronforgeGitHubRateLimitedError` — 403 with `X-RateLimit-Remaining: 0`.
+  Recoverable in principle (rate-limit window will reset), but the
+  workflow can't sit idle for the rate-limit duration; CleanupOnFailure
+  handles it and the user retries provisioning later. Past-participle
+  naming matches AWS SDK convention (Throttled, RateLimited).
+- `IronforgeGitHubProvisionError` — catch-all for unexpected GitHub
+  responses (5xx that survived the Octokit retry plugin's bounded
+  retries, schema mismatches, etc.). The `operation` discriminator
+  (get-repo / create-repo / unknown) helps operators correlate with
+  the specific call site.
 
 **Why not `States.TaskFailed` in Retry?** `States.TaskFailed` is the
 SFN umbrella that matches *any* task failure, including custom-named
@@ -89,7 +113,7 @@ via JobStep entries + `$.error` ResultPath + CloudWatch log group.
 | State              | MaxAttempts | Rationale                                                                                                                        |
 | ------------------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | ValidateInputs     | 2           | Cheap, idempotent. Transient Lambda errors retry; user-input errors fall to Catch.                                                |
-| CreateRepo         | 2           | GitHub API transients. Idempotent on repo name (existing repo → check ownership, treat as success).                               |
+| CreateRepo         | 2           | GitHub API transients (5xx beyond the Octokit retry plugin's bounded retries). Idempotent via `custom_properties["ironforge-job-id"]` — re-invocation with same jobId returns the existing repo. |
 | GenerateCode       | 1           | One retry — re-rendering a template is cheap but state-changing (rewrites the repo's contents).                                   |
 | RunTerraform       | 0           | No retry. `terraform apply` failures are not transient; rerunning compounds partial state. Cleanup-on-failure runs `destroy`.     |
 | WaitForCloudFront  | 1           | Polling Lambda; SFN-level retry is for Lambda invocation failures, not for CloudFront-status polling (that's the Lambda's loop).  |

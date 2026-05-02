@@ -108,12 +108,8 @@ Each entry has:
 
 #### GitHub App private key — add consuming-principal grant when workflow Lambda role lands
 
-- **Status:** Scheduled for PR-C.4b (2026-05-01 update). PR-C.4a landed the consuming helper (`@ironforge/shared-utils/github-app`) and widened the boundary; PR-C.4b is the first consumer (`create-repo`) where the consuming Lambda role exists. The key-policy activation, the per-Lambda identity policy, and the verification all happen there.
-- **What:** The CMK encrypting the GitHub App private key (`infra/modules/github-app-secret/main.tf` `aws_kms_key.github_app`) currently has a root-only key policy. No principal other than account root can decrypt the secret until a consuming-principal `kms:Decrypt` statement is added to the policy. The activation skeleton for this statement is committed as a comment block in the module's policy data document so activation is mechanical, not a re-design.
-- **Why deferred:** No Phase 1 consumer Lambda role yet exists. PR-C.4a shipped the helper code itself but no Lambda invokes it; PR-C.4b's `create-repo` is the first invoker. Adding the key-policy statement before the consuming role exists would require a placeholder principal (account root again) or a pre-created role that does nothing — both worse than waiting.
-- **When to revisit:** PR-C.4b (next). PR-C.8 (`trigger-deploy`) becomes the second consumer; the `workflow_lambda_role_arn` input variable evolves from singular to a list of ARNs at that point.
-- **Action:** In PR-C.4b: (1) uncomment the `AllowWorkflowLambdaDecrypt` skeleton in `infra/modules/github-app-secret/main.tf` and remove its activation header; (2) add `workflow_lambda_role_arn` as a module input variable (single ARN now; list at PR-C.8); (3) pass the consuming Lambda's role ARN through from `infra/envs/shared/main.tf`; (4) verify the `kms:EncryptionContext:SecretARN` value is `StringEquals` against the imported secret ARN — exact match, not a wildcard. Pair with the consuming Lambda's identity policy: `secretsmanager:GetSecretValue` scoped to the exact secret ARN and `kms:Decrypt` scoped to the github-app CMK ARN with the same EncryptionContext condition. The boundary widening landed in PR-C.4a (ADR-006 amendment) — these per-Lambda grants stack on top of it.
-- **Where:** `infra/modules/github-app-secret/main.tf` (the commented-out `statement` block in `data.aws_iam_policy_document.kms_key`); `services/workflow/create-repo/` Lambda's identity-policy file when PR-C.4b lands.
+- **Status:** ✅ Resolved in PR-C.4b (2026-05-02). `AllowWorkflowLambdaDecrypt` activated as a `dynamic` block in `infra/modules/github-app-secret/main.tf` gated on non-empty `workflow_lambda_role_arns`. Shared composition populates the list with deterministically-constructed role ARNs (currently `ironforge-dev-create-repo-execution`; PR-C.8 will append `ironforge-dev-trigger-deploy-execution`). Per-Lambda identity policy on create-repo's role grants `secretsmanager:GetSecretValue` + `kms:Decrypt` with `EncryptionContext:SecretARN` exact-match.
+- **Historical context:** The skeleton was committed in PR #41 as a comment block; PR-C.4a widened the boundary with `kms:Decrypt` (ADR-006 amendment); PR-C.4b activated the key-policy grant + per-Lambda identity policy + the boundary verification.
 
 #### Residual KMS permissions absent from the IronforgePermissionBoundary
 
@@ -126,12 +122,7 @@ Each entry has:
 
 #### Boundary verification: kms:Decrypt denial against non-Ironforge-tagged CMK
 
-- **Status:** Scheduled for PR-C.4b (alongside the first real consumer of the boundary's KMS widening).
-- **What:** PR-C.4a widened the boundary with `kms:Decrypt` conditioned on `kms:ResourceTag/ironforge-managed=true`. The intended-denial path (a Lambda role attempting `kms:Decrypt` against a CMK that is NOT tagged `ironforge-managed=true` should be denied even with a permissive identity policy) has not been verified empirically. ADR-006's existing Phase-1 verification pattern (cross-prefix isolation on the artifacts bucket) is the established template — apply the same pattern to the KMS condition.
-- **Why deferred:** PR-C.4a doesn't include any Lambda that exercises the boundary's KMS path; the helper code is callable but not yet called from a real Lambda role. Verifying without a real consumer would require constructing a throwaway Lambda role purely for the test, which adds noise. PR-C.4b's `create-repo` is the natural first exerciser.
-- **When to revisit:** PR-C.4b. The verification commands belong in ADR-006's § Verification (extending the existing Phase-1 narrative) rather than living only in this entry.
-- **Action:** Add a new § Verification subsection to ADR-006 modeled on the existing Phase-1 cross-prefix isolation procedure. (1) Create a throwaway untagged CMK (or use an existing AWS-managed key); (2) assume the create-repo Lambda role via `aws sts assume-role`; (3) attempt `aws kms decrypt` against the untagged key; (4) confirm `AccessDeniedException` with the boundary cited in the deny reason. Cross-link from this entry once verified, then mark resolved.
-- **Where:** `docs/adrs/006-permission-boundary.md` § Verification (new Phase-1 KMS subsection); cross-link this entry once executed.
+- **Status:** ✅ Resolved in PR-C.4b (2026-05-02). ADR-006 § Verification gained a new "Phase 1 — KMS condition behavior" subsection with four verification cases (boundary attached / boundary tag-condition denial / per-Lambda EncryptionContext denial / end-to-end happy path with custom-property idempotency). Pre-merge verification artifacts captured in the PR description.
 
 #### Future optimization: in-memory GitHub App token cache
 
