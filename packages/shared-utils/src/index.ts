@@ -5,3 +5,4 @@ export * from "./dynamodb/transition.js";
 export * from "./http/idempotency-key.js";
 export * from "./logger.js";
 export * from "./polling/backoff.js";
+export * from "./workflow/job-step.js";
