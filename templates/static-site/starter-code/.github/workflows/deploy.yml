@@ -1,0 +1,41 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Action versions are pinned to major tags. Do NOT switch to @main or
+# @latest — supply-chain hygiene. To upgrade, bump the major version
+# explicitly after reviewing the changelog.
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC deploy role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: __IRONFORGE_DEPLOY_ROLE_ARN__
+          aws-region: us-east-1
+
+      - name: Sync site to S3
+        run: |
+          aws s3 sync . s3://__IRONFORGE_BUCKET_NAME__ \
+            --delete \
+            --exclude '.git/*' \
+            --exclude '.github/*' \
+            --exclude 'README.md'
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id __IRONFORGE_DISTRIBUTION_ID__ \
+            --paths '/*'

@@ -1,0 +1,55 @@
+# Ironforge template manifest.
+# Validated at provisioning time against IronforgeManifestSchema in
+# packages/shared-types/src/manifest.ts. Hand-edits should round-trip
+# through that schema cleanly — see packages/shared-types/src/manifest.test.ts
+# for the offline parse-and-validate test that catches malformed manifests.
+
+id: static-site
+name: Static Website
+description: |
+  Provision a globally distributed static website with custom subdomain,
+  TLS via the shared *.ironforge.rickycaballero.com cert, and a starter
+  GitHub repository wired to deploy via GitHub Actions OIDC. No build
+  step; raw HTML/CSS/JS.
+
+# Template version. Increment when starter-code or terraform module
+# changes in a way users provisioning today would not get if they
+# provisioned yesterday — surfaced to operators for support and to
+# users so they know what they're running.
+version: 1
+
+# Minimum Ironforge platform version this template targets. Lets future
+# breaking changes to the platform's contract (e.g., new required manifest
+# fields) be staged behind compatibleIronforgeVersion bumps.
+compatibleIronforgeVersion: 1
+
+# Path to the Zod schema that validates per-template inputs. The
+# validate-inputs Lambda (PR-C.3) reads this path to know which schema
+# to apply against the user's wizard submission.
+inputsSchema: packages/shared-types/src/templates/static-site.ts#StaticSiteInputsSchema
+
+# Path to the terraform outputs file. The state-machine consumers
+# (finalize, generate-code) treat the outputs declared there as the
+# ground-truth shape of what the template produces.
+outputsSchema: templates/static-site/terraform/outputs.tf
+
+# Whitelist of AWS resource types this template is permitted to create.
+# Enforcement strategy is a PR-C.6 (run-terraform) design decision —
+# parsing `terraform plan -json` and rejecting unrecognized types vs
+# IAM-restricting the run-terraform role to the union, vs both. PR-C.1
+# only declares the whitelist; enforcement runs at apply time.
+#
+# Adding a resource type to the template's terraform module without
+# also adding it here will fail at apply time once enforcement lands.
+allowedResourceTypes:
+  - aws_s3_bucket
+  - aws_s3_bucket_public_access_block
+  - aws_s3_bucket_server_side_encryption_configuration
+  - aws_s3_bucket_versioning
+  - aws_s3_bucket_lifecycle_configuration
+  - aws_s3_bucket_policy
+  - aws_cloudfront_origin_access_control
+  - aws_cloudfront_distribution
+  - aws_route53_record
+  - aws_iam_role
+  - aws_iam_role_policy
