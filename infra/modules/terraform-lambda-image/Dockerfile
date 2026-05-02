@@ -44,6 +44,13 @@ RUN chmod +x /opt/.terraform.d/plugins/registry.terraform.io/hashicorp/aws/5.83.
 COPY handler.js ${LAMBDA_TASK_ROOT}/handler.js
 COPY package.json ${LAMBDA_TASK_ROOT}/package.json
 
+# Templates at /opt/templates/<template-id>/terraform/. Per the
+# PR-C.6 path convention: handler code at /var/task/, platform tooling
+# at /opt/. Templates are platform tooling consumed by the handler,
+# not Lambda entry-point code. Handler reads ${TEMPLATE_PATH}/<id>/
+# terraform/ at runtime via the TEMPLATE_PATH env var.
+COPY templates /opt/templates
+
 # RIC entrypoint expects "<module>.<exported-handler>" as CMD. handler.js
 # exports `handler` per the workflow Lambda convention.
 CMD ["handler.handler"]

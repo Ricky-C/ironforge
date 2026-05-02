@@ -114,6 +114,12 @@ main() {
   cp "${HANDLER_DIST_DIR}/handler.js" "${STAGING_DIR}/handler.js"
   cp "${HANDLER_DIST_DIR}/package.json" "${STAGING_DIR}/package.json"
 
+  log "Copying templates into build context"
+  # Per PR-C.6 path convention, templates land at /opt/templates/<id>/
+  # in the image. Stage with the same shape so the Dockerfile's
+  # `COPY templates /opt/templates` is a straight directory copy.
+  cp -r "${REPO_ROOT}/templates" "${STAGING_DIR}/templates"
+
   log "Copying Dockerfile to build context"
   cp "${SCRIPT_DIR}/Dockerfile" "${STAGING_DIR}/Dockerfile"
 
