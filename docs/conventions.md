@@ -37,6 +37,7 @@ If a future PR finds itself fighting a convention, the right response is one of:
 - `services/workflow/validate-inputs/src/handler.ts`
 - `packages/shared-utils/src/github-app/get-installation-token.ts`
 - `services/workflow/create-repo/src/handle-event.ts`
+- `services/workflow/generate-code/src/handle-event.ts`
 
 **Rationale.** Three properties matter, in this order:
 
@@ -47,3 +48,67 @@ If a future PR finds itself fighting a convention, the right response is one of:
 The combination — module-scope cache, lazy init, fail-fast on error — is a single pattern applied to multiple kinds of static configuration. Any Lambda that loads bundled or fetched config at startup should follow this shape. PR-C.5 (template renderer config), PR-C.6 (terraform module configuration), and any future Lambda with similar static-config needs inherit this pattern.
 
 **What this is NOT a pattern for:** dynamic data that changes at runtime (DynamoDB reads, GitHub API responses, user inputs). Those should be fetched per-invocation and never cached at module scope — caching them produces stale-data bugs that are exactly the failure mode we want to avoid for tokens (see ADR-008).
+
+---
+
+## Verifiable provisioning markers
+
+**Pattern.** Workflow Lambdas that create or modify external resources (GitHub repos, branches, files, S3 buckets, etc.) leave a verifiable marker on the created resource that identifies the provisioning job that produced it. Idempotency checks on subsequent runs verify the marker matches *this* job before treating the existing resource as the result of an idempotent retry; absence or mismatch is a conflict, not a successful retry.
+
+**Established in.**
+
+- PR-C.4b (PR #58, 2026-05-02) — `create-repo` sets `custom_properties["ironforge-job-id"] = jobId` on every created GitHub repo. Idempotency check: GET the repo, check the property; match → idempotent retry; mismatch → `IronforgeGitHubRepoConflictError`; 404 → fresh create.
+- PR-C.5 (2026-05-02) — `generate-code` puts `(Ironforge job <jobId>)` in the initial commit's message. Idempotency check: GET `refs/heads/main`, GET the commit, check the message contains the marker; match → return existing commit's metadata; mismatch → `IronforgeRefConflictError`; 404 → create initial commit.
+
+**Applied by.**
+
+- `services/workflow/create-repo/src/handle-event.ts`
+- `services/workflow/generate-code/src/handle-event.ts`
+
+**Rationale.** Without a marker, "the resource exists" is ambiguous — it might be the result of a prior successful run of THIS provisioning (idempotent retry, treat as success), the result of a prior failed run that left an orphan (conflict — operator cleanup needed), or an unrelated manual operator action (also a conflict). Treating any of these the same way is wrong:
+
+- Mistaking an orphan for a retry-success silently overwrites or skips work, masking the prior failure.
+- Mistaking a retry-success for a conflict blocks the workflow on a transient SFN retry.
+
+The marker is structured: tied to the provisioning's `jobId` (a UUID generated at workflow kickoff). Markers don't collide across provisionings because UUIDs don't. Operators reading the marker see exactly which Job created the resource and can correlate with DynamoDB Job records, CloudWatch logs, and SFN execution history.
+
+**Marker mechanism per resource type.**
+
+Different resource types support different metadata channels. Choose the most structured one available — fall back to less structured only if no better option exists:
+
+1. **Structured org/repo metadata (preferred)** — GitHub custom properties, AWS resource tags, repo topics. Survives content edits; not user-visible-by-default; designed for platform metadata.
+2. **Resource-state fields** — git commit message, S3 object metadata. User-visible but conventional places for provenance markers.
+3. **Content-embedded** — only as a last resort. Avoid because user edits to content can erase the marker.
+
+**What this is NOT a pattern for:** ephemeral resources that don't outlive the provisioning workflow (e.g., SFN execution names, DynamoDB JobStep rows). Those use the natural-key pattern from PR-C.0's idempotency conventions, not markers.
+
+---
+
+## Template substitution boundary
+
+**Pattern.** Template starter-code distinguishes between values known at generate-code time (substituted via `__IRONFORGE_<NAME>__` markers) and values known only after `terraform apply` (passed through GitHub Actions repo secrets, populated by trigger-deploy). The boundary is enforced by the renderer's leftover-marker check: any template that references an unsubstituted `__IRONFORGE_<NAME>__` after rendering throws `IronforgeRenderError` and surfaces the offending markers.
+
+**Established in.**
+
+- PR-C.5 (2026-05-02) — `templates/static-site/starter-code/.github/workflows/deploy.yml` migrated from `__IRONFORGE_DEPLOY_ROLE_ARN__` / `__IRONFORGE_BUCKET_NAME__` / `__IRONFORGE_DISTRIBUTION_ID__` to `${{ secrets.IRONFORGE_DEPLOY_ROLE_ARN }}` etc. The 3 affected values are run-terraform outputs, not known at generate-code time. SERVICE_NAME and DOMAIN remain as build-time placeholders.
+
+**Applied by.**
+
+- `templates/static-site/starter-code/.github/workflows/deploy.yml`
+
+**Rationale.**
+
+1. **State-machine ordering forces the boundary.** generate-code runs before run-terraform in the locked SFN order. Values that come from run-terraform's outputs (deploy role ARN, S3 bucket, CloudFront distribution) literally don't exist when generate-code runs. Any single-pass substitution mechanism would produce broken files.
+2. **Code/infrastructure separation is the right architecture.** AWS resource ARNs, bucket names, and distribution IDs are infrastructure state. Embedding them in source files in the user's repo couples the user's code history to infrastructure rotations. Secrets rotation (e.g., revoking a deploy role and issuing a new one) becomes a one-line secret update instead of a commit to user-visible history.
+3. **`${{ secrets.X }}` is the universally-recognized GitHub Actions pattern.** Operators, contributors, or tools reading deploy.yml understand it without learning Ironforge's substitution convention. Hardcoded ARNs in deploy.yml would be confusing ("why is my account ID in this file?").
+4. **The renderer's leftover-marker check makes drift loud.** If a future template author re-introduces a runtime placeholder via the `__IRONFORGE_<NAME>__` convention, the post-render scan throws and surfaces the offending marker name. Drift surfaces at first invocation, not in production silently-broken deploys.
+
+**Substitution boundary, classified.**
+
+| Category | Substitution mechanism | Examples |
+|---|---|---|
+| Build-time known | `__IRONFORGE_<NAME>__` in source, substituted by generate-code's render map | SERVICE_NAME (from `event.serviceName`), DOMAIN (platform constant) |
+| Runtime known (post-terraform) | `${{ secrets.IRONFORGE_<NAME> }}` in source, populated as repo secrets by trigger-deploy after run-terraform produces the values | DEPLOY_ROLE_ARN, BUCKET_NAME, DISTRIBUTION_ID |
+| User-edited later | Plain content, no substitution | Page title, body content (user edits in their repo) |
+
+**What this is NOT a pattern for:** values that aren't infrastructure state but ARE platform-derived (e.g., a service ID, an Ironforge platform version). Those are build-time-known at generate-code; use `__IRONFORGE_<NAME>__`. The boundary is "could this value change without my code being re-rendered?" — if yes, secrets; if no, build-time substitution.

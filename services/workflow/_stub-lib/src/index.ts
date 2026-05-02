@@ -1,7 +1,6 @@
 // Consumer ledger — update on every PR-C.X that flips a stub to real.
 //
-// stubTask consumers (4 of 6 remaining; replaced one-per-PR through C.8):
-//   - generate-code          (PR-C.5 will replace)
+// stubTask consumers (3 of 6 remaining; replaced one-per-PR through C.8):
 //   - run-terraform          (PR-C.6 will replace)
 //   - wait-for-cloudfront    (PR-C.7 will replace)
 //   - trigger-deploy         (PR-C.8 will replace)
@@ -17,7 +16,8 @@
 //
 // Replaced (no longer consume stub-lib):
 //   - validate-inputs        (PR-C.3, PR #56)
-//   - create-repo            (PR-C.4b)
+//   - create-repo            (PR-C.4b, PR #58)
+//   - generate-code          (PR-C.5)
 //
 // Deletion trigger: when stubTask + finalizeStub consumer counts both
 // reach zero (after PR-C.9), this package becomes deletion-eligible.

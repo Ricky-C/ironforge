@@ -62,7 +62,8 @@ exponential doubling — for every state.
 Lambda code throws errors with custom names — `IronforgeValidationError`,
 `IronforgeGitHubAuthError`, `IronforgeGitHubRepoConflictError`,
 `IronforgeGitHubRateLimitedError`, `IronforgeGitHubProvisionError`,
-`ProvisioningError`, etc. — for known business-logic failures that
+`IronforgeRefConflictError`, `IronforgeGenerateError`,
+`IronforgeRenderError`, `ProvisioningError`, etc. — for known business-logic failures that
 should NOT be retried. SFN's Retry block above explicitly does NOT
 include these names; they fall through to the state's `Catch` block,
 which routes execution to `CleanupOnFailure`.
@@ -88,6 +89,18 @@ PR-C.4a/PR-C.4b for create-repo, extended in PR-C.8 for trigger-deploy):
   retries, schema mismatches, etc.). The `operation` discriminator
   (get-repo / create-repo / unknown) helps operators correlate with
   the specific call site.
+- `IronforgeRefConflictError` (PR-C.5 generate-code) — `refs/heads/main`
+  exists on the repo but the head commit's message lacks our jobId
+  marker. Means a prior failed provisioning left an orphan, or a
+  manual operator commit happened. Operator cleanup required.
+- `IronforgeGenerateError` (PR-C.5 generate-code) — catch-all for
+  pre-API failures during generate-code (render leftover, missing
+  `$.steps.create-repo` from upstream, malformed prior-step output).
+- `IronforgeRenderError` (PR-C.5 template-renderer package) — template
+  references an `__IRONFORGE_<NAME>__` placeholder not in the
+  renderer's substitution map. Surfaces template/renderer drift at
+  first invocation rather than as silent half-rendered files in
+  production.
 
 **Why not `States.TaskFailed` in Retry?** `States.TaskFailed` is the
 SFN umbrella that matches *any* task failure, including custom-named
@@ -178,7 +191,7 @@ that downstream Lambdas read from `$.steps.run-terraform`:
 | `bucket_name`           | TriggerDeploy              | Substitutes into the `aws s3 sync s3://...` step in the user's repo. |
 | `distribution_id`       | WaitForCloudFront, TriggerDeploy | Status polling target; substituted into the deploy.yml's invalidation. |
 | `distribution_domain_name` | WaitForCloudFront      | Pre-flight DNS resolution check before declaring propagation.        |
-| `deploy_role_arn`       | TriggerDeploy (via GenerateCode substitution) | The role-to-assume in the user's deploy.yml.       |
+| `deploy_role_arn`       | TriggerDeploy (set as repo secret IRONFORGE_DEPLOY_ROLE_ARN before workflow_dispatch) | The role-to-assume in the user's deploy.yml. Per the Path A substitution boundary (PR-C.5; see docs/conventions.md § "Template substitution boundary"), runtime values flow through GitHub Actions repo secrets rather than file substitution. |
 | `live_url`              | Finalize                   | Written to `Service.liveUrl` on the terminal-success transition.     |
 | `fqdn`                  | WaitForCloudFront          | The alias FQDN to verify is resolvable.                              |
 

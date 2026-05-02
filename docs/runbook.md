@@ -717,6 +717,89 @@ If you change permissions, the App's existing installation may need to be re-ack
 
 ---
 
+## 9. GitHub App re-installation recovery
+
+### Symptom
+
+After an operational change to the GitHub App (transferred ownership, uninstalled-and-reinstalled, install scope change), workflow Lambdas start failing with `IronforgeGitHubAuthError` status 404 on the installation-token exchange. CloudWatch logs show the request hitting `POST /app/installations/<old-id>/access_tokens`.
+
+### Diagnosis
+
+Re-installation creates a new Installation ID. The old Installation ID stored in SSM points at an installation that no longer exists; GitHub returns 404. The App ID is stable across re-install; only the Installation ID changes.
+
+```bash
+# Find the current Installation ID from GitHub
+gh api /orgs/ironforge-svc/installations --jq '.installations[].id'
+
+# Compare against what's stored in SSM
+aws ssm get-parameter --name /ironforge/github-app/installation-id --query Parameter.Value --output text
+
+# Compare against what's deployed to Lambda env vars
+aws lambda get-function-configuration --function-name ironforge-dev-create-repo \
+  --query 'Environment.Variables.GITHUB_APP_INSTALLATION_ID' --output text
+```
+
+If the three values disagree, recovery is required.
+
+### Recovery
+
+#### Step 1 — Update SSM with the new Installation ID
+
+```bash
+aws ssm put-parameter \
+  --name /ironforge/github-app/installation-id \
+  --type String \
+  --value <NEW_INSTALLATION_ID> \
+  --overwrite
+```
+
+**Verification step (mandatory).** Always round-trip the value back to confirm the put took effect. SSM is strongly consistent for reads, but the verification protects against typos in the operator's `--value` argument and against partial-rollback scenarios where the put silently regressed:
+
+```bash
+aws ssm get-parameter --name /ironforge/github-app/installation-id --query Parameter.Value --output text
+```
+
+Expected: prints `<NEW_INSTALLATION_ID>` exactly. **If the output differs from what you intended to put, the next steps will silently use the wrong value** — the discovery cost in Case 4 of PR-C.4b's verification was non-trivial.
+
+This verification idiom — `put-parameter` always followed by `get-parameter` round-trip — should apply to every operator-driven SSM update. The cost is one extra command; the benefit is "did my put actually work?" with zero ambiguity.
+
+#### Step 2 — Update the Lambda env vars
+
+Two real paths:
+
+**Path A — terraform-driven (canonical).** Trigger a `terraform plan` against dev composition; the data source reads the new SSM value and computes the Lambda env var. CI's `infra-apply-dev` updates the function configuration. No drift; reproducible.
+
+**Path B — direct AWS API (recovery).** When CI is slow or you need the fix immediately, update the Lambda env var directly:
+
+```bash
+aws lambda update-function-configuration \
+  --function-name ironforge-dev-create-repo \
+  --environment "Variables={...,GITHUB_APP_INSTALLATION_ID=<NEW_INSTALLATION_ID>,...}"
+```
+
+The full Variables map must be supplied (the API is replace-not-merge). Path B is drift-free as long as SSM has been updated first — terraform's next plan reads SSM (now matching) and computes the same env var the Lambda already has, so no diff.
+
+Repeat for every Lambda that consumes the GitHub App installation token (currently: create-repo, generate-code; future: trigger-deploy).
+
+#### Step 3 — Verify end-to-end
+
+Invoke a workflow Lambda with a test payload and confirm the GitHub call succeeds:
+
+```bash
+aws lambda invoke --function-name ironforge-dev-create-repo --payload '{"...":"..."}' /tmp/out.json
+cat /tmp/out.json
+```
+
+If still failing with 404 on installations, the SSM update didn't propagate to the Lambda env var. Re-check Step 2.
+
+### Prevention
+
+- **Always run the Step 1 verification round-trip.** A silent `put-parameter` failure (typo, wrong AWS profile, IAM denial that returned 200 misleadingly) is the most common cause of re-installation recovery taking longer than it should.
+- **Document the new Installation ID alongside the operational change** that caused the re-install (e.g., in the PR description or runbook entry). Don't rely on `aws ssm get-parameter` as the canonical record.
+- **Don't transfer App ownership or change install scope mid-provisioning-workflow.** Workflows in flight will fail mid-execution with auth errors. Wait for active workflows to drain.
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.

@@ -271,7 +271,7 @@ storage to the access pattern," not "one bucket for everything."
 | Artifact          | Storage                  | Decided in |
 | ----------------- | ------------------------ | ---------- |
 | Manifest YAML     | Bundled in Lambda dist   | PR-C.3     |
-| Starter code      | TBD                      | PR-C.5     |
+| Starter code      | Bundled in Lambda dist (PR-C.5). Revisit if a second template arrives or if total starter-code size exceeds 1MB. | PR-C.5     |
 | Terraform module  | TBD                      | PR-C.6     |
 
 Manifest YAML is bundled into the validate-inputs Lambda at esbuild
@@ -286,6 +286,24 @@ The manifest's `inputsSchema` field (a path-with-fragment string like
 is documentation-only — it tells humans where the schema lives.
 Runtime resolution goes through `TEMPLATE_REGISTRY`, not by parsing
 that path string.
+
+Starter code is snapshot'd into the generate-code Lambda's bundle by
+the Lambda's `build.mjs`: walks `templates/static-site/starter-code/`
+and emits a `Record<string, string>` of file path → content into
+`src/starter-code-snapshot/files.ts`. The committed version is a stub
+(empty record) so typecheck/test pass without running the build first;
+CI's build step populates the real content before bundling. This
+matches the Manifest YAML pattern (cold-start config-loading
+convention) — a build-time-known artifact that travels with the
+Lambda's deploy.
+
+The substitution boundary lives at the Lambda level (not the storage
+level): generate-code substitutes only build-time-known placeholders
+(`__IRONFORGE_SERVICE_NAME__`, `__IRONFORGE_DOMAIN__`); runtime values
+from terraform outputs (deploy role ARN, S3 bucket, CloudFront
+distribution) flow through GitHub Actions repo secrets populated by
+trigger-deploy. See `docs/conventions.md` § "Template substitution
+boundary" for the convention.
 
 ## OwnerId convention
 
