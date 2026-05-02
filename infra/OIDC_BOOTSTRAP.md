@@ -488,6 +488,8 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/apigateway/ironforge-*:*",
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/states/ironforge-*",
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/states/ironforge-*:*",
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/vendedlogs/states/ironforge-*",
+        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/vendedlogs/states/ironforge-*:*",
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/cloudtrail/ironforge*",
         "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/cloudtrail/ironforge*:*"
       ]
@@ -527,6 +529,12 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:ironforge-*",
         "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:execution:ironforge-*:*"
       ]
+    },
+    {
+      "Sid": "ValidateStateMachineDefinitionAccountWide",
+      "Effect": "Allow",
+      "Action": "states:ValidateStateMachineDefinition",
+      "Resource": "*"
     },
     {
       "Sid": "WriteIronforgeSecrets",
