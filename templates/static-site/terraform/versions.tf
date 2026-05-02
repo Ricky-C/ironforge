@@ -9,21 +9,17 @@ terraform {
     }
   }
 
-  # Partial backend configuration — all values supplied via -backend-config
-  # at terraform init time by the run-terraform Lambda. Per ADR-009 §
-  # "Why dedicated state bucket": per-service state lives at
+  # No backend block. Per ADR-009 § "Why dedicated state bucket" plus the
+  # PR-C.6 locked execution model, this template is invoked as a CHILD
+  # MODULE by the run-terraform Lambda's per-job wrapper. Terraform
+  # forbids backend blocks in non-root modules — backend declaration
+  # belongs in the wrapper, which the run-terraform Lambda generates at
+  # invocation time and configures via -backend-config flags pointing at
   # s3://ironforge-tfstate-<env>-<account>/services/<service-id>/
-  # terraform.tfstate, encrypted by the env's tfstate CMK.
+  # terraform.tfstate.
   #
-  # The run-terraform Lambda passes (per invocation):
-  #   -backend-config="bucket=ironforge-tfstate-<env>-<account>"
-  #   -backend-config="key=services/<service-id>/terraform.tfstate"
-  #   -backend-config="region=us-east-1"
-  #   -backend-config="encrypt=true"
-  #   -backend-config="kms_key_id=<env-tfstate-cmk-arn>"
-  #
-  # Empty backend block lets the same template apply against any
-  # backend config the caller supplies — required for per-service
-  # state storage where the state path varies per invocation.
-  backend "s3" {}
+  # Operators wanting to plan against this template directly (without
+  # going through run-terraform) need to wrap it in their own root
+  # module with their own backend declaration. See docs/runbook.md §
+  # "Recovery: re-run a stuck terraform apply" for the wrapper shape.
 }

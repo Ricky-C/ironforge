@@ -205,15 +205,68 @@ module "task_generate_code" {
   }
 }
 
+# PR-C.6 — real run-terraform Lambda. Container image (per ADR-009 §
+# Amendments: AWS provider 5.83.0 binary alone is 585MB, blowing the zip
+# 250MB layer cap). The image is built by
+# infra/modules/terraform-lambda-image/build-image.sh, pushed to ECR by
+# CI BEFORE terraform plan, and the immutable image digest URI is
+# captured in the .image-uri sentinel file. terraform plan reads that
+# file via local_file data source — local plans without docker need to
+# stage the file manually (captured as a tech-debt entry).
+#
+# IAM grants for terraform's actual workload (cloudfront, route53,
+# s3:CreateBucket on ironforge-svc-* names, iam:CreateRole, etc.) are
+# template-derived via @ironforge/template-renderer's
+# generateRunTerraformPolicy() and applied in the next commit alongside
+# permission boundary widening (ADR-006 amendment Pattern B for the
+# ironforge-svc-* IAM namespace carve-out + cloudfront + route53:GetChange).
+# This commit wires the handler + container image + env vars only.
+data "local_file" "run_terraform_image_uri" {
+  filename = "${path.root}/../../modules/terraform-lambda-image/.image-uri"
+}
+
 module "task_run_terraform" {
   source = "../../modules/lambda"
 
   function_name           = "ironforge-${var.environment}-run-terraform"
   environment             = var.environment
   permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
-  source_dir              = "${path.root}/../../../services/workflow/run-terraform/dist"
-  environment_variables   = local.task_lambda_env
-  iam_grants              = local.task_lambda_iam_grants
+
+  # Container image deploy. source_dir is omitted (Zip-only); image_uri
+  # references the immutable digest captured at build time.
+  package_type = "Image"
+  image_uri    = trimspace(data.local_file.run_terraform_image_uri.content)
+
+  # Timeout: 600s. Per ADR-009's empirical 3m47s nominal apply +
+  # cold-start + 2× variance budget, 480s is the math; 600s gives 25%
+  # safety margin under Lambda's 900s ceiling.
+  timeout_seconds = 600
+
+  # Memory: 2048MB. Terraform's binary + provider's in-process state
+  # representation is ~300MB resident at apply time on large diffs.
+  # 2048MB also bumps the Lambda CPU allocation, which the apply benefits
+  # from. Tune later based on measured cold-start + execution latency.
+  memory_mb = 2048
+
+  environment_variables = merge(local.task_lambda_env, {
+    # Path convention: handler at /var/task/, platform tooling at /opt/.
+    # Templates land at /opt/templates/<id>/terraform/ (Dockerfile COPY).
+    TEMPLATE_PATH                      = "/opt/templates"
+    TFSTATE_BUCKET                     = data.terraform_remote_state.shared.outputs.tfstate_dev_bucket_name
+    TFSTATE_KMS_KEY_ARN                = data.terraform_remote_state.shared.outputs.tfstate_dev_kms_key_arn
+    AWS_ACCOUNT_ID                     = local.account_id
+    IRONFORGE_DOMAIN                   = "ironforge.rickycaballero.com"
+    IRONFORGE_HOSTED_ZONE_ID           = data.terraform_remote_state.shared.outputs.dns_hosted_zone_id
+    IRONFORGE_WILDCARD_CERT_ARN        = data.terraform_remote_state.shared.outputs.dns_certificate_arn
+    IRONFORGE_GITHUB_ORG               = data.aws_ssm_parameter.github_org_name.value
+    IRONFORGE_GITHUB_OIDC_PROVIDER_ARN = "arn:aws:iam::${local.account_id}:oidc-provider/token.actions.githubusercontent.com"
+    IRONFORGE_PERMISSION_BOUNDARY_ARN  = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  })
+
+  # Baseline DynamoDB grants for JobStep upserts. Template-derived
+  # terraform-workload grants (cloudfront/route53/s3/iam) land in the
+  # next commit.
+  iam_grants = local.task_lambda_iam_grants
 }
 
 module "task_wait_for_cloudfront" {
