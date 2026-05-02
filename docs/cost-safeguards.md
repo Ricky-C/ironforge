@@ -10,6 +10,44 @@ Multi-layered protection against runaway AWS spend on the Ironforge account. Eac
 4. **Daily cost report.** TypeScript Lambda fires daily at 14:00 UTC, queries Cost Explorer for yesterday's spend by service, publishes to SNS → email. (Commit 5.)
 5. **Service-quota lockdowns.** Manual support cases reduce default EC2 quotas to near-zero. Defense in depth — even if a deny policy is somehow bypassed, AWS quotas refuse to launch instances.
 
+## Budget action target principle
+
+Targets in `var.budget_action_target_{roles,users,groups}` are **narrow
+by design**. The goal of the budget action is preventing cost runaway,
+not system shutdown. Including the production workflow's roles would
+be a footgun: a budget breach would disable the very thing budgets
+defend against (the provisioning workflow that *causes* spend), which
+is fine — except those roles are also used for legitimate read traffic
+that the budget action shouldn't break.
+
+**Currently-targeted principals (Phase 1):**
+
+- `ironforge-cost-reporter` Lambda execution role (the daily reporter
+  itself — if cost is already runaway, querying Cost Explorer to
+  confirm is acceptable to disable).
+
+**Explicitly NOT targeted (Phase 1):**
+
+- `ironforge-<env>-api` API Lambda role — read endpoints serve
+  customer traffic; disabling them is worse than the cost.
+- `ironforge-<env>-{validate-inputs,create-repo,...}` workflow task
+  Lambda roles — these *are* the cost-incurring path, but disabling
+  them mid-flight leaves Service entities in `provisioning` with no
+  way to roll back. Per the cleanup-on-failure scope deferred in
+  PR-C.2, that's worse than the cost.
+- `ironforge-ci-apply` OIDC role — disabling shuts down deploys,
+  including the deploy that would *fix* the cost issue.
+
+**When to add a target.** Two questions: (1) does this principal's
+denial reduce ongoing spend? (2) is the consequence of denial bounded
+(e.g., one provisioning attempt fails) or unbounded (e.g., the system
+becomes operator-incident-only)? Only target if (1) is yes AND (2) is
+"bounded".
+
+This principle is intentionally documented separately from the role
+list itself so future expansion is a deliberate decision, not a
+default-anything-spend-related-into-the-list mistake.
+
 ## Terraform-managed vs manual
 
 **Terraform** (`infra/modules/cost-safeguards/`):
