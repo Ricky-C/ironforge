@@ -13,6 +13,17 @@ export const API_ERROR_CODES = [
   "INVALID_CURSOR",
   "INVALID_LIMIT",
   "INVALID_REQUEST",
+  // POST /api/services-specific codes (PR-C.2). Two-stage validation:
+  //   - INVALID_REQUEST  : envelope schema fails (CreateServiceRequestSchema)
+  //   - UNKNOWN_TEMPLATE : envelope passed, but templateId not in registry
+  //   - INVALID_INPUTS   : envelope passed, template found, but template-
+  //                        specific InputsSchema rejected the inputs
+  //   - CONFLICT         : envelope passed, validation passed, but a
+  //                        Service with the same name already exists
+  //                        (createIfNotExists ConditionalCheckFailed)
+  "UNKNOWN_TEMPLATE",
+  "INVALID_INPUTS",
+  "CONFLICT",
   "NOT_FOUND",
   "INTERNAL",
 ] as const;
