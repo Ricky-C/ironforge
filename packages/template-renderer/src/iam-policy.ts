@@ -15,6 +15,19 @@
 // Actions are grouped per resource type for reviewability; the
 // generator emits one Statement per resource type.
 //
+// **Parent vs child resource division (S3-specific gotcha).** Since
+// AWS provider v4, terraform's parent `aws_s3_bucket` Read does NOT
+// invoke child-config GetBucket* APIs (versioning/encryption/lifecycle/
+// PAB/policy). Each child resource type has its own Read calling its
+// matching GetBucket* — so this mapping correctly delegates: the
+// parent's mapping covers only bucket-level actions
+// (CreateBucket/DeleteBucket/GetBucketLocation/GetBucketTagging/
+// PutBucketTagging/ListBucket); each child mapping covers its own
+// Get/Put pair. If terraform-aws-provider ever moves the child reads
+// back into the parent, refresh starts failing with the relevant
+// AccessDenied per child API — the recovery is moving the child
+// action into the parent's action list.
+//
 // Future-template note: `iam:PassRole` is NOT in this mapping because
 // the static-site template's IAM role is consumed by GitHub Actions
 // OIDC (no PassRole semantics). Templates with services that take a
@@ -202,7 +215,17 @@ export const RESOURCE_TYPE_TO_IAM: Record<string, ResourceTypeMapping> = {
       "cloudfront:TagResource",
       "cloudfront:UntagResource",
       "cloudfront:ListTagsForResource",
-      "cloudfront:ListDistributions",
+      // cloudfront:ListDistributions deliberately NOT included.
+      // terraform's aws_cloudfront_distribution Read uses
+      // GetDistribution with the known ID, not List. List is only
+      // needed for `data "aws_cloudfront_distribution"` data source
+      // discovery — a future template that uses the data source
+      // would add the action then.
+      // cloudfront:CreateInvalidation also deliberately NOT included.
+      // Invalidation is the user's deploy-time concern (the template
+      // creates the deploy IAM role with cfn:CreateInvalidation in
+      // its inline policy); run-terraform doesn't invalidate during
+      // apply.
     ],
     arnSpec: { kind: "star" },
   },
@@ -222,8 +245,21 @@ export const RESOURCE_TYPE_TO_IAM: Record<string, ResourceTypeMapping> = {
   // IAM role — name-scoped. The deploy role's name is
   // `<prefix>-deploy` per the static-site template. Actions span the
   // role's full lifecycle plus refresh-time list/get actions.
-  // PutRolePermissionsBoundary is required because the template
-  // attaches IronforgePermissionBoundary to the deploy role.
+  //
+  // PutRolePermissionsBoundary is required at create time because the
+  // template attaches IronforgePermissionBoundary to the deploy role.
+  // DeleteRolePermissionsBoundary is NOT required for role deletion
+  // (DeleteRole succeeds with the boundary still attached; the
+  // boundary GCs with the role). Kept for forward compatibility: if
+  // a future template author changes their mind and removes the
+  // boundary declaration mid-life, terraform would call Delete to
+  // detach without deleting the role. Trivial cost to include;
+  // future amendment cost to omit.
+  //
+  // ListInstanceProfilesForRole is defensive — the deploy role has
+  // no instance profiles (OIDC role, not EC2), but IAM rejects
+  // DeleteRole if instance profiles are attached, so terraform's
+  // Read pre-flights with this list to surface the conflict.
   aws_iam_role: {
     sid: "IAMRoleManagement",
     actions: [
