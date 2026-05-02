@@ -139,15 +139,15 @@ module "task_create_repo" {
 # time and baked into the create-repo Lambda's env vars. The apply role
 # has ssm:Get* on /ironforge/* from PR #41 hardening.
 data "aws_ssm_parameter" "github_app_id" {
-  name = data.terraform_remote_state.shared.outputs.ssm_app_id_param
+  name = data.terraform_remote_state.shared.outputs.github_app_ssm_app_id_param
 }
 
 data "aws_ssm_parameter" "github_app_installation_id" {
-  name = data.terraform_remote_state.shared.outputs.ssm_installation_id_param
+  name = data.terraform_remote_state.shared.outputs.github_app_ssm_installation_id_param
 }
 
 data "aws_ssm_parameter" "github_org_name" {
-  name = data.terraform_remote_state.shared.outputs.ssm_org_name_param
+  name = data.terraform_remote_state.shared.outputs.github_app_ssm_org_name_param
 }
 
 module "task_generate_code" {

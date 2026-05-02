@@ -29,11 +29,25 @@ resource "aws_kms_key" "github_app" {
   description             = "Encrypts the Ironforge GitHub App private key in Secrets Manager"
   deletion_window_in_days = 30
   enable_key_rotation     = true
-  policy                  = data.aws_iam_policy_document.kms_key.json
+
+  # Policy is attached separately via aws_kms_key_policy (below) rather
+  # than inline. PR-C.4b refactor: the key policy now references the
+  # secret ARN (in the consuming-principal grant's EncryptionContext
+  # binding), but the secret references the key (via kms_key_id). An
+  # inline `policy` on this resource would cycle the dependency graph.
+  # `aws_kms_key_policy` sits downstream of both resources and applies
+  # the policy as a separate API call, breaking the cycle. AWS uses
+  # the default root-only key policy until aws_kms_key_policy applies —
+  # acceptable because root grant is also in our custom policy.
 
   tags = merge(local.component_tags, {
     Name = "ironforge-github-app-private-key"
   })
+}
+
+resource "aws_kms_key_policy" "github_app" {
+  key_id = aws_kms_key.github_app.id
+  policy = data.aws_iam_policy_document.kms_key.json
 }
 
 resource "aws_kms_alias" "github_app" {
