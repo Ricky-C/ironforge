@@ -800,6 +800,167 @@ If still failing with 404 on installations, the SSM update didn't propagate to t
 
 ---
 
+## 10. Recovery: re-run a stuck terraform apply for a provisioning service
+
+### Symptom
+
+A provisioning workflow exited via `CleanupOnFailure` and the operator wants to investigate or re-run terraform manually against the per-service state. Possible scenarios:
+
+- `IronforgeTerraformApplyError` JobStep entry — Lambda's apply exited non-zero. State may be partially written (some resources created, some not).
+- `IronforgeTerraformOutputError` JobStep entry — apply reported success but `terraform output -json` failed. Resources are likely all created but the workflow doesn't trust the values.
+- The provisioning succeeded but the operator wants to verify the state file shape or run `terraform plan` to check for drift.
+- The Lambda hit its 600s timeout mid-apply and SFN routed to CleanupOnFailure (which itself runs `terraform destroy`, but operator wants to inspect first).
+
+The per-service state path is `s3://ironforge-tfstate-<env>-<account>/services/<service-id>/terraform.tfstate`, encrypted by the env's CMK at `alias/ironforge-tfstate-<env>`.
+
+### Diagnosis
+
+```bash
+# Confirm the per-service state file exists.
+SERVICE_ID="<service-id-from-job-step>"
+ENV="dev"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+TFSTATE_BUCKET="ironforge-tfstate-${ENV}-${ACCOUNT_ID}"
+
+aws s3 ls "s3://${TFSTATE_BUCKET}/services/${SERVICE_ID}/"
+```
+
+Expected: `terraform.tfstate` (and possibly `.tflock` if a previous apply was killed mid-run without releasing the lock).
+
+```bash
+# Pull the JobStep entry to see what failed.
+aws dynamodb get-item \
+  --table-name "ironforge-${ENV}" \
+  --key "{\"PK\": {\"S\": \"JOB#<job-id>\"}, \"SK\": {\"S\": \"STEP#run-terraform\"}}" \
+  --query 'Item.{status: status.S, errorName: errorName.S, errorMessage: errorMessage.S}'
+```
+
+Expected one of: `{"status": "succeeded", ...}`, `{"status": "failed", "errorName": "IronforgeTerraformApplyError", ...}`, etc. CloudWatch logs at `/aws/lambda/ironforge-${ENV}-run-terraform` carry the truncated `stderrTail` for apply/init failures.
+
+### Recovery
+
+The handler's wrapper main.tf is generated at runtime and lives in `/tmp/<jobId>/` inside the Lambda — gone the moment the Lambda's container recycles. To run terraform manually against the per-service state, an operator needs to recreate an equivalent wrapper locally with the same backend config + same module source + same variable values.
+
+```bash
+# 1. Stage a working dir.
+WORKDIR="/tmp/manual-recovery-${SERVICE_ID}"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+# 2. Pull the SFN execution input to recover the variable values
+#    that were passed to the original invocation. Service entity has
+#    serviceName + ownerId; jobId is in the Job entity.
+aws dynamodb get-item \
+  --table-name "ironforge-${ENV}" \
+  --key "{\"PK\": {\"S\": \"SERVICE#${SERVICE_ID}\"}, \"SK\": {\"S\": \"META\"}}" \
+  --query 'Item.{name: name.S, ownerId: ownerId.S}'
+```
+
+```bash
+# 3. Write a wrapper main.tf locally. Same shape as the Lambda generates;
+#    source path points at the local templates/ tree (not /opt/templates/).
+cat > main.tf <<'EOF'
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0, < 7.0"
+    }
+  }
+  backend "s3" {}
+}
+
+provider "aws" { region = "us-east-1" }
+provider "aws" { alias = "us_east_1"; region = "us-east-1" }
+
+variable "service_name"             { type = string }
+variable "service_id"               { type = string }
+variable "owner_id"                 { type = string }
+variable "environment"              { type = string }
+variable "aws_account_id"           { type = string }
+variable "wildcard_cert_arn"        { type = string }
+variable "hosted_zone_id"           { type = string }
+variable "domain_name"              { type = string }
+variable "github_org"               { type = string }
+variable "github_oidc_provider_arn" { type = string }
+variable "permission_boundary_arn"  { type = string }
+
+module "static_site" {
+  source = "<absolute-path-to-repo>/templates/static-site/terraform"
+
+  providers = { aws.us_east_1 = aws.us_east_1 }
+
+  service_name             = var.service_name
+  service_id               = var.service_id
+  owner_id                 = var.owner_id
+  environment              = var.environment
+  aws_account_id           = var.aws_account_id
+  wildcard_cert_arn        = var.wildcard_cert_arn
+  hosted_zone_id           = var.hosted_zone_id
+  domain_name              = var.domain_name
+  github_org               = var.github_org
+  github_oidc_provider_arn = var.github_oidc_provider_arn
+  permission_boundary_arn  = var.permission_boundary_arn
+}
+EOF
+```
+
+```bash
+# 4. Write terraform.tfvars.json. Recover values from the Service +
+#    shared composition outputs.
+HOSTED_ZONE_ID=$(terraform -chdir=<repo>/infra/envs/shared output -raw dns_hosted_zone_id)
+WILDCARD_CERT_ARN=$(terraform -chdir=<repo>/infra/envs/shared output -raw dns_certificate_arn)
+PERMISSION_BOUNDARY_ARN=$(terraform -chdir=<repo>/infra/envs/shared output -raw permission_boundary_arn)
+GITHUB_ORG=$(aws ssm get-parameter --name /ironforge/github-app/org-name --query Parameter.Value --output text)
+
+cat > terraform.tfvars.json <<EOF
+{
+  "service_name": "<service-name>",
+  "service_id": "${SERVICE_ID}",
+  "owner_id": "<owner-id>",
+  "environment": "${ENV}",
+  "aws_account_id": "${ACCOUNT_ID}",
+  "wildcard_cert_arn": "${WILDCARD_CERT_ARN}",
+  "hosted_zone_id": "${HOSTED_ZONE_ID}",
+  "domain_name": "ironforge.rickycaballero.com",
+  "github_org": "${GITHUB_ORG}",
+  "github_oidc_provider_arn": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com",
+  "permission_boundary_arn": "${PERMISSION_BOUNDARY_ARN}"
+}
+EOF
+```
+
+```bash
+# 5. Init against the per-service backend.
+TFSTATE_KMS_KEY_ARN=$(terraform -chdir=<repo>/infra/envs/shared output -raw tfstate_dev_kms_key_arn)
+
+terraform init \
+  -backend-config="bucket=${TFSTATE_BUCKET}" \
+  -backend-config="key=services/${SERVICE_ID}/terraform.tfstate" \
+  -backend-config="region=us-east-1" \
+  -backend-config="encrypt=true" \
+  -backend-config="kms_key_id=${TFSTATE_KMS_KEY_ARN}"
+```
+
+The operator's AWS principal needs `s3:GetObject`/`s3:PutObject` on the state path, `kms:Decrypt`/`kms:GenerateDataKey` on the env's tfstate CMK, and the same workload permissions the Lambda has (cloudfront, route53, s3 on `ironforge-svc-*-origin`, iam on `ironforge-svc-*-deploy`). The `IronforgeBootstrapAdmin` profile from `infra/OIDC_BOOTSTRAP.md` covers all of these in dev.
+
+```bash
+# 6. Plan/apply/destroy as needed.
+terraform plan      # Inspect drift between state and reality
+terraform apply     # Resume the failed apply
+terraform destroy   # Clean up (CleanupOnFailure does this automatically)
+```
+
+For `IronforgeTerraformOutputError` (apply succeeded but output extraction failed), `terraform output -json` against the recovered state will surface the mismatch — usually a template-author drift between `outputs.tf` and the schema in `packages/shared-types/src/templates/static-site.ts`. Fix in code; the existing state remains valid.
+
+### Notes
+
+- **Lock contention.** If `CleanupOnFailure` is still running, `terraform init` against the same state will block on the DynamoDB lock (`ironforge-terraform-locks` table — wait, that's the IRONFORGE-platform lock table; per-service state uses S3-native conditional writes via `use_lockfile = true` per the deprecated `dynamodb_table` migration). If the Lambda crashed mid-apply, the lock may persist as `.tflock` next to the state file. Verify with `aws s3 ls "s3://${TFSTATE_BUCKET}/services/${SERVICE_ID}/"`. Force-unlock by deleting the `.tflock` object — but ONLY after confirming no Lambda is currently running against this service.
+- **Don't rerun the SFN execution against partial state.** SFN's `executionName` is naturally idempotent on jobId — restarting the same execution would re-fire `validate-inputs`, `create-repo` (which would 409 on existing repo), `generate-code` (which would conflict on existing main branch unless our jobId marker matches), and finally `run-terraform` (which would re-attempt apply against existing state). The downstream conflict-detection generally handles this safely, but the cleaner path is: complete CleanupOnFailure first, then start a NEW provisioning execution with a NEW jobId.
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.
