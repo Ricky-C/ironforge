@@ -320,6 +320,43 @@ Cleanup the test repo:
 gh api -X DELETE "/repos/ironforge-svc/${SERVICE_NAME}"
 ```
 
+#### Verification log — 2026-05-02 (post-PR-C.4b apply)
+
+**Case 1 — boundary attached.** ✅ Executed. The `AllowKmsDecryptOnIronforgeManagedKeys` statement was found in the `IronforgePermissionBoundary` policy's current default version. Action `kms:Decrypt`, Effect `Allow`, Resource `*`, Condition `StringEquals { "kms:ResourceTag/ironforge-managed": "true" }` — exact match to the source.
+
+**Cases 2 and 3 — not executed; substitution applied.** Both cases were designed as negative-isolation tests requiring an `sts:AssumeRole` from operator context into the create-repo Lambda execution role. The role's trust policy correctly forbids this — only `lambda.amazonaws.com` is a permitted assumer. Modifying the trust policy temporarily for verification was considered and rejected (the diff would itself need review and undoing, plus it weakens the security posture in a way that's exactly what we're testing).
+
+The substitution accepted: Case 1 (static boundary inspection) confirms the boundary's policy document contains the correct statement; Case 4 (end-to-end Lambda invocation) confirms the production flow works. Case 1 + Case 4 together cover *functional correctness* of the layered defense.
+
+**Known gap from the substitution.** A specific bug class remains uncovered: "the boundary is wrong, but the per-Lambda identity policy compensates, so production works for the wrong reason." Cases 2 and 3 would have isolated the boundary's specific contribution; Cases 1 + 4 cannot. Accepted at portfolio scale (single-tenant, single-operator, low blast radius) because Case 1's static verification gives high confidence the boundary is right by inspection, and Case 4's end-to-end demonstrates the system as a whole is correct. Revisit if a multi-tenant scope, compliance requirement, or reported defect surfaces a case where per-layer attribution becomes load-bearing.
+
+**Case 4 — end-to-end happy path + custom-property idempotency.** ✅ Executed.
+
+Setup variables resolved cleanly:
+- `ROLE_ARN=arn:aws:iam::010438464240:role/ironforge-dev-create-repo-execution`
+- `GITHUB_APP_SECRET_ARN=arn:aws:secretsmanager:us-east-1:010438464240:secret:ironforge/github-app/private-key-DQeegP`
+- `GITHUB_APP_KMS_KEY_ID=13a56839-2b54-4c24-a48a-a40ead0741e5`
+
+First invocation result (test name `boundary-verify-1777745253`, jobId `939fe673-83b8-4f9c-b5c4-671a3ac82c51`):
+
+```json
+{
+  "repoFullName": "ironforge-svc/boundary-verify-1777745253",
+  "repoUrl": "https://github.com/ironforge-svc/boundary-verify-1777745253",
+  "defaultBranch": "main",
+  "repoId": 1227464480,
+  "createdAt": "2026-05-02T18:09:44Z"
+}
+```
+
+Output shape matches the locked PR-C.4b design contract (`repoFullName`, `repoUrl`, `defaultBranch`, `repoId`, `createdAt`). Repo verified on GitHub: private (correct), default branch `main` (correct), `custom_properties["ironforge-job-id"]` exactly equal to the workflow's jobId (correct).
+
+Second invocation with identical payload returned a byte-identical response — diff empty. Idempotent retry confirmed; no duplicate repo created.
+
+**Bootstrap correction discovered during Case 4.** First Case 4 attempt failed with `IronforgeGitHubAuthError` status 404 — the Lambda's `GITHUB_APP_INSTALLATION_ID` env var was the original PR #41 value (`128511853`), not the value from the post-transfer org install (`128963592`). The PR-C.4b bootstrap procedure's `aws ssm put-parameter` step had not actually run (or was reverted). Discovered via `aws kms log tail` showing the bad installationId; fixed by `aws ssm put-parameter --overwrite` (SSM source of truth) AND `aws lambda update-function-configuration` (Lambda env var, drift-free since SSM matches what terraform would compute).
+
+**Lesson (for future bootstrap procedures):** SSM `put-parameter` outputs should be displayed back as a verification step in the bootstrap procedure rather than assumed-applied based on operator self-report. Adding to the runbook § 5/§ 6/§ 8 procedures: each `put-parameter` step should be followed by a `get-parameter` round-trip that the operator pastes back into the PR thread.
+
 ## Consequences
 
 **Positive:**
