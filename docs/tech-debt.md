@@ -181,6 +181,14 @@ Each entry has:
   5. Update this entry to "Resolved" and remove. Move historical context to `docs/runbook.md` if useful.
 - **Where:** `services/workflow/cleanup-on-failure/src/handler.ts` (currently re-exports cleanupStub); `services/workflow/_stub-lib/src/cleanup-stub.ts` (stub to delete); `docs/state-machine.md` § "Cleanup-on-failure scope (PR-C.2 — minimal)".
 
+#### Stale verification repo on ironforge-svc — manual cleanup
+
+- **What:** PR-C.4b's Case 4 verification created a real GitHub repo `ironforge-svc/boundary-verify-1777745253` to exercise the create-repo Lambda's end-to-end flow. The verification cleanup step (`gh api -X DELETE`) failed because the gh CLI's auth token lacks the `delete_repo` scope. The repo persists.
+- **Why deferred:** Refreshing the gh CLI auth scope (`gh auth refresh -h github.com -s delete_repo`) is interactive and was not wired into the verification flow. Operationally cheap to leave (single private repo, ~0 cost, no consumer); tidier to delete.
+- **When to revisit:** At any natural break, OR before the next end-to-end verification (each verification leaves a fresh test repo, so multiple verifications without cleanup accumulate).
+- **Action:** Either `gh auth refresh -h github.com -s delete_repo && gh api -X DELETE /repos/ironforge-svc/boundary-verify-1777745253`, or delete via the GitHub UI's Danger Zone at `https://github.com/ironforge-svc/boundary-verify-1777745253/settings`.
+- **Where:** GitHub UI, or operator's terminal.
+
 ### Operational verification / monitoring
 
 #### End-to-end verification of the cost-safeguards circuit breaker

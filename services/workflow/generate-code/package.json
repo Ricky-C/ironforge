@@ -2,20 +2,26 @@
   "name": "@ironforge/workflow-generate-code",
   "version": "0.0.0",
   "private": true,
-  "description": "Workflow task Lambda — generate-code. PR-C.2 stub: thin facade over @ironforge/workflow-stub-lib's stubTask. Replaced with real template-renderer integration at PR-C.5.",
+  "description": "Workflow task Lambda — generate-code. Renders templates/static-site/starter-code/ files (build-time snapshot) and pushes the rendered tree as the initial commit on the user's repo via Octokit Git Data API.",
   "license": "UNLICENSED",
   "scripts": {
     "build": "node ./build.mjs",
     "clean": "rm -rf dist",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ironforge/shared-types": "workspace:*",
-    "@ironforge/workflow-stub-lib": "workspace:*"
+    "@ironforge/shared-utils": "workspace:*",
+    "@ironforge/template-renderer": "workspace:*"
   },
   "devDependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.1039.0",
     "@types/node": "^25.6.0",
+    "aws-sdk-client-mock": "^4.1.0",
     "esbuild": "^0.28.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5"
   }
 }
