@@ -20,6 +20,18 @@ locals {
     "ironforge-dev-generate-code",
     # PR-C.8 will add: "ironforge-dev-trigger-deploy"
   ]
+
+  # Workflow Lambdas (per env) that read/write per-service terraform
+  # state in the env-specific tfstate bucket. PR-C.6 adds run-terraform;
+  # PR-C.9 (or future cleanup-on-failure destroy-chain) may add more.
+  tfstate_consuming_lambda_function_names_dev = [
+    "ironforge-dev-run-terraform",
+  ]
+
+  # Prod has no provisioning Lambdas yet — list stays empty until the
+  # prod composition lands. Empty list keeps the dynamic statement in
+  # tfstate-bucket's CMK key policy disabled until needed.
+  tfstate_consuming_lambda_function_names_prod = []
 }
 
 module "lambda_baseline" {
@@ -81,6 +93,33 @@ module "portal_frontend" {
 
 module "cloudtrail" {
   source = "../../modules/cloudtrail"
+}
+
+module "tfstate_dev" {
+  source = "../../modules/tfstate-bucket"
+
+  environment = "dev"
+
+  # Consuming Lambda role ARNs constructed deterministically (same
+  # forward-referenceable pattern as github-app-secret). PR-C.6 adds
+  # run-terraform; future destroy-chain work may add more.
+  consuming_lambda_role_arns = [
+    for name in local.tfstate_consuming_lambda_function_names_dev :
+    "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${name}-execution"
+  ]
+}
+
+# Prod tfstate bucket apples-to-apples with dev. Per-env CMKs and
+# per-env consumer lists; the module enforces no cross-env reuse.
+module "tfstate_prod" {
+  source = "../../modules/tfstate-bucket"
+
+  environment = "prod"
+
+  consuming_lambda_role_arns = [
+    for name in local.tfstate_consuming_lambda_function_names_prod :
+    "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${name}-execution"
+  ]
 }
 
 module "github_app_secret" {
