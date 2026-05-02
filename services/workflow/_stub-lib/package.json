@@ -2,7 +2,7 @@
   "name": "@ironforge/workflow-stub-lib",
   "version": "0.0.0",
   "private": true,
-  "description": "Stub-task wrappers for PR-C.2's state-machine end-to-end exercise. Each task Lambda's handler is a thin facade over stubTask / finalizeStub / cleanupStub from this package. PR-C.3+ replaces each handler with real logic; this package is deletable once all 8 stubs are replaced (PR-C.9).",
+  "description": "Stub-task wrappers for PR-C.2's state-machine end-to-end exercise. Six PR-C.X stubs (validate-inputs replaced at PR-C.3; create-repo / generate-code / run-terraform / wait-for-cloudfront / trigger-deploy / finalize remaining). cleanupStub is NOT a placeholder — it's the real Phase 1 cleanup-on-failure behavior per the PR-C.2 hybrid scope (destroy chain deferred). Deletion trigger: stubTask + finalizeStub consumer counts both at zero — see src/index.ts ledger for current state.",
   "license": "UNLICENSED",
   "exports": {
     ".": {
