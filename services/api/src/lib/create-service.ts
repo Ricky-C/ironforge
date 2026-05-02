@@ -11,9 +11,9 @@ import {
   buildServiceKeys,
   buildServicePK,
   CreateServiceRequestSchema,
+  getInputsSchema,
   JOB_SK_META,
   SERVICE_SK_META,
-  StaticSiteInputsSchema,
   TemplateIdSchema,
   type ApiFailure,
   type ApiSuccess,
@@ -21,7 +21,6 @@ import {
   type CreateServiceResponse,
   type Job,
   type Service,
-  type TemplateId,
 } from "@ironforge/shared-types";
 import {
   docClient,
@@ -30,28 +29,23 @@ import {
   type IdempotencyOutcome,
 } from "@ironforge/shared-utils";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { z } from "zod";
 
 // Two-stage validation pipeline + creation for POST /api/services.
 // See state-machine.md and the PR-C.2 design conversation for the
 // shape this consumes (CreateServiceRequestSchema + per-template
 // InputsSchema lookup) and produces (Service + Job entities + SFN
 // execution kicked off).
-
-// Per-template inputs schemas. Adding a new template: add an entry
-// here AND extend TEMPLATE_IDS in shared-types/src/service.ts AND
-// land a templates/<id>/ironforge.yaml manifest.
-const TEMPLATE_INPUTS_SCHEMAS: Record<TemplateId, z.ZodTypeAny> = {
-  "static-site": StaticSiteInputsSchema,
-};
+//
+// Per-template inputs schemas come from TEMPLATE_REGISTRY in
+// @ironforge/shared-types — same registry the validate-inputs Lambda
+// consumes at workflow time, so first-pass and workflow-time validation
+// stay in lockstep.
 
 // Convenience response builders. Inline-typed so TS narrows on `ok`.
 const failure = (
   code: ApiFailure["error"]["code"],
   message: string,
 ): ApiFailure => ({ ok: false, error: { code, message } });
-
-const INTERNAL_FAILURE = failure("INTERNAL", "internal server error");
 
 type StatusedBody<T> = { statusCode: 200 | 201 | 400 | 409 | 500; body: T };
 
@@ -88,8 +82,9 @@ type InputsResult =
 
 const validateTemplateInputs = (request: CreateServiceRequest): InputsResult => {
   // The envelope already validated templateId via TemplateIdSchema, so
-  // a missing entry here is a wiring bug (registry mismatch), not a
-  // user error. Surface as INTERNAL rather than UNKNOWN_TEMPLATE.
+  // re-checking here is belt-and-suspenders. A miss surfaces as
+  // UNKNOWN_TEMPLATE rather than INVALID_REQUEST so the client error
+  // taxonomy stays clean.
   const tidOk = TemplateIdSchema.safeParse(request.templateId);
   if (!tidOk.success) {
     return {
@@ -97,13 +92,7 @@ const validateTemplateInputs = (request: CreateServiceRequest): InputsResult => 
       response: { statusCode: 400, body: failure("UNKNOWN_TEMPLATE", "templateId not recognized") },
     };
   }
-  const schema = TEMPLATE_INPUTS_SCHEMAS[tidOk.data];
-  if (!schema) {
-    return {
-      ok: false,
-      response: { statusCode: 500, body: INTERNAL_FAILURE },
-    };
-  }
+  const schema = getInputsSchema(tidOk.data);
   const parsed = schema.safeParse(request.inputs);
   if (!parsed.success) {
     return {

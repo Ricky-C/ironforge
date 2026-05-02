@@ -6,5 +6,6 @@ export * from "./manifest.js";
 export * from "./pagination.js";
 export * from "./polling.js";
 export * from "./service.js";
+export * from "./template-registry.js";
 export * from "./templates/static-site.js";
 export * from "./workflow.js";
