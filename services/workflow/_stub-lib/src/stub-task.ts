@@ -13,8 +13,10 @@ import {
 // Generic stub-task wrapper for the 6 task Lambdas that don't need
 // terminal Service/Job transitions (validate-inputs, create-repo,
 // generate-code, run-terraform, wait-for-cloudfront, trigger-deploy).
-// As of PR-C.7, only trigger-deploy still consumes this — see
+// As of PR-C.8, NONE still consume this — see
 // services/workflow/_stub-lib/src/index.ts for the consumer ledger.
+// Kept in the codebase only because finalizeStub + cleanupStub still
+// share this file's package; the wrapper itself is dead code.
 //
 // Each invocation does:
 //
