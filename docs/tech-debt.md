@@ -274,6 +274,14 @@ Each entry has:
 
 ### Operational verification / monitoring
 
+#### Production API Gateway throttling values are placeholder
+
+- **What:** `throttling_burst_limit = 50` and `throttling_rate_limit = 20` (RPS) on the dev stage. These were chosen to unblock Phase 1 verification (which surfaced the original 0/0 misconfiguration that 429'd every request) and are intentionally permissive for a single-user dev environment. No environment-specific overrides for prod yet — when `infra/envs/prod` lights up, it will inherit the dev-tuned defaults from `infra/modules/api-gateway/variables.tf`.
+- **Why deferred:** Prod-appropriate values require knowing the access pattern (peak concurrent provisioning users, expected job-status polling rate, demo walkthrough traffic). At Phase 1 wrap there's no real traffic to base values on. Premature tightening risks throttling legitimate use; premature widening risks paying for a DDoS.
+- **When to revisit:** First Phase 2 deploy with prod traffic on, OR when CloudWatch detailed metrics on the API stage show sustained near-burst-limit traffic. Also revisit if WAF rate-based rules are added on top — combined enforcement may shift the right values.
+- **Action:** Set per-env values in `infra/envs/prod/main.tf` module call (e.g., `throttling_burst_limit = 200`, `throttling_rate_limit = 100`). Consider per-route overrides for high-volume endpoints (job-status polling) via `route_settings`. If abuse becomes a concern beyond throttling, layer per-user enforcement via API keys + usage plans (REST API construct — would require migration off HTTP API) or a WAF rate-based rule keyed on the `sub` claim.
+- **Where:** `infra/modules/api-gateway/variables.tf` (current dev-tuned defaults); `infra/envs/prod/main.tf` (where overrides would live); `infra/modules/api-gateway/main.tf` § `default_route_settings` (the resource consuming the values).
+
 #### End-to-end verification of the cost-safeguards circuit breaker
 
 - **What:** The $50 budget action + deny policy is the load-bearing Tier-2 cost protection. The static configuration is now fully verified-by-static-analysis-and-procedure but the procedure has not yet been *run* against a live throwaway test user. All three pre-existing bugs from the April 2026 verification attempt are fixed: the unattachable managed-policy bug (PR #30), the ADR-002 worked-example mismatch (PR #31), and the broken Console-button § 3 procedure (rewrite PR — replaces "Run action now" with a five-step simulator + manual-attach + cleanup procedure that tests our surface without depending on AWS-internal threshold firing). What's left is to actually execute the rewritten procedure once and capture artifacts.

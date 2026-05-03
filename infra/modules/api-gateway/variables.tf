@@ -49,3 +49,25 @@ variable "enable_detailed_metrics" {
   type        = bool
   default     = true
 }
+
+variable "throttling_burst_limit" {
+  description = "API Gateway HTTP API stage burst limit (max concurrent requests). MUST be > 0; 0 blocks all traffic on HTTP API v2 (unlike REST API where 0 inherits account default). Dev default 50 is generous for a single user, restrictive for abuse."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.throttling_burst_limit > 0
+    error_message = "throttling_burst_limit must be > 0; setting to 0 blocks all stage traffic on HTTP API v2."
+  }
+}
+
+variable "throttling_rate_limit" {
+  description = "API Gateway HTTP API stage steady-state rate limit (requests per second). MUST be > 0; 0 blocks all traffic on HTTP API v2. Dev default 20 RPS sustains a single user comfortably."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.throttling_rate_limit > 0
+    error_message = "throttling_rate_limit must be > 0; setting to 0 blocks all stage traffic on HTTP API v2."
+  }
+}
