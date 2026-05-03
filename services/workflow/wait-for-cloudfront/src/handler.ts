@@ -1,10 +1,5 @@
-import { stubTask } from "@ironforge/workflow-stub-lib";
+import { buildHandler } from "./handle-event.js";
 
-// PR-C.2 stub. Replaced at PR-C.7 with real CloudFront distribution-
-// status polling (status === "Deployed" + DNS resolution check).
-export const handler = stubTask({
-  stepName: "wait-for-cloudfront",
-  buildOutput: () => ({
-    distributionStatus: "Deployed",
-  }),
-});
+// Production handler — single shared instance built at module load.
+// All AWS clients live inside buildHandler's closure with default deps.
+export const handler = buildHandler();

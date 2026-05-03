@@ -115,6 +115,31 @@ Different resource types support different metadata channels. Choose the most st
 
 ---
 
+## SFN-orchestrated polling pattern
+
+**Pattern.** Tasks that wait on a long-running upstream condition use the SFN-orchestrated polling shape — Init Pass state + polling Task + Choice + Wait — rather than in-Lambda sleep loops. The polling Lambda is single-shot per invocation; SFN's Wait state schedules the next tick via `SecondsPath` consuming the Lambda's `PollResult.in_progress.nextWaitSeconds`. Per-tick state carries forward in the `pollState` bag inside the same PollResult; the polling Lambda narrows it via a per-Lambda Zod schema on the next entry. The polling Lambda enforces an elapsed-time budget by comparing against `pollState.startedAt` and throwing `IronforgePollTimeoutError` when exhausted — SFN's existing `Catch` on `States.ALL` handles the throw; there is no `failed` branch in the Choice state.
+
+**Established in.**
+
+- PR-C.7 (2026-05-03) — `services/workflow/wait-for-cloudfront/src/handle-event.ts` polls `cloudfront:GetDistribution` until `Status === "Deployed"` or the 20-minute elapsed budget exhausts. The state machine adds InitCloudFrontPolling (Pass), WaitForCloudFront (Task), WaitForCloudFrontChoice (Choice), WaitForCloudFrontWaitTick (Wait). Schedule lives in TypeScript inside the Lambda: `[30s, 30s, 60s, 60s, 60s, 90s]` then 90s indefinitely, bounded by the elapsed-time check.
+
+**Applied by.**
+
+- `services/workflow/wait-for-cloudfront/src/handle-event.ts`
+- `infra/modules/step-functions/definition.json.tpl` — the four states implementing the loop.
+
+**Rationale.**
+
+1. **SFN is the workflow primitive (CLAUDE.md anti-pattern: "Step Functions is the workflow primitive").** In-Lambda polling makes Lambda the wait primitive. Wait states are free; Lambda execution time costs dollars. The architectural cost of putting waits in Lambda is structural, not just monetary.
+2. **Lambda's 15-minute ceiling vs. tail upstream latency.** CloudFront propagation is usually 5-10 minutes but occasionally exceeds 15 minutes. In-Lambda sleep loops would create spurious failures on the long tail; SFN-orchestrated polling decouples wait time from Lambda execution time entirely.
+3. **Testability.** Single-shot polling Lambdas test cleanly with injected `now()` and `getDistribution` seams. In-Lambda sleep loops require `setTimeout` mocking and time-traveling test scaffolding that the codebase otherwise has no need for.
+4. **Init Pass state covers SFN's missing-path semantics.** `Parameters` blocks runtime-fail when a referenced JSON path doesn't exist, with no native default-value support. The Init Pass state seeds the discriminator the polling Lambda's first-tick branch accepts; alternatives (Lambda accepts nullable `previousPoll`, or `Parameters` skip on first tick via different state) all couple the Lambda or the SFN definition to "first tick is special" awareness.
+5. **PollResult.failed reserved, not used.** The `PollResult.failed` discriminant remains in the shared schema for forward compatibility with polling Lambdas whose upstream has a terminal-but-not-thrown failure state (ACM cert `VALIDATION_FAILED`, etc.). WaitForCloudFront throws on budget exhaustion instead of returning `failed` so SFN's existing `Catch` populates `$.error` automatically — keeps the Choice state minimal (`succeeded` → exit, default → Wait). First `failed` consumer TBD.
+
+**What this is NOT a pattern for:** synchronous upstream calls that complete in <30s (no polling needed), or workflow-level retries on transient errors (those are SFN `Retry` blocks at the task state, calibrated per-task in the retry table — see § "Per-task retry counts" in `docs/state-machine.md`). The pattern applies specifically when the upstream itself is asynchronous and exposes a "still in progress" status separate from "succeeded" / "failed."
+
+---
+
 ## Offline terraform init via filesystem_mirror (not TF_PLUGIN_CACHE_DIR)
 
 **Pattern.** The run-terraform Lambda runs `terraform init` in a no-egress execution environment — it cannot reach `registry.terraform.io`. To make init succeed offline, the handler writes a CLI configuration file at `/tmp/.terraformrc` declaring a `provider_installation { filesystem_mirror }` pointing at `/opt/.terraform.d/plugins/`, and exports `TF_CLI_CONFIG_FILE=/tmp/.terraformrc` to the spawned terraform process. The Dockerfile bakes the AWS provider binary at the conventional plugin path. Any provider not present in the mirror fails init explicitly via the mirror config's `direct { exclude = ["registry.terraform.io/*/*"] }` pairing — there is no fallback to network.

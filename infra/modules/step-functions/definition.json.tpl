@@ -95,11 +95,24 @@
         }
       ],
       "ResultPath": "$.steps.run-terraform",
+      "Next": "InitCloudFrontPolling"
+    },
+    "InitCloudFrontPolling": {
+      "Type": "Pass",
+      "Comment": "Polling-loop init. Seeds $.steps.wait-for-cloudfront with the discriminator the Lambda's HandlerInputSchema accepts on a first tick. Without this, WaitForCloudFront's Parameters block would runtime-fail on the first invocation because $.steps.wait-for-cloudfront wouldn't exist yet — SFN doesn't support default values for missing JSON paths. Convention: every polling loop begins with an Init Pass state injecting Result: { status: \"init\" } at the loop's state path.",
+      "Result": { "status": "init" },
+      "ResultPath": "$.steps.wait-for-cloudfront",
       "Next": "WaitForCloudFront"
     },
     "WaitForCloudFront": {
       "Type": "Task",
       "Resource": "${wait_for_cloudfront_arn}",
+      "Comment": "Single-shot poll tick. Calls cloudfront:GetDistribution and returns PollResult. SFN-level Retry catches Lambda-platform transients (one retry); the polling cap is the wall-clock 20-minute budget enforced inside the Lambda — see docs/state-machine.md § \"WaitForCloudFront retry table row\".",
+      "Parameters": {
+        "jobId.$": "$.jobId",
+        "distributionId.$": "$.steps.run-terraform.distribution_id",
+        "previousPoll.$": "$.steps.wait-for-cloudfront"
+      },
       "Retry": [
         {
           "ErrorEquals": [
@@ -122,7 +135,25 @@
         }
       ],
       "ResultPath": "$.steps.wait-for-cloudfront",
-      "Next": "TriggerDeploy"
+      "Next": "WaitForCloudFrontChoice"
+    },
+    "WaitForCloudFrontChoice": {
+      "Type": "Choice",
+      "Comment": "Routes the latest PollResult. status === \"succeeded\" exits the loop. Default routes to the Wait tick. There is no failed branch — IronforgePollTimeoutError is thrown by the Lambda on budget exhaustion, which is caught by WaitForCloudFront's Catch on States.ALL above.",
+      "Choices": [
+        {
+          "Variable": "$.steps.wait-for-cloudfront.status",
+          "StringEquals": "succeeded",
+          "Next": "TriggerDeploy"
+        }
+      ],
+      "Default": "WaitForCloudFrontWaitTick"
+    },
+    "WaitForCloudFrontWaitTick": {
+      "Type": "Wait",
+      "Comment": "Inter-tick wait. SecondsPath consumes the Lambda's PollResult.in_progress.nextWaitSeconds (schedule lives in handle-event.ts, not here). Wait states are free; this is the SFN-orchestrated polling primitive that replaces in-Lambda sleep loops.",
+      "SecondsPath": "$.steps.wait-for-cloudfront.nextWaitSeconds",
+      "Next": "WaitForCloudFront"
     },
     "TriggerDeploy": {
       "Type": "Task",
