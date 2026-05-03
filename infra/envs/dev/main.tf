@@ -383,6 +383,15 @@ locals {
       ]
       resources = [data.terraform_remote_state.shared.outputs.dns_hosted_zone_arn]
     },
+    # Companion to Route53RecordManagement — terraform's aws_route53_record
+    # resource reads zone metadata (route53:GetHostedZone) during plan/apply
+    # to verify the zone exists. Same wildcard-scoped-to-resource pattern
+    # as S3BucketRead. Discovered round 10.
+    {
+      sid       = "Route53HostedZoneRead"
+      actions   = ["route53:Get*"]
+      resources = [data.terraform_remote_state.shared.outputs.dns_hosted_zone_arn]
+    },
     {
       sid       = "Route53GetChangeStarRequired"
       actions   = ["route53:GetChange"]
