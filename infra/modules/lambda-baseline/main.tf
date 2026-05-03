@@ -103,6 +103,36 @@ data "aws_iam_policy_document" "permission_boundary" {
     ]
   }
 
+  # Per-service Terraform state buckets. The run-terraform Lambda's
+  # terraform invocation uses the s3 backend; reads/writes per-service
+  # state at services/<id>/terraform.tfstate (and the .tflock sibling
+  # under use_lockfile=true). The Lambda's identity policy narrows to
+  # the services/* prefix on the env-specific bucket; the boundary
+  # allows broadly across env-named tfstate buckets so a single boundary
+  # spans both dev and (future) prod compositions.
+  #
+  # Discovered during Phase 1 verification round 6 (PR-C.6 + run #5 IAM
+  # gap fixed in PR #69). The PR #69 identity grant was correct but the
+  # boundary intersection denied because the boundary only listed
+  # ironforge-artifacts-*. Architectural gap — boundary captured the
+  # bucket-level tenants that EXISTED at boundary-creation time, but
+  # the per-service state-bucket tenant (added by run-terraform's apply
+  # logic) wasn't reflected here.
+  statement {
+    sid    = "AllowTFStateBucketAccess"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::ironforge-tfstate-*",
+      "arn:aws:s3:::ironforge-tfstate-*/*",
+    ]
+  }
+
   statement {
     sid    = "AllowRoute53OnIronforgeZone"
     effect = "Allow"
@@ -220,10 +250,22 @@ data "aws_iam_policy_document" "permission_boundary" {
   # not used. Per-Lambda identity policies in PR-C.4b / PR-C.8 narrow
   # further with specific CMK ARN + EncryptionContext:SecretARN
   # binding. See ADR-006 § Amendments.
+  #
+  # kms:GenerateDataKey added during Phase 1 verification round 6.
+  # Terraform's S3 backend writes state to a CMK-encrypted bucket; the
+  # AWS SDK uses GenerateDataKey to mint per-object data keys for
+  # envelope encryption. Decrypt alone covers reads but not writes.
+  # Same tag-condition scope as Decrypt — the broader action set on
+  # ironforge-managed keys is fine because per-Lambda identity policies
+  # narrow further (key policies further constrain via principal
+  # whitelisting like the tfstate CMK's AllowConsumingLambdaUseKey).
   statement {
-    sid       = "AllowKmsDecryptOnIronforgeManagedKeys"
-    effect    = "Allow"
-    actions   = ["kms:Decrypt"]
+    sid    = "AllowKmsDecryptOnIronforgeManagedKeys"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+    ]
     resources = ["*"]
     condition {
       test     = "StringEquals"
