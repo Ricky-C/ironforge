@@ -198,6 +198,39 @@ data "aws_iam_policy_document" "permission_boundary" {
     resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
   }
 
+  # Object-level operations on per-service origin buckets. Where
+  # AllowProvisionedBucketLifecycle covers what the workflow Lambda needs
+  # (bucket-level create/configure/delete), this covers what the per-service
+  # DEPLOY ROLE needs — the role created by the static-site template and
+  # assumed by GitHub Actions to sync content. The boundary is shared
+  # across both tenants; per-role identity policies narrow further (the
+  # workflow Lambda's identity policy doesn't grant object operations,
+  # so this widening doesn't grant the workflow itself anything new).
+  #
+  # Action set scoped to deploy.yml's actual operations:
+  #   - PutObject   (aws s3 sync uploads)
+  #   - DeleteObject (--delete flag prunes removed files)
+  #   - GetObject   (sync compares ETags before re-uploading)
+  # Note the /* ARN suffix — bucket-level ARN doesn't grant object ops.
+  #
+  # Discovered Phase 1 verification round 11 — wait-for-deploy failed
+  # because the user's deploy.yml hit AccessDenied on PutObject. This
+  # is a different category of discovery than prior rounds: those were
+  # platform-side gaps (Ironforge's own configuration); this is at the
+  # platform-vs-user-tenant boundary (what the platform GRANTS to user
+  # code). See docs/conventions.md § "Platform IAM vs. user-tenant IAM"
+  # for the durable convention.
+  statement {
+    sid    = "AllowProvisionedBucketObjects"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject",
+    ]
+    resources = ["arn:aws:s3:::ironforge-svc-*-origin/*"]
+  }
+
   statement {
     sid    = "AllowRoute53OnIronforgeZone"
     effect = "Allow"
