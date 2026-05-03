@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-lambda": "^3.1039.0",
+    "@aws-sdk/client-s3": "^3.1039.0",
     "@ironforge/shared-types": "workspace:*",
+    "@ironforge/shared-utils": "workspace:*",
     "@ironforge/workflow-stub-lib": "workspace:*"
   },
   "devDependencies": {

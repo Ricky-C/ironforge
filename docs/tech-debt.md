@@ -204,22 +204,24 @@ Each entry has:
 
 ### Workflow / state machine
 
-#### Cleanup-on-failure destroy chain
+#### ~~Cleanup-on-failure destroy chain~~ — Promoted
 
-- **What:** The provisioning workflow's `cleanup-on-failure` state currently performs **status writes only** (Service `provisioning → failed`, Job `running → failed`, JobStep `cleanup-on-failure` succeeded). It does NOT delete created AWS resources, GitHub repos, CloudFront distributions, or run `terraform destroy` against the per-service composition. Orphaned resources are discoverable via the `ironforge-managed = true` tag and cleaned up manually.
-- **Why deferred:** Phase 1 single-template scope means orphans are operator-discoverable + manually-recoverable (the maintainer is Ricky, who is also the operator). A real destroy chain has non-trivial design questions: (1) `terraform destroy` semantics for partial state — what if S3 bucket created but CloudFront mid-flight; (2) GitHub repo deletion ordering vs. terraform's IAM role deletion; (3) idempotency on the destroy chain itself (cleanup gets re-fired by SFN retry). Each of these warrants its own design conversation. PR-C.2 deliberately ships the simpler path (a) of the design conversation; the destroy chain re-enters the queue when a forcing function lands.
-- **When to revisit (any one of):**
-  - **>10 orphaned resources accumulated** — the manual-cleanup tax becomes routine.
-  - **Single failure leaves orphans taking >5 min to clean manually** — operational friction has crossed the threshold where automation pays back.
-  - **Multi-tenant requirement lands** — orphan visibility per-tenant becomes a customer concern, not just an operator concern.
-  - **Phase 2 begins** — natural forcing function. If none of the above triggers fired by then, do this anyway. Without this anchor the entry becomes a "we'll get to it" item that doesn't get to it.
-- **Action:**
-  1. Design conversation covering: per-resource-type destroy ordering, partial-state recovery, retry-after-partial-destroy idempotency, GitHub repo deletion vs. terraform IAM role deletion ordering, and whether `terraform destroy` is invoked from the cleanup Lambda directly or via the same execution-model decided at PR-C.6 (CodeBuild vs. Lambda direct).
-  2. Replace the `cleanupStub` in `services/workflow/_stub-lib/src/cleanup-stub.ts` with a real cleanup Lambda implementation in `services/workflow/cleanup-on-failure/src/handler.ts` (deleting the stub-lib import path).
-  3. Extend the cleanup Lambda's IAM grants: `lambda:InvokeFunction` on `run-terraform` (for the destroy invocation), GitHub App secret read for the repo deletion, etc.
-  4. Update `docs/state-machine.md` § "Cleanup-on-failure scope" — replace the PR-C.2 minimal description with the destroy chain semantics.
-  5. Update this entry to "Resolved" and remove. Move historical context to `docs/runbook.md` if useful.
-- **Where:** `services/workflow/cleanup-on-failure/src/handler.ts` (currently re-exports cleanupStub); `services/workflow/_stub-lib/src/cleanup-stub.ts` (stub to delete); `docs/state-machine.md` § "Cleanup-on-failure scope (PR-C.2 — minimal)".
+**Promoted to active work 2026-05-03 during Phase 1 verification.** Manual cleanup became the dominant cost per iteration (~25 min/cycle including CloudFront propagation); minimum-viable destroy chain delivered as Phase 1.5. The "natural forcing function" trigger fired earlier than expected — verification iteration cost crossed the threshold where automation paid back during round 10.
+
+Minimum-viable scope shipped:
+- `terraform destroy` against per-service state via run-terraform Lambda invoke (action="destroy" mode added)
+- GitHub repo deletion via App Octokit client
+- Tfstate file deletion via S3 SDK
+- Each step independently failure-tolerant (log, skip, mark for manual cleanup; don't block subsequent steps)
+
+**Remaining tech-debt** (deliberately deferred):
+- Concurrent-failure handling (cleanup fires while another execution is running against the same service)
+- Notification/alerting on cleanup failure (operator must check JobStep DDB rows)
+- Detailed audit logging beyond CloudWatch ERROR lines
+- Async destroy via SFN polling — current synchronous Lambda invoke times out at 10 min, so CloudFront-distribution-created failures still need manual disable+delete (Phase 2+ refactor)
+- Cleanup for non-terraform-managed resources (orphan ECR images, log groups from earlier failed runs)
+
+These remain deferred because they're production-grade quality on top of a working minimum, not blockers to verification continuing.
 
 #### Repo-secrets staleness on infrastructure rotation
 

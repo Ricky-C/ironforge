@@ -84,6 +84,10 @@ const SANITIZED_INIT_MESSAGE =
   "terraform init failed — see CloudWatch for stderr tail";
 const SANITIZED_APPLY_MESSAGE =
   "terraform apply failed — see CloudWatch for stderr tail";
+const SANITIZED_DESTROY_MESSAGE =
+  "terraform destroy failed — see CloudWatch for stderr tail";
+const SANITIZED_ACTION_MESSAGE =
+  "Workflow input action must be 'apply' or 'destroy'";
 const SANITIZED_OUTPUT_RUN_MESSAGE =
   "terraform output -json failed — see CloudWatch for stderr tail";
 const SANITIZED_OUTPUT_PARSE_MESSAGE =
@@ -103,6 +107,10 @@ export class IronforgeTerraformInitError extends Error {
 
 export class IronforgeTerraformApplyError extends Error {
   override readonly name = "IronforgeTerraformApplyError";
+}
+
+export class IronforgeTerraformDestroyError extends Error {
+  override readonly name = "IronforgeTerraformDestroyError";
 }
 
 export class IronforgeTerraformOutputError extends Error {
@@ -373,6 +381,26 @@ export const buildHandler = (
     }
     const input = parsed.data;
 
+    // Step 1b — read action from raw event (not in WorkflowExecutionInputSchema
+    // because cleanup-on-failure is the only caller passing it; SFN's normal
+    // run-terraform invocation omits the field and gets the default "apply").
+    // Added during Phase 1.5 destroy-chain work — see docs/tech-debt.md
+    // § "Cleanup-on-failure destroy chain (Promoted)".
+    const rawAction = (event as { action?: unknown } | null)?.action ?? "apply";
+    if (rawAction !== "apply" && rawAction !== "destroy") {
+      console.error(
+        JSON.stringify({
+          level: "ERROR",
+          message: "run-terraform received invalid action",
+          stepName: STEP_NAME,
+          jobId: input.jobId,
+          action: rawAction,
+        }),
+      );
+      throw new IronforgeWorkflowInputError(SANITIZED_ACTION_MESSAGE);
+    }
+    const action: "apply" | "destroy" = rawAction;
+
     // Validate templateId against the canonical enum BEFORE doing any IO.
     // The WorkflowExecutionInputSchema treats templateId as a free-form
     // string (template-agnostic at the workflow boundary), but the
@@ -395,12 +423,17 @@ export const buildHandler = (
     const config = deps.config ?? getConfig();
     const tableName = getTableName();
 
-    // Step 2 — JobStep running (natural-key idempotent).
-    await upsertJobStepRunning({
-      tableName,
-      jobId: input.jobId,
-      stepName: STEP_NAME,
-    });
+    // Step 2 — JobStep running (natural-key idempotent). Skipped on
+    // destroy: cleanup-on-failure owns its own JobStep#cleanup-on-failure
+    // entry, and the failed JobStep#run-terraform from the original apply
+    // attempt should NOT be flipped to "running" by the destroy invocation.
+    if (action === "apply") {
+      await upsertJobStepRunning({
+        tableName,
+        jobId: input.jobId,
+        stepName: STEP_NAME,
+      });
+    }
 
     const workDir = join(workDirRoot, input.jobId);
     try {
@@ -455,6 +488,47 @@ export const buildHandler = (
           }),
         );
         throw new IronforgeTerraformInitError(SANITIZED_INIT_MESSAGE);
+      }
+
+      // Step 5d — terraform destroy (only when invoked by cleanup-on-failure).
+      // Returns a placeholder RunTerraformOutput so the function signature
+      // remains stable; the destroy caller (cleanup-on-failure) ignores the
+      // return value. Per Phase 1.5 minimum-viable scope, CloudFront-distribution
+      // destroys may exceed the Lambda 10-min timeout; that's a known limit
+      // and a Phase 2+ async refactor (see docs/tech-debt.md).
+      if (action === "destroy") {
+        const destroyResult = await spawnTerraform({
+          cwd: workDir,
+          args: [
+            "destroy",
+            "-auto-approve",
+            "-input=false",
+            "-no-color",
+            "-var-file=terraform.tfvars.json",
+          ],
+          env: spawnEnv,
+        });
+        if (destroyResult.exitCode !== 0) {
+          console.error(
+            JSON.stringify({
+              level: "ERROR",
+              message: "terraform destroy failed",
+              stepName: STEP_NAME,
+              jobId: input.jobId,
+              exitCode: destroyResult.exitCode,
+              stderrTail: destroyResult.stderr.slice(-STDERR_LOG_TAIL_BYTES),
+            }),
+          );
+          throw new IronforgeTerraformDestroyError(SANITIZED_DESTROY_MESSAGE);
+        }
+        return {
+          bucket_name: "",
+          distribution_id: "",
+          distribution_domain_name: "",
+          deploy_role_arn: "",
+          live_url: "",
+          fqdn: "",
+        };
       }
 
       // Step 5 — terraform apply.
@@ -551,14 +625,19 @@ export const buildHandler = (
       // ADR-009: run-terraform's MaxAttempts is 0 — failures route to
       // CleanupOnFailure. Mark the JobStep non-retryable so operators
       // don't re-fire the workflow against partial state.
-      await upsertJobStepFailed({
-        tableName,
-        jobId: input.jobId,
-        stepName: STEP_NAME,
-        errorName,
-        errorMessage,
-        retryable: false,
-      });
+      // Skipped on destroy: cleanup-on-failure manages its own JobStep
+      // entry; the original JobStep#run-terraform=failed should NOT be
+      // overwritten by a subsequent destroy attempt's failure.
+      if (action === "apply") {
+        await upsertJobStepFailed({
+          tableName,
+          jobId: input.jobId,
+          stepName: STEP_NAME,
+          errorName,
+          errorMessage,
+          retryable: false,
+        });
+      }
       throw err;
     } finally {
       // Cleanup workdir on success AND failure. rm errors are logged but
