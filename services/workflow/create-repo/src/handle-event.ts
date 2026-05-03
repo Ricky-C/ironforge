@@ -191,7 +191,16 @@ const createRepo = async (
       name,
       description: `Ironforge static site · service: ${serviceName}`,
       private: true,
-      auto_init: false,
+      // auto_init=true seeds the repo with an initial README commit so that
+      // generate-code can use the standard Git Data API path (createBlob /
+      // createTree / createCommit). Without it, GitHub returns 409 on
+      // git/blobs against a Git-empty repo — the architectural intent of
+      // "create-repo creates an empty repo, generate-code adds content"
+      // doesn't survive contact with GitHub's empty-repo semantics.
+      // generate-code recognizes the auto_init commit via three-signal
+      // check (message="Initial commit", author=web-flow, tree={README.md})
+      // and creates its starter-code commit on top.
+      auto_init: true,
       custom_properties: { [CUSTOM_PROPERTY_KEY]: jobId },
     });
     return response.data as unknown as GitHubRepoResponse;

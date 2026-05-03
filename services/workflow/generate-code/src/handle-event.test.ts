@@ -166,7 +166,7 @@ describe("generate-code handler — idempotent retry (ref exists with our jobId)
       },
       getCommitResult: {
         data: {
-          message: `Initial commit (Ironforge job ${VALID_INPUT.jobId})`,
+          message: `Add starter code (Ironforge job ${VALID_INPUT.jobId})`,
           tree: { sha: "existing-tree-sha" },
         },
       },
