@@ -144,8 +144,17 @@ resource "aws_apigatewayv2_stage" "default" {
 
   default_route_settings {
     detailed_metrics_enabled = var.enable_detailed_metrics
-    # Throttling left at AWS account default (10000 RPS burst, 5000 RPS
-    # steady). Tighten if traffic ever justifies a per-API limit.
+
+    # HTTP API (v2) requires explicit throttling values. Unset values are
+    # serialized by the AWS provider as 0, which AWS interprets as "stage
+    # blocked" (every request 429s) — NOT "inherit account default" as the
+    # REST-API mental model would suggest. The dev posture is generous
+    # enough to never feel during use, restrictive enough to bound abuse;
+    # prod values are tracked as tech debt pending real traffic patterns.
+    # See docs/tech-debt.md § "Production API Gateway throttling values
+    # are placeholder".
+    throttling_burst_limit = var.throttling_burst_limit
+    throttling_rate_limit  = var.throttling_rate_limit
   }
 
   tags = local.component_tags
