@@ -2,20 +2,27 @@
   "name": "@ironforge/workflow-wait-for-cloudfront",
   "version": "0.0.0",
   "private": true,
-  "description": "Workflow task Lambda — wait-for-cloudfront. PR-C.2 stub: thin facade over @ironforge/workflow-stub-lib's stubTask. Replaced at PR-C.7 with real CloudFront distribution-status polling using @ironforge/shared-utils' exponentialBackoffSchedule.",
+  "description": "Workflow task Lambda — wait-for-cloudfront. Single-shot polling Lambda invoked in an SFN Wait→Choice→Task loop (per PR-C.7 / docs/state-machine.md § Polling-loop topology). Calls cloudfront:GetDistribution; returns PollResult.in_progress with carry-forward pollState until Status === \"Deployed\" or the 20-minute elapsed budget exhausts.",
   "license": "UNLICENSED",
   "scripts": {
     "build": "node ./build.mjs",
     "clean": "rm -rf dist",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudfront": "^3.1039.0",
     "@ironforge/shared-types": "workspace:*",
-    "@ironforge/workflow-stub-lib": "workspace:*"
+    "@ironforge/shared-utils": "workspace:*",
+    "zod": "^4.4.1"
   },
   "devDependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.1039.0",
     "@types/node": "^25.6.0",
+    "aws-sdk-client-mock": "^4.1.0",
     "esbuild": "^0.28.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5"
   }
 }
