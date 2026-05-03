@@ -241,6 +241,45 @@ data "local_file" "run_terraform_image_uri" {
 # narrows further with specific actions per resource type.
 locals {
   run_terraform_extra_statements = [
+    # ── Terraform backend — per-service state in the dev tfstate bucket ───
+    # The Lambda's terraform invocation uses the s3 backend; reads/writes
+    # state via S3 SDK using the Lambda execution role. Per-service state
+    # lives at services/<service-id>/terraform.tfstate. With
+    # use_lockfile=true (S3-native locking), the same prefix holds the
+    # .tflock file. Both share the same grant.
+    #
+    # Scoped to services/* — never the bucket root (which holds Ironforge's
+    # OWN composition state files that the Lambda must not touch). KMS
+    # decrypt/encrypt for this bucket's CMK is granted via the key policy
+    # (AllowConsumingLambdaUseKey), not via the IAM identity policy.
+    #
+    # Discovered during Phase 1 verification round 5: terraform init failed
+    # with HeadObject 403 because the role had grants for the buckets it
+    # provisions (ironforge-svc-*-origin) but none for the bucket it itself
+    # depends on. Architectural gap — not drift.
+    {
+      sid = "S3TFStateObjectAccess"
+      actions = [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+      ]
+      resources = ["${data.terraform_remote_state.shared.outputs.tfstate_dev_bucket_arn}/services/*"]
+    },
+    {
+      sid       = "S3TFStateBucketList"
+      actions   = ["s3:ListBucket"]
+      resources = [data.terraform_remote_state.shared.outputs.tfstate_dev_bucket_arn]
+      # Limit the listing to the services/ prefix so the Lambda can never
+      # enumerate Ironforge's composition state keys (envs/dev/, envs/shared/).
+      conditions = [
+        {
+          test     = "StringLike"
+          variable = "s3:prefix"
+          values   = ["services/*"]
+        },
+      ]
+    },
     # ── S3 bucket lifecycle ────────────────────────────────────────────────
     {
       sid = "S3BucketCRUD"
