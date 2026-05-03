@@ -234,6 +234,23 @@ Each entry has:
   2. Automation candidates to evaluate at re-visit: (a) scheduled drift-detect Lambda comparing `Service.lastKnownInfra` to current terraform output, re-running secret population on diff; (b) terraform-state-write webhook (S3 event on the per-service tfstate object) triggering a repopulate Lambda; (c) shifting the source of truth from repo secrets to a `terraform output`-fed read by the deploy.yml on each run (would require deploy.yml to assume an Ironforge-side read role first — adds complexity).
 - **Where:** `templates/static-site/starter-code/.github/workflows/deploy.yml` § comment block at the top; `services/workflow/trigger-deploy/src/handle-event.ts` (the populator, currently single-shot).
 
+#### Audit-log emission on terminal workflow transitions
+
+- **What:** The PR-C.9 `finalize` Lambda transitions Service to `live` and Job to `succeeded` but does NOT emit a structured audit event. The original PR-C.2 `finalizeStub` comment promised "the real PR-C.9 finalize Lambda will do the same transitions but also emit a structured event for Phase-2 observability (audit log, customer notification)." That commitment is deferred. Same applies to `cleanup-on-failure`'s terminal failure transitions (no audit event emitted there either). The Audit entity is documented in `docs/data-model.md` (`PK = AUDIT#<yyyy-mm-dd>`, `SK = <iso-timestamp>#<event-id>`) but no writer or reader exists.
+- **Why deferred:** Phase 1 has no audit-log readers. Building a writer with no consumer is YAGNI — JobStep rows + CloudWatch logs already capture every workflow transition with full structured context. The Audit entity's value is in cross-job, cross-service queries ("what happened on date X?", "what's the rate of provisioning failures?", "who provisioned this service?") that no Phase-1 code path needs.
+- **When to revisit (any one of):**
+  - **Audit query API endpoint added** — e.g., `GET /api/audit?from=...&to=...` for operator dashboards or a "what happened" UI. The API is the consumer; finalize + cleanup-on-failure become writers.
+  - **Notification consumer lands** — e.g., user-facing email on provisioning success / failure, Slack webhook for Ricky-as-operator. Audit events are the natural fan-out source.
+  - **Compliance requirement lands** — SOC2 audit trail, GDPR right-to-erasure tracking, or any policy mandating retained workflow-event history. The Audit entity's daily-PK partitioning was designed for this; using it now satisfies the requirement without redesign.
+  - **Multi-tenant feature** — operator-facing "what happened for tenant X" views become per-customer; CloudWatch + JobStep can't cleanly answer that across many tenants.
+  - **"What happened at time T" feature for the platform's own debugging** — informally if Ricky finds himself querying CloudWatch for cross-service correlation more than once a quarter, that's the trigger.
+- **Action:**
+  1. Add an audit-event writer helper to `@ironforge/shared-utils` — single function `writeAuditEvent({ tableName, eventType, payload, actor, occurredAt })` that constructs the PK/SK shape from `data-model.md` and `PutItem`s the row. Idempotency on the SK (`<iso-timestamp>#<event-id>`) — re-fires write the same row.
+  2. Wire it into `finalize`'s success path (event type `provisioning.succeeded`, payload includes `serviceId`, `jobId`, `liveUrl`) and `cleanup-on-failure`'s success path (`provisioning.failed`, payload includes `failedStep`, `errorName`, `errorMessage`).
+  3. Add the `dynamodb:PutItem` grant on the table to both Lambdas' IAM (already present — `task_lambda_iam_grants.dynamodb_write` covers it).
+  4. Update this entry to "Resolved" and remove. Migrate the writer's API contract to `docs/data-model.md` if a richer reader-side schema is added.
+- **Where:** `services/workflow/finalize/src/handle-event.ts` (post step 7 — JobStep succeeded write); `services/workflow/_stub-lib/src/cleanup-stub.ts` (or its destroy-chain successor); `packages/shared-utils/src/dynamodb/audit.ts` (new file when re-introduced); `docs/data-model.md` § Audit entity (already documents the key shape).
+
 #### Existing service deploy.yml updates require manual operation
 
 - **What:** When `templates/static-site/starter-code/.github/workflows/deploy.yml` changes (e.g., PR-C.8 added the `correlation_id` input + `run-name` filter), services provisioned BEFORE the change keep their old `deploy.yml` verbatim. There is no automated migration: no Ironforge-side process opens a PR against existing service repos, no template-version-bump trigger fires a re-render, no `force_redeploy_yaml = true` flag exists.

@@ -177,6 +177,17 @@ PR-C.4a/PR-C.4b for create-repo, extended in PR-C.8 for trigger-deploy):
   `failure`, `cancelled`, `timed_out`). Operator triages via the run
   URL emitted in CloudWatch — the user's deploy logs are the source
   of truth, not Ironforge's.
+- `IronforgeFinalizeError` (PR-C.9 finalize) — Service or Job is in
+  an unexpected state during the terminal-success transitions. Two
+  shapes: (1) Service at `live` but with someone else's
+  `currentJobId` or `liveUrl` (data-integrity issue); (2) Service or
+  Job at a terminal-non-success state (e.g. `failed`, `cancelled` —
+  cleanup-on-failure ran first). Carries a structured context object
+  (`{ serviceId, jobId, expectedStatus, actualStatus, expectedLiveUrl,
+  actualLiveUrl, actualCurrentJobId }`) so operators triage from
+  `JobStep.errorMessage` + the persisted error context without log
+  spelunking. Idempotent retry is NOT this error class — that path
+  succeeds silently when our markers match.
 
 **Why not `States.TaskFailed` in Retry?** `States.TaskFailed` is the
 SFN umbrella that matches *any* task failure, including custom-named
@@ -208,7 +219,7 @@ via JobStep entries + `$.error` ResultPath + CloudWatch log group.
 | WaitForCloudFront  | 1           | Polling Lambda invoked in an SFN Wait → Choice → Task loop (see § "Polling-loop topology"). SFN-level Retry catches Lambda-platform transients on a single tick; the polling cap is the wall-clock 20-minute elapsed budget enforced inside the Lambda, throwing `IronforgePollTimeoutError` when exhausted. |
 | TriggerDeploy      | 2           | GitHub API transients. workflow_dispatch with the same ref + payload IS retry-safe at the AWS-API level — the user's deploy.yml is idempotent (S3 sync + CloudFront invalidation are idempotent), so a retry that double-fires the dispatch results in two completed deploys, the second being a no-op. wait-for-deploy filters by run-name and picks newest. Cost: 1-3 minutes of wasted GitHub Actions runtime in the rare double-fire case. |
 | WaitForDeploy      | 1           | Polling Lambda invoked in an SFN Wait → Choice → Task loop, same pattern as WaitForCloudFront. SFN-level Retry catches Lambda-platform transients on a single tick; the polling cap is the wall-clock 10-minute elapsed budget enforced inside the Lambda, throwing `IronforgePollTimeoutError` when exhausted. |
-| Finalize           | 1           | DynamoDB transition writes. Should rarely retry — the writes are the only side effect.                                            |
+| Finalize           | 1           | DynamoDB transition writes. Idempotent on retry via post-conditional-failure GetItem inspection (PR-C.9): the Lambda treats already-at-target-state-with-our-markers as success and unexpected state as `IronforgeFinalizeError`. Retry-after-success (Lambda timeout post-DDB-write) is the most likely "failure" mode at portfolio scale; the GetItem path makes it a no-op rather than a workflow failure. |
 | CleanupOnFailure   | 3           | Safety net. Higher than any per-step count.                                                                                       |
 
 `run-terraform` having `MaxAttempts: 0` is a deliberate choice. The
