@@ -80,6 +80,16 @@ jobs:
         if: matrix.composition == 'dev' || matrix.composition == 'prod'
         run: pnpm --filter "@ironforge/workflow-*" build
 
+      - name: Configure AWS credentials (OIDC plan role)
+        # Must precede the run-terraform container image build below —
+        # build-image.sh calls `aws sts get-caller-identity` and
+        # `aws ecr get-login-password`, both of which need credentials in
+        # the environment. Mirrors the order in infra-apply.yml.
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Set up Docker Buildx
         # Required for the run-terraform container image build (linux/arm64
         # cross-platform from the GitHub Actions runner). See ADR-009
@@ -96,12 +106,6 @@ jobs:
         # reads at plan time. See ADR-009 § Amendments.
         if: matrix.composition == 'dev' || matrix.composition == 'prod'
         run: bash infra/modules/terraform-lambda-image/build-image.sh
-
-      - name: Configure AWS credentials (OIDC plan role)
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_PLAN_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
