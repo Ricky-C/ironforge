@@ -313,9 +313,25 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "route53:Get*",
         "route53:List*",
         "xray:Get*",
-        "xray:List*"
+        "xray:List*",
+        "ecr:Describe*",
+        "ecr:Get*",
+        "ecr:List*",
+        "ecr:BatchGet*",
+        "ecr:BatchCheck*"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "EcrImagePushIronforge",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage"
+      ],
+      "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/ironforge-*"
     }
   ]
 }
@@ -326,6 +342,21 @@ aws iam put-role-policy \
   --policy-name ironforge-ci-plan-permissions \
   --policy-document file:///tmp/ironforge-ci-plan-policy.json
 ```
+
+> **Why the plan role pushes images.** The plan workflow runs
+> `infra/modules/terraform-lambda-image/build-image.sh` BEFORE
+> `terraform plan` because the dev composition reads the pushed image
+> digest URI via a `data "local_file"` data source — terraform plan
+> fails if `.image-uri` doesn't exist, even if the plan would not
+> deploy a new image. `EcrImagePushIronforge` grants the four layer/
+> image-write actions scoped to `repository/ironforge-*`. Read-side
+> ECR actions (DescribeRepositories, DescribeImages,
+> GetAuthorizationToken, etc.) live in `ReadAllForPlanDiff` since
+> they're idiomatic Read shapes. This is a deliberate expansion of
+> the plan role's blast radius (it can now push to ECR repos in the
+> ironforge-* namespace) — captured as a tech-debt entry to revisit
+> via a content-addressed image-tag scheme that pre-computes the
+> digest without push, decoupling plan from image push.
 
 ## Step 4 — Create `ironforge-ci-apply`
 
@@ -430,7 +461,9 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "scheduler:Get*", "scheduler:List*",
         "iam:Get*", "iam:List*",
         "route53:Get*", "route53:List*",
-        "xray:Get*", "xray:List*"
+        "xray:Get*", "xray:List*",
+        "ecr:Describe*", "ecr:Get*", "ecr:List*",
+        "ecr:BatchGet*", "ecr:BatchCheck*"
       ],
       "Resource": "*"
     },
@@ -652,6 +685,12 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
         "route53:GetChange"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "WriteIronforgeECR",
+      "Effect": "Allow",
+      "Action": "ecr:*",
+      "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/ironforge-*"
     }
   ]
 }
@@ -664,6 +703,8 @@ aws iam put-role-policy \
 ```
 
 Note on `cloudfront:*`, `wafv2:*`, `acm:*`, `cognito-idp:*`: these services either don't support resource-level scoping in IAM, or scoping by resource ARN is impractical at create-time. The boundary's DENY list keeps the cost-runaway services blocked regardless. Future tightening for these is tracked in `docs/tech-debt.md`.
+
+Note on `ecr:*` (PR-C.6): `WriteIronforgeECR` scopes to `repository/ironforge-*` — the tightest pattern AWS supports for ECR resource-management actions. The image-push actions (`InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage`) are subsumed by `ecr:*` for the apply role; the plan role gets these as a separate `EcrImagePushIronforge` statement (since plan should NOT have `ecr:*` write surface). `ecr:GetAuthorizationToken` is account-scoped per AWS service authorization reference — falls into `ReadAllForPlanDiff`'s `ecr:Get*` glob with `Resource: "*"`. The plan role's expanded blast radius (it can now push to any ECR repo in `ironforge-*`) is captured as a tech-debt entry — content-addressed image tagging that pre-computes the digest without push would decouple plan from image push.
 
 KMS got the tightening this round (the `KMS*` sids above). Structure: `kms:CreateKey` requires `aws:RequestTag/ironforge-managed=true` on the create call so every CMK the apply role can ever create carries the tag. Per-key write and grant actions (`kms:PutKeyPolicy`, `kms:ScheduleKeyDeletion`, `kms:CreateGrant`, `kms:RetireGrant`, etc.) are scoped to keys with `aws:ResourceTag/ironforge-managed=true`, which auto-includes any new ironforge-managed CMK without enumeration. `kms:CreateGrant`/`kms:RetireGrant` are required so Secrets Manager can create internal grants on a CMK at `CreateSecret` time (the SM-CMK integration uses grants rather than direct `kms:Decrypt` from the calling principal — preserving the consuming-principal design where only the workflow Lambda role decrypts). `kms:UntagResource` has an extra `ForAllValues:StringNotEquals aws:TagKeys=["ironforge-managed"]` clause so the load-bearing tag itself can't be removed (which would otherwise self-lock the role out of the key). Alias write actions are scoped by the `alias/ironforge-*` name prefix only — the underlying-key tag condition was removed after live IAM revealed that `aws:ResourceTag` is evaluated against the alias resource (untaggable, always fails) when the policy is attached to a multi-resource action; the IAM Policy Simulator misleadingly evaluated this as `allowed` per-resource. Residual: apply role can theoretically create an `alias/ironforge-rogue` pointing to a non-Ironforge key, but aliases are naming, not access.
 
