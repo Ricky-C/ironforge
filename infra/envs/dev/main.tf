@@ -280,6 +280,20 @@ locals {
         },
       ]
     },
+    # ── Per-service origin buckets ───────────────────────────────────────────
+    # Broad read on the origin bucket pattern. terraform's AWS provider
+    # refreshes ~10 different bucket configurations on every aws_s3_bucket
+    # resource (ACL, CORS, Website, Logging, Accelerate, RequestPayment,
+    # Replication, ObjectLock, OwnershipControls, Notification, ...) and
+    # each requires its own s3:GetBucket* permission. Granting them
+    # individually has bitten verification iteratively (round 8 surfaced
+    # s3:GetBucketAcl); the wildcard is bounded to the resource pattern
+    # and matches the existing cloudfront:* / kms:* style.
+    {
+      sid       = "S3BucketRead"
+      actions   = ["s3:Get*"]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
     # ── S3 bucket lifecycle ────────────────────────────────────────────────
     {
       sid = "S3BucketCRUD"

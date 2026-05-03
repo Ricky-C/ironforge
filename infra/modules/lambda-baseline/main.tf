@@ -182,6 +182,22 @@ data "aws_iam_policy_document" "permission_boundary" {
     ]
   }
 
+  # Companion to AllowProvisionedBucketLifecycle. terraform's AWS provider
+  # refreshes ~10 different bucket configurations on every aws_s3_bucket
+  # resource (ACL, CORS, Website, Logging, Accelerate, RequestPayment,
+  # Replication, ObjectLock, OwnershipControls, Notification, ...) and
+  # each requires its own s3:GetBucket* permission. Discovered round 8
+  # (s3:GetBucketAcl explicitly named in the failure); rather than adding
+  # one Get action per round, the wildcard scopes to the bucket pattern
+  # and bounds future provider-driven reads. Pattern matches the existing
+  # cloudfront:* / kms:* boundary statements.
+  statement {
+    sid       = "AllowProvisionedBucketRead"
+    effect    = "Allow"
+    actions   = ["s3:Get*"]
+    resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+  }
+
   statement {
     sid    = "AllowRoute53OnIronforgeZone"
     effect = "Allow"
