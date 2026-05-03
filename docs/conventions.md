@@ -185,3 +185,26 @@ Different resource types support different metadata channels. Choose the most st
 4. **Per-invocation rewrite is fine.** The handler rewrites `/tmp/.terraformrc` on every cold AND warm start. Idempotent; <1ms cost. Avoids a class of "config file from a previous invocation has stale paths" bugs that would surface only after a Dockerfile path change.
 
 **Failure mode if mismechanized:** swapping `TF_CLI_CONFIG_FILE` for `TF_PLUGIN_CACHE_DIR` makes terraform init hang ~30s, exit non-zero with "Failed to query available provider packages." The Lambda's CloudWatch shows the timeout but no clear cause — operators have wasted hours diagnosing as a permissions or path issue. The convention is the load-bearing word "filesystem_mirror" in `TF_CLI_CONFIG_CONTENT`; if a future change drops it back to `TF_PLUGIN_CACHE_DIR`, this section is the recovery anchor.
+
+
+## Platform IAM vs. user-tenant IAM
+
+**Pattern.** Permissions for platform-internal Lambdas (workflow tasks, API) and permissions for per-service deploy roles (assumed by user-controlled GitHub Actions) are scoped as **separate concerns** in both the shared permission boundary and per-role identity policies. The boundary widens to cover the union; identity policies narrow per tenant. New action sets land in their own SID with a comment naming which tenant requires them.
+
+**Established in.** PR-Phase1-verify-011 (boundary widening for `s3:PutObject`/`GetObject`/`DeleteObject` on `ironforge-svc-*-origin/*` after the deploy role hit AccessDenied during deploy.yml's `aws s3 sync`). The architectural principle was implicit before this PR — every prior boundary widening had been platform-side. The verification flow's first user-tenant failure forced the convention into explicit form.
+
+**Applied by.**
+
+- `infra/modules/lambda-baseline/main.tf` — boundary statements split by tenant: `AllowProvisionedBucketLifecycle` (workflow Lambda's terraform create/configure/delete) vs. `AllowProvisionedBucketObjects` (deploy role's `PutObject`/`GetObject`/`DeleteObject` for content sync).
+- `templates/static-site/terraform/main.tf` — deploy role's identity policy lists only object-level S3 ops + `cloudfront:CreateInvalidation`; never bucket lifecycle (which it doesn't need; that's the workflow Lambda's job).
+- `infra/envs/dev/main.tf` — workflow Lambda identity policies (`run_terraform_extra_statements`) list bucket-lifecycle ops; never object-level ops on origin buckets (workflow doesn't upload content; that's the deploy role's job).
+
+**Rationale.**
+
+1. **Conflating the two creates least-privilege drift.** If the boundary widens for any S3 op an Ironforge-managed role might want, the widening implicitly applies to BOTH the workflow Lambda AND the deploy role. The deploy role doesn't need bucket lifecycle (`s3:CreateBucket`); granting it via boundary turns the boundary into a much weaker compliance control over time. Scoping by tenant keeps the boundary's intent legible.
+
+2. **The discovery surface is different per tenant.** Platform-side gaps surface as Lambda execution errors in CloudWatch (operator's surface). User-tenant gaps surface as GitHub Actions failures in the user's repo (user's surface). Without the distinction documented, future template work risks granting workflow Lambdas surplus permissions to "fix" what's actually a deploy-role gap.
+
+3. **Templates own deploy-role permissions; the platform owns workflow permissions.** When a new template lands (Phase 2+), its deploy role declares the actions IT needs (per its deploy.yml). The template author updates the boundary's user-tenant SIDs accordingly, leaving platform SIDs alone. Without this split, the template author has no clean place to add permissions and either overshoots (modifies platform SIDs) or undershoots (misses the boundary widening entirely, surfaces as the round-11 class of bug).
+
+**Failure mode if mismechanized:** combining the SIDs into a single S3 statement (e.g., `AllowProvisionedBucketAccess` with both bucket and object actions) reads cleanly today but loses the per-tenant intent. The next contributor seeing the combined statement may add a deploy-role-only action to it, implicitly granting the workflow Lambda the same — silent surface expansion. The split SID + naming convention (`*Lifecycle` vs. `*Objects`) makes future widening localized.

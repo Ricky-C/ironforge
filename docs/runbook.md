@@ -1008,7 +1008,103 @@ For `IronforgeTerraformOutputError` (apply succeeded but output extraction faile
 
 ---
 
-## 11. Synthetic test user for dev verification
+## 11. Cleanup-on-failure: manual recovery when destroy chain times out
+
+The cleanup-on-failure Lambda (PR-Phase1.5) runs three best-effort destroy phases synchronously inside the Lambda's 10-min budget: terraform destroy → GitHub repo delete → tfstate delete. CloudFront-distribution destroys are the longest-pole — empirically observed at ~4 min during Phase 1 verification, but with operational variability; values approaching or exceeding the 10-min Lambda timeout are plausible if the distribution was deployed for longer or if AWS-side propagation runs slow.
+
+When the destroy chain times out, the SFN execution still terminates FAILED (cleanup-on-failure surfaces the timeout as a Lambda error). Some resources will be cleaned, some won't. This runbook covers manual completion.
+
+### Symptom
+
+CloudWatch log group `/aws/lambda/ironforge-dev-cleanup-on-failure` shows the Lambda hitting the runtime timeout (no `Duration: <ms>` REPORT line that resolves; instead "Task timed out after 600.00 seconds"). The DDB Service row remains at `status: failed`. Some AWS resources may persist:
+
+- CloudFront distribution at the per-service alias
+- CloudFront OAC named `ironforge-svc-<name>-oac`
+- S3 bucket `ironforge-svc-<name>-origin`
+- IAM role `ironforge-svc-<name>-deploy`
+- Tfstate file at `s3://ironforge-tfstate-<env>-<account>/services/<service-id>/terraform.tfstate`
+- GitHub repo `ironforge-svc/<name>`
+
+### Diagnosis
+
+Check the cleanup-on-failure log for which phase reached completion. The Lambda emits structured INFO lines as each phase succeeds:
+
+```bash
+aws logs tail /aws/lambda/ironforge-dev-cleanup-on-failure --since 30m --format short | grep cleanup-on-failure
+```
+
+Lines to look for:
+
+- `terraform destroy completed successfully` — Phase 1 done; AWS resources cleaned.
+- `GitHub repo deleted` — Phase 2 done.
+- `tfstate file deleted` — Phase 3 done.
+
+The first phase NOT logged is where the timeout fired. Resources owned by that phase and all later phases need manual cleanup.
+
+### Recovery
+
+Per-phase manual procedures, in the order cleanup-on-failure would have run them.
+
+#### If Phase 1 (terraform destroy) timed out
+
+CloudFront distribution disable + delete is the typical bottleneck. Manual sequence:
+
+```bash
+DIST_ID=<from CloudFront console or list-distributions>
+aws cloudfront get-distribution-config --id "$DIST_ID" --output json > /tmp/cf-config.json
+ETAG=$(jq -r '.ETag' /tmp/cf-config.json)
+jq '.DistributionConfig.Enabled = false | .DistributionConfig' /tmp/cf-config.json > /tmp/cf-disabled.json
+aws cloudfront update-distribution --id "$DIST_ID" --if-match "$ETAG" --distribution-config file:///tmp/cf-disabled.json
+```
+
+Wait for `Status=Deployed` (5-15 min — poll via `aws cloudfront get-distribution --id "$DIST_ID" --query 'Distribution.Status'`):
+
+```bash
+until [ "$(aws cloudfront get-distribution --id "$DIST_ID" --query 'Distribution.Status' --output text)" = "Deployed" ]; do echo "still propagating..."; sleep 30; done
+```
+
+Then delete + clean adjacent resources:
+
+```bash
+NEW_ETAG=$(aws cloudfront get-distribution --id "$DIST_ID" --query 'ETag' --output text)
+aws cloudfront delete-distribution --id "$DIST_ID" --if-match "$NEW_ETAG"
+
+aws cloudfront delete-origin-access-control --id <OAC_ID> --if-match <OAC_ETAG>
+aws s3 rm s3://ironforge-svc-<name>-origin --recursive
+aws s3api delete-bucket --bucket ironforge-svc-<name>-origin
+aws iam delete-role-policy --role-name ironforge-svc-<name>-deploy --policy-name deploy
+aws iam delete-role --role-name ironforge-svc-<name>-deploy
+```
+
+#### If Phase 2 (GitHub repo delete) timed out
+
+Cleanup of Phase 1 was already complete (terraform destroy logged success). Just delete the repo via web UI (`https://github.com/ironforge-svc/<name>/settings` → Danger Zone) or `gh repo delete ironforge-svc/<name> --yes` (requires `delete_repo` scope on the gh PAT).
+
+#### If Phase 3 (tfstate delete) timed out
+
+Phases 1 and 2 succeeded. Just delete the tfstate object:
+
+```bash
+aws s3 rm "s3://ironforge-tfstate-dev-<account>/services/<service-id>/terraform.tfstate"
+```
+
+### Post-recovery
+
+Manually transition the DDB Service row to a clean state if reusing the service name. Either delete the row entirely (cleanest, but loses history):
+
+```bash
+aws dynamodb delete-item --table-name ironforge-dev --key '{"PK":{"S":"SERVICE#<service-id>"},"SK":{"S":"META"}}'
+```
+
+Or wait for Phase 1.5+ DELETE endpoint to handle this via API.
+
+### Prevention
+
+Phase 2+ work tracked in `docs/tech-debt.md` § "Cleanup-on-failure destroy chain (Promoted)" remaining items: async destroy via SFN polling pattern would lift the 10-min cap. Until then, this runbook entry is the recovery path.
+
+---
+
+## 12. Synthetic test user for dev verification
 
 Procedural entry, not incident response — covers creating a synthetic Cognito user for end-to-end verification flows (first `POST /api/services` kickoff, drift-detector verification, demo walkthroughs) and minting an access token without weakening the dev Cognito client's auth flow config.
 
