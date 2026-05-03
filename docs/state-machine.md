@@ -1,7 +1,9 @@
 # Provisioning state machine
 
 Standard Step Functions workflow that orchestrates the static-site
-provisioning pipeline. One state per task Lambda; eight tasks total.
+provisioning pipeline. Eight task Lambdas drive seven workflow phases
+(WaitForCloudFront's polling phase consists of one Lambda invoked in
+a Wait → Choice → Task loop — see § "Polling-loop topology" below).
 This document is the load-bearing reference for retry semantics,
 error-class taxonomy, ResultPath threading, and which inter-Lambda
 data lives where.
@@ -18,7 +20,12 @@ the module is per-env because Lambda ARNs are per-env.
 ValidateInputs       → CreateRepo
                        → GenerateCode
                          → RunTerraform
-                           → WaitForCloudFront
+                           → InitCloudFrontPolling (Pass: seed pollState)
+                             → WaitForCloudFront ←─┐
+                               ↓ (Choice)          │
+                               ├─ status="succeeded" → TriggerDeploy
+                               └─ default → WaitForCloudFrontWaitTick (Wait)
+                                                  └──────────────────┘
                              → TriggerDeploy
                                → Finalize        (terminal SUCCESS)
 
@@ -132,6 +139,19 @@ PR-C.4a/PR-C.4b for create-repo, extended in PR-C.8 for trigger-deploy):
   `WorkflowExecutionInputSchema` parse OR `templateId` was not in the
   registered enum. Both surface BEFORE any DDB write, so a malformed
   event can't even create a JobStep entry.
+- `IronforgePollTimeoutError` (PR-C.7 wait-for-cloudfront) — the
+  CloudFront distribution did not reach `Status === "Deployed"` within
+  the 20-minute elapsed budget enforced by the polling Lambda. Routes
+  to `CleanupOnFailure` via the existing `Catch` on `States.ALL` —
+  the Lambda throws rather than returning a `failed` PollResult so
+  `$.error` is populated automatically by SFN. CloudFront propagation
+  exceeding 20 minutes is a real (but rare) event; recovery is
+  operator-led re-provisioning.
+- `IronforgeWaitForCloudFrontError` (PR-C.7 wait-for-cloudfront) — any
+  thrown error from `cloudfront:GetDistribution` (auth failure,
+  malformed distribution ID from upstream's outputs, transient SDK
+  errors). Treated terminal — the elapsed budget is the bound on
+  per-tick retries, so a single thrown error fails the workflow.
 
 **Why not `States.TaskFailed` in Retry?** `States.TaskFailed` is the
 SFN umbrella that matches *any* task failure, including custom-named
@@ -160,7 +180,7 @@ via JobStep entries + `$.error` ResultPath + CloudWatch log group.
 | CreateRepo         | 2           | GitHub API transients (5xx beyond the Octokit retry plugin's bounded retries). Idempotent via `custom_properties["ironforge-job-id"]` — re-invocation with same jobId returns the existing repo. |
 | GenerateCode       | 1           | One retry — re-rendering a template is cheap but state-changing (rewrites the repo's contents).                                   |
 | RunTerraform       | 0           | No retry. `terraform apply` failures are not transient; rerunning compounds partial state. Cleanup-on-failure runs `destroy`.     |
-| WaitForCloudFront  | 1           | Polling Lambda; SFN-level retry is for Lambda invocation failures, not for CloudFront-status polling (that's the Lambda's loop).  |
+| WaitForCloudFront  | 1           | Polling Lambda invoked in an SFN Wait → Choice → Task loop (see § "Polling-loop topology"). SFN-level Retry catches Lambda-platform transients on a single tick; the polling cap is the wall-clock 20-minute elapsed budget enforced inside the Lambda, throwing `IronforgePollTimeoutError` when exhausted. |
 | TriggerDeploy      | 2           | GitHub API transients. Idempotent: workflow_dispatch with the same ref + payload is harmless to repeat.                           |
 | Finalize           | 1           | DynamoDB transition writes. Should rarely retry — the writes are the only side effect.                                            |
 | CleanupOnFailure   | 3           | Safety net. Higher than any per-step count.                                                                                       |
@@ -221,14 +241,97 @@ that downstream Lambdas read from `$.steps.run-terraform`:
 | ----------------------- | -------------------------- | -------------------------------------------------------------------- |
 | `bucket_name`           | TriggerDeploy              | Substitutes into the `aws s3 sync s3://...` step in the user's repo. |
 | `distribution_id`       | WaitForCloudFront, TriggerDeploy | Status polling target; substituted into the deploy.yml's invalidation. |
-| `distribution_domain_name` | WaitForCloudFront      | Pre-flight DNS resolution check before declaring propagation.        |
+| `distribution_domain_name` | (consumer dropped, PR-C.7) | Was originally intended as a pre-flight DNS resolution check input; dropped per § "Polling-loop topology" YAGNI decision. |
 | `deploy_role_arn`       | TriggerDeploy (set as repo secret IRONFORGE_DEPLOY_ROLE_ARN before workflow_dispatch) | The role-to-assume in the user's deploy.yml. Per the Path A substitution boundary (PR-C.5; see docs/conventions.md § "Template substitution boundary"), runtime values flow through GitHub Actions repo secrets rather than file substitution. |
 | `live_url`              | Finalize                   | Written to `Service.liveUrl` on the terminal-success transition.     |
-| `fqdn`                  | WaitForCloudFront          | The alias FQDN to verify is resolvable.                              |
+| `fqdn`                  | (consumer dropped, PR-C.7) | Same as `distribution_domain_name`. Both outputs remain in the template's `outputs.tf` because Finalize's `liveUrl` is derived from the same data; the consumer table tracks downstream Lambda usage, not output existence. |
 
 **Adding a new output that downstream Lambdas need: update both
 `outputs.tf` AND this table.** The outputs declared in the manifest's
 `outputsSchema` field are the ground-truth contract.
+
+## Polling-loop topology (PR-C.7)
+
+Tasks that wait on a long-running upstream condition (CloudFront
+distribution propagation; future: ACM certificate validation, slow
+GitHub workflow dispatch) use the SFN-orchestrated polling pattern,
+not in-Lambda sleep loops. WaitForCloudFront is the canonical
+implementation. The shape:
+
+```
+Init Pass state                     → seeds $.steps.<task> with { status: "init" }
+  → polling Task                    → returns PollResult
+    → Choice                        → succeeded → next phase
+                                    → default → Wait
+      → Wait (SecondsPath)          → consumes nextWaitSeconds from PollResult
+        → polling Task (loop)
+```
+
+**Why this shape, not in-Lambda polling.** SFN is the workflow
+primitive (CLAUDE.md anti-pattern: "Step Functions is the workflow
+primitive"); Wait states are free; SFN execution time is decoupled
+from Lambda's 15-minute ceiling, so tail-latency cases (CloudFront
+occasionally takes 12-15 min to propagate) don't bump the wall.
+In-Lambda sleep loops also make Lambda execution cost a function
+of upstream latency rather than upstream complexity.
+
+**Init Pass state convention.** Every polling loop begins with an
+Init Pass state injecting `Result: { status: "init" }` at the
+loop's `$.steps.<task>` ResultPath. SFN does not support default
+values for missing JSON paths in `Parameters` blocks — without the
+init seed, the first poll-task invocation's `Parameters.previousPoll.$:
+"$.steps.<task>"` would runtime-fail because that key would not yet
+exist. The Pass state is free; the alternative (Lambda accepts a
+nullable `previousPoll` and self-initializes) couples the Lambda to
+"first tick" awareness the type system already wants to enforce.
+
+**Choice state shape.** Routes on `$.steps.<task>.status`:
+
+- `"succeeded"` → exit the loop into the next phase.
+- *(default)* → the Wait state.
+
+There is no `"failed"` branch. Polling Lambdas throw
+`IronforgePollTimeoutError` (or any other terminal error) rather
+than returning `PollResult.failed`. The thrown error is caught by
+the polling Task's existing `Catch` on `States.ALL` and routed to
+`CleanupOnFailure` with `$.error` populated automatically by SFN.
+This keeps the Choice minimal and avoids a Pass state to construct
+`$.error` from a returned PollResult. The `failed` discriminant on
+`PollResultSchema` remains for future polling Lambdas with
+terminal-but-not-thrown upstream states (e.g. ACM
+`VALIDATION_FAILED`); the schema-level forward compatibility is
+free.
+
+**Wait state shape.** `SecondsPath` consumes
+`$.steps.<task>.nextWaitSeconds` from the PollResult. The schedule
+itself lives in TypeScript inside the polling Lambda — the Lambda
+is the source of truth for how often to poll, what backoff to use,
+and when to give up. SFN's role is just to wait + re-fire the Task.
+`PollResultSchema.in_progress.nextWaitSeconds` is bounded
+`int.positive().max(120)`, slightly above the longest tick in
+WaitForCloudFront's schedule (90s); future polling Lambdas with
+longer ticks can raise this if needed.
+
+**Per-tick state carry-forward.** The polling Task uses the same
+`ResultPath: $.steps.<task>` as a single Task state would, so each
+poll's PollResult overwrites the prior one. State that needs to
+persist across ticks (elapsed-time start, attempt count) lives in
+`PollResult.in_progress.pollState` — an opaque `Record<string,
+unknown>` at the schema layer, narrowed to a per-Lambda Zod schema
+on the next tick's entry. Same opaque-at-universal-layer +
+narrowed-by-consumer pattern as `Service.inputs` from PR-B.1.
+
+**DNS pre-flight YAGNI.** The original PR-C.0 design intent
+included a DNS resolution check on the alias FQDN after CloudFront
+status flips to `Deployed`, with `distribution_domain_name` and
+`fqdn` as inputs. **Dropped at PR-C.7** as YAGNI: Route53 alias
+records for in-account hosted zones are live as soon as the Route53
+API returns success — Route53 is authoritative for its own zones,
+no propagation delay applies. The check would always succeed and
+never catch anything useful. Re-add only if the architecture
+changes (cross-account hosted zone, external DNS provider, or a
+class of failures emerges where Route53 returns success but
+resolution lags).
 
 ## Cleanup-on-failure scope (PR-C.2 — minimal)
 
