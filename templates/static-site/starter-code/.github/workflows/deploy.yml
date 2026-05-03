@@ -3,17 +3,32 @@ name: Deploy
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      correlation_id:
+        description: >-
+          Ironforge job ID. Set by the platform's trigger-deploy step;
+          embedded in run-name so wait-for-deploy can identify this
+          specific run via listWorkflowRuns + name match. Optional for
+          manual operator dispatches.
+        required: false
+        type: string
+
+# run-name renders the correlation_id when present so the platform's
+# wait-for-deploy poller can identify this run by name. Manual user
+# pushes (push: branch trigger) and operator-initiated workflow_dispatch
+# without a correlation_id render plain "Deploy".
+run-name: ${{ inputs.correlation_id && format('Deploy [{0}]', inputs.correlation_id) || 'Deploy' }}
 
 # Action versions are pinned to major tags. Do NOT switch to @main or
 # @latest — supply-chain hygiene. To upgrade, bump the major version
 # explicitly after reviewing the changelog.
 #
 # Repo secrets used below are populated by the Ironforge platform's
-# trigger-deploy step the first time deployment runs after provisioning,
-# and re-populated automatically on infrastructure rotations. See
-# docs/conventions.md § "Template substitution boundary" in the Ironforge
-# repo for the build-time vs runtime placeholder convention.
+# trigger-deploy step on initial provisioning. They are NOT automatically
+# re-populated on infrastructure rotations (deploy role re-creation,
+# bucket rename, etc.) — see docs/tech-debt.md § "Repo-secrets staleness
+# on infrastructure rotation" for the failure mode + recovery procedure.
 
 permissions:
   id-token: write

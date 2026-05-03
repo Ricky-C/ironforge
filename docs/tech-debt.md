@@ -221,6 +221,32 @@ Each entry has:
   5. Update this entry to "Resolved" and remove. Move historical context to `docs/runbook.md` if useful.
 - **Where:** `services/workflow/cleanup-on-failure/src/handler.ts` (currently re-exports cleanupStub); `services/workflow/_stub-lib/src/cleanup-stub.ts` (stub to delete); `docs/state-machine.md` § "Cleanup-on-failure scope (PR-C.2 — minimal)".
 
+#### Repo-secrets staleness on infrastructure rotation
+
+- **What:** The 3 GitHub Actions repo secrets that the user's `deploy.yml` consumes — `IRONFORGE_DEPLOY_ROLE_ARN`, `IRONFORGE_BUCKET_NAME`, `IRONFORGE_DISTRIBUTION_ID` — are populated **once** by the platform's `trigger-deploy` step on initial provisioning. If any of those underlying AWS resource identifiers rotates (deploy role re-created with a new ARN, bucket renamed, distribution destroyed and recreated), the repo secrets become stale and the user's next deploy run fails with `AccessDenied` (role assume), `NoSuchBucket`, or `NoSuchDistribution`.
+- **Why deferred:** Rotation is uncommon at portfolio scale (PR-C.6's terraform module produces stable identifiers across applies; only `terraform destroy + apply` cycles produce new IDs). The reliability surface of an Ironforge-side rotation watcher (CloudTrail subscription? scheduled drift-detect Lambda? webhook from terraform's own state writes?) is non-trivial and warrants its own design conversation. Phase 1 single-template + single-operator + no-real-traffic context means the recovery cost (manual re-run of trigger-deploy or hand-edit via GitHub UI) is acceptable.
+- **When to revisit (any one of):**
+  - **First reported stale-secrets incident** — actual recovery friction proves the deferral was wrong, even at portfolio scale.
+  - **Routine rotation requirement lands** — e.g., quarterly deploy-role rotation for compliance, or any policy that mandates IAM role re-creation on a schedule.
+  - **Phase 2 multi-tenant** — operator can't be on the hook for per-customer manual recovery.
+- **Action:**
+  1. Recovery procedure (until automated): operator manually invokes `trigger-deploy` Lambda against the affected jobId (or constructs an equivalent set-secrets-only flow), OR edits the secrets via the GitHub UI at `https://github.com/<org>/<repo>/settings/secrets/actions`.
+  2. Automation candidates to evaluate at re-visit: (a) scheduled drift-detect Lambda comparing `Service.lastKnownInfra` to current terraform output, re-running secret population on diff; (b) terraform-state-write webhook (S3 event on the per-service tfstate object) triggering a repopulate Lambda; (c) shifting the source of truth from repo secrets to a `terraform output`-fed read by the deploy.yml on each run (would require deploy.yml to assume an Ironforge-side read role first — adds complexity).
+- **Where:** `templates/static-site/starter-code/.github/workflows/deploy.yml` § comment block at the top; `services/workflow/trigger-deploy/src/handle-event.ts` (the populator, currently single-shot).
+
+#### Existing service deploy.yml updates require manual operation
+
+- **What:** When `templates/static-site/starter-code/.github/workflows/deploy.yml` changes (e.g., PR-C.8 added the `correlation_id` input + `run-name` filter), services provisioned BEFORE the change keep their old `deploy.yml` verbatim. There is no automated migration: no Ironforge-side process opens a PR against existing service repos, no template-version-bump trigger fires a re-render, no `force_redeploy_yaml = true` flag exists.
+- **Why deferred:** Phase 1 has no provisioned services in production; the migration tax is currently zero. The forward-only-template policy is the simplest invariant to maintain (every change is "new services get the new shape; old services unchanged"), and a real migration tool is non-trivial: per-template diff strategy, conflict resolution if the user has hand-edited their deploy.yml, PR opening + review semantics, multi-repo orchestration. None of that is portfolio-scale work.
+- **When to revisit (any one of):**
+  - **First old-service breakage attributed to deploy.yml drift** — e.g., wait-for-deploy stops finding runs because an old service's deploy.yml lacks `run-name`, fails the workflow, operator wastes time diagnosing.
+  - **Phase 2 + non-trivial number of provisioned services exist (≥ 5)** — manual migration tax becomes operationally real.
+  - **Breaking change required to deploy.yml** — e.g., security-driven secret-name rename. At that point the migration is forced; building it then is reactive and worse than building it on a quiet day.
+- **Action:**
+  1. Recovery procedure (until automated): operator manually edits the affected service repo's `deploy.yml` via PR, or uses `gh api -X PUT /repos/<org>/<repo>/contents/.github/workflows/deploy.yml` to overwrite.
+  2. Automation candidates to evaluate at re-visit: (a) template-version field on `Service` row + a scheduled "templateVersion < currentTemplateVersion → open migration PR" Lambda; (b) on-demand "migrate this service" API endpoint exposing a `force_redeploy_yaml` flag; (c) GitHub App-driven cross-repo PR fanout invoked from a one-off ops command.
+- **Where:** `templates/static-site/starter-code/.github/workflows/deploy.yml`; `services/workflow/generate-code/src/handle-event.ts` (the renderer that writes deploy.yml on initial provision); the (currently nonexistent) migration mechanism.
+
 #### Stale verification repo on ironforge-svc — manual cleanup
 
 - **What:** PR-C.4b's Case 4 verification created a real GitHub repo `ironforge-svc/boundary-verify-1777745253` to exercise the create-repo Lambda's end-to-end flow. The verification cleanup step (`gh api -X DELETE`) failed because the gh CLI's auth token lacks the `delete_repo` scope. The repo persists.

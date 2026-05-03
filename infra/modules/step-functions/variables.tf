@@ -17,6 +17,7 @@ variable "task_lambda_arns" {
     run_terraform       = string
     wait_for_cloudfront = string
     trigger_deploy      = string
+    wait_for_deploy     = string
     finalize            = string
     cleanup_on_failure  = string
   })

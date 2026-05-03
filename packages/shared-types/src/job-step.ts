@@ -33,6 +33,7 @@ export const STEP_NAMES = [
   "run-terraform",
   "wait-for-cloudfront",
   "trigger-deploy",
+  "wait-for-deploy",
   "finalize",
   "cleanup-on-failure",
 ] as const;

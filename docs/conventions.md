@@ -115,6 +115,31 @@ Different resource types support different metadata channels. Choose the most st
 
 ---
 
+## Service status reflects functional state, not workflow stage
+
+**Pattern.** Status fields on user-visible entities (e.g., `Service.status`) reflect what the entity *can do* from the user's perspective, not where the provisioning workflow happens to be. `status === "live"` means the service is actually serving traffic — not "the workflow is past the point where we'd typically be live." When workflow ordering and functional state diverge, extend the workflow rather than shipping a status that lies.
+
+**Established in.**
+
+- PR-C.8 (2026-05-03) — `wait-for-deploy` task Lambda added to the provisioning workflow specifically to ensure `Service.status` transitions to `"live"` only after the user's `deploy.yml` run completes successfully. Without it, the workflow's natural ordering (run-terraform → wait-for-cloudfront → trigger-deploy → finalize) would mark the Service live before the deploy.yml's S3 sync + CloudFront invalidation finished — a 30-90s window (potentially 5+ min for large sites) where `liveUrl` would 404.
+
+**Applied by.**
+
+- `services/workflow/wait-for-deploy/src/handle-event.ts` — the polling Lambda whose terminal-success is the only path to Finalize.
+- `infra/modules/step-functions/definition.json.tpl` — the SFN definition that wires the wait-for-deploy phase between trigger-deploy and finalize, gating the Finalize → `Service.status = "live"` transition on the deploy run actually completing.
+
+**Rationale.**
+
+1. **Status semantic integrity is data integrity, not just UX.** Future features that read `Service.status` to make decisions — health checks, notifications to users, billing flags, drift detectors — get a class of bugs that are hard to reason about when `status === "live"` doesn't actually mean the service is live. Promising a meaningful status field is a contract the platform owes its consumers; breaking that contract during the provisioning's first 90 seconds is still breaking it.
+2. **Polling pattern reuse validates the abstraction.** PR-C.7 established SFN-orchestrated polling as the workflow primitive (see § "SFN-orchestrated polling pattern" below). PR-C.8 is the second consumer; reusing the pattern (Init Pass + Task + Choice + Wait) confirms it generalizes beyond CloudFront. Polling Lambda 3+ should also reuse rather than re-derive.
+3. **Marginal cost is bounded; correctness is unbounded.** Adding a polling phase costs ~250 lines (Lambda + tests) and 30-90 seconds of typical provisioning latency. Shipping a status field that lies is the kind of bug that compounds — every consumer of `Service.status` is now part of the bug surface, and the cost of fixing it later includes auditing every consumer.
+
+**Honest costs accepted.** Provisioning time extends by 30-90 seconds typical (potentially 5+ min for large sites with slow S3 syncs). GitHub Actions API as a dependency adds reliability surface — `wait-for-deploy` failing on transient GitHub 5xx eventually fails the workflow even if the deploy itself succeeded. Both costs are real; both are accepted because status integrity beats workflow brevity at portfolio scale.
+
+**What this is NOT a pattern for:** internal-only fields that operators read but users don't (e.g., `Job.failedStep` is a workflow-stage denormalization, that's its job). The principle applies to user-visible status fields, not all status-shaped fields.
+
+---
+
 ## SFN-orchestrated polling pattern
 
 **Pattern.** Tasks that wait on a long-running upstream condition use the SFN-orchestrated polling shape — Init Pass state + polling Task + Choice + Wait — rather than in-Lambda sleep loops. The polling Lambda is single-shot per invocation; SFN's Wait state schedules the next tick via `SecondsPath` consuming the Lambda's `PollResult.in_progress.nextWaitSeconds`. Per-tick state carries forward in the `pollState` bag inside the same PollResult; the polling Lambda narrows it via a per-Lambda Zod schema on the next entry. The polling Lambda enforces an elapsed-time budget by comparing against `pollState.startedAt` and throwing `IronforgePollTimeoutError` when exhausted — SFN's existing `Catch` on `States.ALL` handles the throw; there is no `failed` branch in the Choice state.
