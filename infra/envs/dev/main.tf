@@ -616,8 +616,64 @@ module "task_cleanup_on_failure" {
   environment             = var.environment
   permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
   source_dir              = "${path.root}/../../../services/workflow/cleanup-on-failure/dist"
-  environment_variables   = local.task_lambda_env
-  iam_grants              = local.task_lambda_iam_grants
+
+  # Phase 1.5 destroy chain: cleanup-on-failure synchronously invokes
+  # run-terraform with action="destroy", deletes the GitHub repo via the
+  # App, and deletes the tfstate file. 10-min timeout matches
+  # run-terraform's bound (the synchronous lambda invoke can't outlive
+  # the invoked function). CloudFront-distribution destroys may exceed
+  # 10 min and fall back to manual cleanup — known Phase 2+ refactor.
+  timeout_seconds = 600
+
+  # Env vars: existing task_lambda_env (DDB + powertools + log level)
+  # PLUS the destroy-chain set (GitHub App credentials, run-terraform
+  # function name for the lambda invoke, tfstate bucket name).
+  environment_variables = merge(local.task_lambda_env, {
+    RUN_TERRAFORM_LAMBDA_NAME  = module.task_run_terraform.function_name
+    TFSTATE_BUCKET             = data.terraform_remote_state.shared.outputs.tfstate_dev_bucket_name
+    GITHUB_APP_SECRET_ARN      = data.terraform_remote_state.shared.outputs.github_app_secret_arn
+    GITHUB_APP_ID              = data.aws_ssm_parameter.github_app_id.value
+    GITHUB_APP_INSTALLATION_ID = data.aws_ssm_parameter.github_app_installation_id.value
+    GITHUB_ORG_NAME            = data.aws_ssm_parameter.github_org_name.value
+  })
+
+  iam_grants = {
+    dynamodb_read  = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = [
+      # Phase 1 — invoke run-terraform with action="destroy".
+      {
+        sid       = "InvokeRunTerraformForDestroy"
+        actions   = ["lambda:InvokeFunction"]
+        resources = [module.task_run_terraform.function_arn]
+      },
+      # Phase 2 — GitHub App auth (mirror create-repo's grants exactly).
+      {
+        sid       = "GetGitHubAppSecret"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+      },
+      {
+        sid       = "DecryptGitHubAppSecret"
+        actions   = ["kms:Decrypt"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_kms_key_arn]
+        conditions = [
+          {
+            test     = "StringEquals"
+            variable = "kms:EncryptionContext:SecretARN"
+            values   = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+          },
+        ]
+      },
+      # Phase 3 — tfstate file deletion. Scoped to services/* prefix
+      # (same as run-terraform's S3TFStateObjectAccess).
+      {
+        sid       = "DeleteTFStateForService"
+        actions   = ["s3:DeleteObject"]
+        resources = ["${data.terraform_remote_state.shared.outputs.tfstate_dev_bucket_arn}/services/*"]
+      },
+    ]
+  }
 }
 
 # ===========================================================================
