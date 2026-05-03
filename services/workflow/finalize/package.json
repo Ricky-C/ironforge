@@ -2,20 +2,27 @@
   "name": "@ironforge/workflow-finalize",
   "version": "0.0.0",
   "private": true,
-  "description": "Workflow task Lambda — finalize. PR-C.2 stub: re-exports finalizeStub from @ironforge/workflow-stub-lib (which writes Service.liveUrl + status=live, Job.status=succeeded). Replaced at PR-C.9 with real terminal-success behavior (audit event emit + customer notification).",
+  "description": "Workflow task Lambda — finalize. Terminal-success transitions for the provisioning workflow: Service.status provisioning → live, set Service.liveUrl + provisionedAt, clear currentJobId; Job.status running → succeeded, set completedAt. Conditional-write idempotency with post-failure GetItem inspection — re-fires (Lambda timeout post-DDB-write) treated as success when our markers match; race / unexpected state throws IronforgeFinalizeError with structured operator-triage context.",
   "license": "UNLICENSED",
   "scripts": {
     "build": "node ./build.mjs",
     "clean": "rm -rf dist",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ironforge/shared-types": "workspace:*",
-    "@ironforge/workflow-stub-lib": "workspace:*"
+    "@ironforge/shared-utils": "workspace:*",
+    "zod": "^4.4.1"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1039.0",
+    "@aws-sdk/lib-dynamodb": "^3.1039.0",
     "@types/node": "^25.6.0",
+    "aws-sdk-client-mock": "^4.1.0",
     "esbuild": "^0.28.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5"
   }
 }
