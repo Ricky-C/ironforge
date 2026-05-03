@@ -9,6 +9,14 @@ on:
       - "services/cost-reporter/**"
       - "services/workflow/**"
       - ".github/workflows/infra-apply.yml"
+  # Manual trigger for cases where state needs to re-converge against
+  # current source-of-truth values without an HCL change. Required when
+  # `data.aws_ssm_parameter.*` values change out-of-band — manual
+  # `aws ssm put-parameter` updates SSM, but Lambda env vars are baked
+  # at apply time, so a re-apply is needed to propagate to the runtime.
+  # See docs/runbook.md § "GitHub App installation-id drift" for the
+  # canonical use case (App reinstall / migration between accounts).
+  workflow_dispatch:
 
 permissions:
   id-token: write
