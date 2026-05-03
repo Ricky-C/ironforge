@@ -27,7 +27,13 @@ ValidateInputs       → CreateRepo
                                └─ default → WaitForCloudFrontWaitTick (Wait)
                                                   └──────────────────┘
                              → TriggerDeploy
-                               → Finalize        (terminal SUCCESS)
+                               → InitDeployPolling (Pass: seed pollState)
+                                 → WaitForDeploy ←─┐
+                                   ↓ (Choice)      │
+                                   ├─ status="succeeded" → Finalize
+                                   └─ default → WaitForDeployWaitTick (Wait)
+                                                └──────────────────┘
+                                 → Finalize      (terminal SUCCESS)
 
 (any state's Catch)  → CleanupOnFailure        (terminal FAIL)
 ```
@@ -152,6 +158,25 @@ PR-C.4a/PR-C.4b for create-repo, extended in PR-C.8 for trigger-deploy):
   malformed distribution ID from upstream's outputs, transient SDK
   errors). Treated terminal — the elapsed budget is the bound on
   per-tick retries, so a single thrown error fails the workflow.
+- `IronforgeRepoSecretError` (PR-C.8 trigger-deploy) — failure setting
+  any of the 3 GitHub Actions repo secrets via
+  `actions.createOrUpdateRepoSecret`. Caused by 5xx beyond Octokit's
+  bounded retries, encryption mismatch, or unexpected error shape.
+  401/403 are classified to `IronforgeGitHubAuthError` instead.
+- `IronforgeWorkflowDispatchError` (PR-C.8 trigger-deploy) — failure
+  firing `actions.createWorkflowDispatch` on `deploy.yml`. Same shape
+  as `IronforgeRepoSecretError` but for the dispatch call. Note the
+  PR-C.8 idempotency caveat: if the dispatch succeeds but the
+  Lambda's JobStep-succeeded write fails, an SFN retry fires a
+  SECOND dispatch. wait-for-deploy filters by run-name and picks
+  newest; the second deploy is wasted work but functionally
+  idempotent (S3 sync + CloudFront invalidation are idempotent at
+  the AWS-API level).
+- `IronforgeDeployRunError` (PR-C.8 wait-for-deploy) — the user's
+  `deploy.yml` run completed with a non-success conclusion (e.g.
+  `failure`, `cancelled`, `timed_out`). Operator triages via the run
+  URL emitted in CloudWatch — the user's deploy logs are the source
+  of truth, not Ironforge's.
 
 **Why not `States.TaskFailed` in Retry?** `States.TaskFailed` is the
 SFN umbrella that matches *any* task failure, including custom-named
@@ -181,7 +206,8 @@ via JobStep entries + `$.error` ResultPath + CloudWatch log group.
 | GenerateCode       | 1           | One retry — re-rendering a template is cheap but state-changing (rewrites the repo's contents).                                   |
 | RunTerraform       | 0           | No retry. `terraform apply` failures are not transient; rerunning compounds partial state. Cleanup-on-failure runs `destroy`.     |
 | WaitForCloudFront  | 1           | Polling Lambda invoked in an SFN Wait → Choice → Task loop (see § "Polling-loop topology"). SFN-level Retry catches Lambda-platform transients on a single tick; the polling cap is the wall-clock 20-minute elapsed budget enforced inside the Lambda, throwing `IronforgePollTimeoutError` when exhausted. |
-| TriggerDeploy      | 2           | GitHub API transients. Idempotent: workflow_dispatch with the same ref + payload is harmless to repeat.                           |
+| TriggerDeploy      | 2           | GitHub API transients. workflow_dispatch with the same ref + payload IS retry-safe at the AWS-API level — the user's deploy.yml is idempotent (S3 sync + CloudFront invalidation are idempotent), so a retry that double-fires the dispatch results in two completed deploys, the second being a no-op. wait-for-deploy filters by run-name and picks newest. Cost: 1-3 minutes of wasted GitHub Actions runtime in the rare double-fire case. |
+| WaitForDeploy      | 1           | Polling Lambda invoked in an SFN Wait → Choice → Task loop, same pattern as WaitForCloudFront. SFN-level Retry catches Lambda-platform transients on a single tick; the polling cap is the wall-clock 10-minute elapsed budget enforced inside the Lambda, throwing `IronforgePollTimeoutError` when exhausted. |
 | Finalize           | 1           | DynamoDB transition writes. Should rarely retry — the writes are the only side effect.                                            |
 | CleanupOnFailure   | 3           | Safety net. Higher than any per-step count.                                                                                       |
 
@@ -250,13 +276,23 @@ that downstream Lambdas read from `$.steps.run-terraform`:
 `outputs.tf` AND this table.** The outputs declared in the manifest's
 `outputsSchema` field are the ground-truth contract.
 
-## Polling-loop topology (PR-C.7)
+## Polling-loop topology (PR-C.7, second consumer PR-C.8)
 
-Tasks that wait on a long-running upstream condition (CloudFront
-distribution propagation; future: ACM certificate validation, slow
-GitHub workflow dispatch) use the SFN-orchestrated polling pattern,
-not in-Lambda sleep loops. WaitForCloudFront is the canonical
-implementation. The shape:
+Tasks that wait on a long-running upstream condition use the SFN-
+orchestrated polling pattern, not in-Lambda sleep loops. Two
+implementations live in this state machine:
+
+- **WaitForCloudFront** (PR-C.7) — polls `cloudfront:GetDistribution`
+  for `Status === "Deployed"`. 20-minute elapsed budget.
+- **WaitForDeploy** (PR-C.8) — polls `actions.listWorkflowRuns` filtered
+  by `run-name` match (`Deploy [<correlationId>]`) for the user's
+  `deploy.yml` run to complete with `conclusion === "success"`. 10-
+  minute elapsed budget. Status-integrity Lambda — gates Finalize's
+  transition of `Service.status` to `"live"` on the deploy actually
+  completing (see `docs/conventions.md` § "Service status reflects
+  functional state, not workflow stage" for the principle).
+
+The shape (identical for both):
 
 ```
 Init Pass state                     → seeds $.steps.<task> with { status: "init" }
