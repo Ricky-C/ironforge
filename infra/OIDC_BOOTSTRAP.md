@@ -332,6 +332,12 @@ cat > /tmp/ironforge-ci-plan-policy.json <<EOF
         "ecr:PutImage"
       ],
       "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/ironforge-*"
+    },
+    {
+      "Sid": "ValidateStateMachineDefinitionAccountWide",
+      "Effect": "Allow",
+      "Action": "states:ValidateStateMachineDefinition",
+      "Resource": "*"
     }
   ]
 }
@@ -342,6 +348,17 @@ aws iam put-role-policy \
   --policy-name ironforge-ci-plan-permissions \
   --policy-document file:///tmp/ironforge-ci-plan-policy.json
 ```
+
+> **Why `ValidateStateMachineDefinition` lives on the plan role too.** The
+> AWS provider calls this API during `terraform plan` whenever an
+> `aws_sfn_state_machine` resource's `definition` attribute changes — it
+> validates the JSON against the SFN spec before generating the diff. The
+> action does not take an ARN (it operates on a raw definition payload),
+> so `Resource: "*"` is the only valid scoping. The apply role has the
+> same sid (added in PR #55 for apply-time validation); the plan role
+> needs it for plan-time validation. Surfaced at PR-C.7 (PR #62) when
+> the SFN definition gained the polling-loop states. PR-C.6 did not
+> trip this because that PR didn't edit the SFN definition.
 
 > **Why the plan role pushes images.** The plan workflow runs
 > `infra/modules/terraform-lambda-image/build-image.sh` BEFORE
