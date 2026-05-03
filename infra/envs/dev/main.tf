@@ -424,7 +424,26 @@ module "task_wait_for_cloudfront" {
   permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
   source_dir              = "${path.root}/../../../services/workflow/wait-for-cloudfront/dist"
   environment_variables   = local.task_lambda_env
-  iam_grants              = local.task_lambda_iam_grants
+
+  # PR-C.7: real handler. Single CloudFront read per poll tick.
+  # cloudfront:GetDistribution requires Resource: "*" — distribution
+  # ARNs are ID-based and we don't know the ID at terraform plan time
+  # (created by run-terraform per provision). Same constraint as run-
+  # terraform's own CloudFront grants (see local.run_terraform_extra_
+  # statements above). Boundary widening from PR-C.6 caps cloudfront:*
+  # at the boundary; this identity policy narrows to a single read
+  # action on the same Resource: "*".
+  iam_grants = {
+    dynamodb_read  = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = [
+      {
+        sid       = "GetCloudFrontDistribution"
+        actions   = ["cloudfront:GetDistribution"]
+        resources = ["*"]
+      },
+    ]
+  }
 }
 
 module "task_trigger_deploy" {
