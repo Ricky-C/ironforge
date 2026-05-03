@@ -157,13 +157,20 @@ const buildCommitMessage = (jobId: string): string =>
 // conflict (someone or something other than auto_init wrote the commit).
 //
 //   1. Commit message is exactly "Initial commit" (no marker, no extra text).
-//   2. Author email is "noreply@github.com" (the GitHub web-flow bot).
+//   2. Author email matches the GitHub App bot pattern
+//      (`<id>+<app-slug>[bot]@users.noreply.github.com`). When auto_init=true
+//      is invoked via an installation token, GitHub attributes the commit to
+//      the calling App's bot — NOT to the web-flow user (`noreply@github.com`).
+//      That web-flow attribution only happens when the README is created via
+//      the GitHub UI's "Create README" button.
 //   3. Tree contains exactly one entry: README.md.
 //
 // The third signal requires fetching the tree (one extra API call), but is
 // load-bearing — without it, any repo whose first commit happens to use
 // "Initial commit" + a bot author would be misidentified as auto_init and
 // have its content silently overwritten by generate-code.
+const AUTO_INIT_BOT_EMAIL_SUFFIX = "[bot]@users.noreply.github.com";
+
 const isAutoInitCommit = async (
   octokit: AuthenticatedOctokit,
   owner: string,
@@ -173,7 +180,7 @@ const isAutoInitCommit = async (
   treeSha: string,
 ): Promise<boolean> => {
   if (message !== "Initial commit") return false;
-  if (authorEmail !== "noreply@github.com") return false;
+  if (!authorEmail || !authorEmail.endsWith(AUTO_INIT_BOT_EMAIL_SUFFIX)) return false;
   let treeResp;
   try {
     treeResp = await octokit.rest.git.getTree({ owner, repo, tree_sha: treeSha });
