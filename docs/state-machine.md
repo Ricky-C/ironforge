@@ -101,6 +101,37 @@ PR-C.4a/PR-C.4b for create-repo, extended in PR-C.8 for trigger-deploy):
   renderer's substitution map. Surfaces template/renderer drift at
   first invocation rather than as silent half-rendered files in
   production.
+- `IronforgeTerraformInitError` (PR-C.6 run-terraform) — `terraform
+  init` exited non-zero. Most common cause is misconfigured backend
+  flags or a provider not present in the filesystem mirror; sanitized
+  message points operators to CloudWatch for the stderr tail. Init
+  failures are permanent for this workflow execution; retry would not
+  help (the state is the same).
+- `IronforgeTerraformApplyError` (PR-C.6 run-terraform) — `terraform
+  apply` exited non-zero. Common causes: AWS API rejection mid-apply
+  (e.g., `BucketAlreadyExists` from a name collision in the
+  `ironforge-svc-*` namespace, IAM eventual-consistency window after
+  role create, ACM cert validation timing), an unhandled provider
+  panic, or a permissions denial despite the boundary widening. Apply
+  failures are NEVER retried by SFN: ADR-009 sets `run-terraform`'s
+  `MaxAttempts: 0` because re-running apply against partial state can
+  compound the failure rather than recover. Routes to
+  `CleanupOnFailure`, which calls `terraform destroy` against the
+  per-service state to reverse whatever apply DID create.
+- `IronforgeTerraformOutputError` (PR-C.6 run-terraform) — `terraform
+  output -json` either exited non-zero, returned malformed JSON, or
+  produced a payload that failed `StaticSiteOutputsSchema` validation.
+  Last case is template-author drift (the template's `outputs.tf`
+  shape doesn't match the schema in
+  `packages/shared-types/src/templates/static-site.ts`); first two
+  are environmental. All three sanitized to a single class because
+  the recovery is the same — operators inspect CloudWatch for the
+  `zodIssues` payload (schema case) or `stderrTail` (exit-code case).
+- `IronforgeWorkflowInputError` (PR-C.6 run-terraform; same name as
+  upstream task Lambdas) — SFN execution input failed
+  `WorkflowExecutionInputSchema` parse OR `templateId` was not in the
+  registered enum. Both surface BEFORE any DDB write, so a malformed
+  event can't even create a JobStep entry.
 
 **Why not `States.TaskFailed` in Retry?** `States.TaskFailed` is the
 SFN umbrella that matches *any* task failure, including custom-named

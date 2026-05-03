@@ -112,3 +112,26 @@ Different resource types support different metadata channels. Choose the most st
 | User-edited later | Plain content, no substitution | Page title, body content (user edits in their repo) |
 
 **What this is NOT a pattern for:** values that aren't infrastructure state but ARE platform-derived (e.g., a service ID, an Ironforge platform version). Those are build-time-known at generate-code; use `__IRONFORGE_<NAME>__`. The boundary is "could this value change without my code being re-rendered?" — if yes, secrets; if no, build-time substitution.
+
+---
+
+## Offline terraform init via filesystem_mirror (not TF_PLUGIN_CACHE_DIR)
+
+**Pattern.** The run-terraform Lambda runs `terraform init` in a no-egress execution environment — it cannot reach `registry.terraform.io`. To make init succeed offline, the handler writes a CLI configuration file at `/tmp/.terraformrc` declaring a `provider_installation { filesystem_mirror }` pointing at `/opt/.terraform.d/plugins/`, and exports `TF_CLI_CONFIG_FILE=/tmp/.terraformrc` to the spawned terraform process. The Dockerfile bakes the AWS provider binary at the conventional plugin path. Any provider not present in the mirror fails init explicitly via the mirror config's `direct { exclude = ["registry.terraform.io/*/*"] }` pairing — there is no fallback to network.
+
+**Established in.**
+
+- PR-C.6 (2026-05-02) — `services/workflow/run-terraform/src/handle-event.ts` writes `TF_CLI_CONFIG_CONTENT` to `/tmp/.terraformrc` on every invocation; spawn env includes `TF_CLI_CONFIG_FILE=/tmp/.terraformrc`. The Dockerfile (`infra/modules/terraform-lambda-image/Dockerfile`) lays out the provider at `/opt/.terraform.d/plugins/registry.terraform.io/hashicorp/aws/<version>/linux_arm64/`.
+
+**Applied by.**
+
+- `services/workflow/run-terraform/src/handle-event.ts` — the handler that spawns terraform.
+
+**Rationale.**
+
+1. **`TF_PLUGIN_CACHE_DIR` is INSUFFICIENT for offline init.** Even on a cache hit, terraform still contacts `registry.terraform.io` to verify the provider's version metadata. In a no-egress Lambda environment, that verification call hangs ~30s and then fails with a misleading "Failed to query available provider packages" error — easily misdiagnosed as a cache-path or permission issue. `filesystem_mirror` is the trust mechanism that makes terraform treat the local directory as authoritative; it does not perform the registry round-trip.
+2. **The two configs serve different purposes.** `TF_PLUGIN_CACHE_DIR` is a performance optimization (cache hits avoid re-download for repeated inits across working directories). `filesystem_mirror` is a trust declaration (the local filesystem IS the registry; do not contact remote). The Lambda needs the latter, not the former. Setting both confuses the model and the failure mode is at runtime, not init time.
+3. **Loud failure on missing provider.** The mirror config's `direct { exclude = ["registry.terraform.io/*/*"] }` companion forces every provider to come from the filesystem — any future template that pulls a provider not bundled in the image will fail at init with a clear "provider not in filesystem mirror" error, not a silent network hang. Surfaces template/image drift at the right place.
+4. **Per-invocation rewrite is fine.** The handler rewrites `/tmp/.terraformrc` on every cold AND warm start. Idempotent; <1ms cost. Avoids a class of "config file from a previous invocation has stale paths" bugs that would surface only after a Dockerfile path change.
+
+**Failure mode if mismechanized:** swapping `TF_CLI_CONFIG_FILE` for `TF_PLUGIN_CACHE_DIR` makes terraform init hang ~30s, exit non-zero with "Failed to query available provider packages." The Lambda's CloudWatch shows the timeout but no clear cause — operators have wasted hours diagnosing as a permissions or path issue. The convention is the load-bearing word "filesystem_mirror" in `TF_CLI_CONFIG_CONTENT`; if a future change drops it back to `TF_PLUGIN_CACHE_DIR`, this section is the recovery anchor.

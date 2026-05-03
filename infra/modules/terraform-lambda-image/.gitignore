@@ -1,0 +1,11 @@
+# Build context staging — produced by build-image.sh, consumed by
+# docker build. Contains the downloaded terraform binary, AWS provider,
+# bundled handler.js, and a copy of Dockerfile. Cleaned up by the
+# script on success; gitignored so a failed build doesn't leak into
+# the next commit.
+.build-context/
+
+# Image URI output — produced by build-image.sh after pushing the
+# image to ECR. Consumed by the dev composition at terraform plan
+# time (data.local_file). Per-deployment artifact, not committed.
+.image-uri

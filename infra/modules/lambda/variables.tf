@@ -24,8 +24,26 @@ variable "permission_boundary_arn" {
 }
 
 variable "source_dir" {
-  description = "Absolute path to the directory containing the Lambda source bundle (e.g., $${path.root}/../../../services/api/dist). The directory is zipped via the archive_file data source at plan time. The source MUST be built before `terraform plan` runs (CI: `pnpm -F @ironforge/<service> build` precedes `terraform plan`)."
+  description = "Absolute path to the directory containing the Lambda source bundle (e.g., $${path.root}/../../../services/api/dist). The directory is zipped via the archive_file data source at plan time. The source MUST be built before `terraform plan` runs (CI: `pnpm -F @ironforge/<service> build` precedes `terraform plan`). Required when package_type = \"Zip\"; ignored when package_type = \"Image\"."
   type        = string
+  default     = null
+}
+
+variable "package_type" {
+  description = "Lambda deployment package type. \"Zip\" (default) bundles source via archive_file; \"Image\" deploys a container image referenced by image_uri. Image deployment is required when bundled binary tooling exceeds Lambda layer limits (per ADR-009 § Amendments — run-terraform Lambda)."
+  type        = string
+  default     = "Zip"
+
+  validation {
+    condition     = contains(["Zip", "Image"], var.package_type)
+    error_message = "package_type must be one of: Zip, Image."
+  }
+}
+
+variable "image_uri" {
+  description = "Container image URI (registry/repo@sha256:digest). Required when package_type = \"Image\"; ignored when Zip. Use immutable digest references — mutable tags break deploy reproducibility."
+  type        = string
+  default     = null
 }
 
 variable "handler" {

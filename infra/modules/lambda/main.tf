@@ -24,12 +24,14 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
-# Source bundle — zipped on plan from var.source_dir. CI runs the build
-# before `terraform plan` so the directory exists; archive_file fails fast
-# if it does not, surfacing the missing build step at plan time.
+# Source bundle — zipped on plan from var.source_dir for Zip-type Lambdas.
+# CI runs the build before `terraform plan` so the directory exists;
+# archive_file fails fast if it does not, surfacing the missing build step
+# at plan time. Image-type Lambdas skip this entirely (count = 0).
 # ---------------------------------------------------------------------------
 
 data "archive_file" "source" {
+  count       = var.package_type == "Zip" ? 1 : 0
   type        = "zip"
   source_dir  = var.source_dir
   output_path = "${path.module}/.terraform-builds/${var.function_name}.zip"
@@ -171,11 +173,21 @@ resource "aws_lambda_function" "this" {
   function_name = var.function_name
   role          = aws_iam_role.execution.arn
 
-  filename         = data.archive_file.source.output_path
-  source_code_hash = data.archive_file.source.output_base64sha256
+  package_type = var.package_type
 
-  handler       = var.handler
-  runtime       = var.runtime
+  # Zip-type attributes — only set when package_type = "Zip". Terraform
+  # rejects setting filename/handler/runtime alongside image_uri.
+  filename         = var.package_type == "Zip" ? data.archive_file.source[0].output_path : null
+  source_code_hash = var.package_type == "Zip" ? data.archive_file.source[0].output_base64sha256 : null
+  handler          = var.package_type == "Zip" ? var.handler : null
+  runtime          = var.package_type == "Zip" ? var.runtime : null
+
+  # Image-type attribute — only set when package_type = "Image". The
+  # image_uri must be an immutable digest reference (registry/repo@sha256:...);
+  # mutable tags break deploy reproducibility (Lambda caches image-by-tag,
+  # so a mutated tag wouldn't trigger a new deployment).
+  image_uri = var.package_type == "Image" ? var.image_uri : null
+
   architectures = [var.architecture]
 
   memory_size = var.memory_mb

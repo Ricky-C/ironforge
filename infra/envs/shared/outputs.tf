@@ -102,3 +102,48 @@ output "github_app_ssm_parameter_path" {
   description = "Path prefix for tenant-specific GitHub App SSM parameters (/ironforge/github-app). Workflow Lambda IAM grants for ssm:GetParameter scope to this path. Env compositions read individual parameters by appending the suffix (e.g., /app-id, /installation-id, /org-name) — these names match the github-app-secret module's aws_ssm_parameter resource names and are part of the module's stable contract."
   value       = module.github_app_secret.ssm_parameter_path
 }
+
+# Per-env terraform state bucket outputs (PR-C.6). Workflow Lambdas
+# (run-terraform; future destroy-chain) configure terraform's S3
+# backend to point here. Per-env separation: dev composition reads the
+# *_dev outputs; prod composition (when it lands) reads the *_prod
+# outputs.
+output "tfstate_dev_bucket_name" {
+  description = "Name of the dev environment's terraform state bucket."
+  value       = module.tfstate_dev.bucket_name
+}
+
+output "tfstate_dev_bucket_arn" {
+  description = "ARN of the dev environment's terraform state bucket. Consuming Lambda IAM grants for s3:GetObject/s3:PutObject MUST scope to this ARN."
+  value       = module.tfstate_dev.bucket_arn
+}
+
+output "tfstate_dev_kms_key_arn" {
+  description = "ARN of the CMK encrypting the dev environment's terraform state. Consuming Lambda IAM grants for kms:Decrypt + kms:GenerateDataKey MUST scope to this ARN."
+  value       = module.tfstate_dev.kms_key_arn
+}
+
+output "tfstate_prod_bucket_name" {
+  description = "Name of the prod environment's terraform state bucket. Empty consumer list until prod composition lands; bucket exists regardless."
+  value       = module.tfstate_prod.bucket_name
+}
+
+output "tfstate_prod_bucket_arn" {
+  description = "ARN of the prod environment's terraform state bucket."
+  value       = module.tfstate_prod.bucket_arn
+}
+
+output "tfstate_prod_kms_key_arn" {
+  description = "ARN of the CMK encrypting the prod environment's terraform state."
+  value       = module.tfstate_prod.kms_key_arn
+}
+
+output "terraform_lambda_image_repository_url" {
+  description = "ECR repository URL for the run-terraform Lambda's container image. CI's build-image.sh pushes here; the Lambda function references the image by URI + digest."
+  value       = module.terraform_lambda_image.repository_url
+}
+
+output "terraform_lambda_image_repository_arn" {
+  description = "ECR repository ARN for the run-terraform Lambda's container image. The build-image.sh pipeline IAM grants for ecr:GetAuthorizationToken / PutImage / etc. scope to this ARN."
+  value       = module.terraform_lambda_image.repository_arn
+}

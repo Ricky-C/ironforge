@@ -272,7 +272,7 @@ storage to the access pattern," not "one bucket for everything."
 | ----------------- | ------------------------ | ---------- |
 | Manifest YAML     | Bundled in Lambda dist   | PR-C.3     |
 | Starter code      | Bundled in Lambda dist (PR-C.5). Revisit if a second template arrives or if total starter-code size exceeds 1MB. | PR-C.5     |
-| Terraform module  | TBD                      | PR-C.6     |
+| Terraform module  | Baked into the run-terraform Lambda's container image at `/opt/templates/<template-id>/terraform/` (PR-C.6). Per ADR-009 § Amendments — the AWS provider 5.83.0 binary alone is 585MB, blowing Lambda's 250MB layer cap, so run-terraform deploys as a container Lambda. The template's terraform module rides in the same image because the access pattern is per-invocation read-only ("download the module once at image build, never at runtime") and locality with the bundled provider keeps `terraform init` offline. | PR-C.6     |
 
 Manifest YAML is bundled into the validate-inputs Lambda at esbuild
 time via `loader: { ".yaml": "text" }` and parsed + validated at module
@@ -304,6 +304,21 @@ from terraform outputs (deploy role ARN, S3 bucket, CloudFront
 distribution) flow through GitHub Actions repo secrets populated by
 trigger-deploy. See `docs/conventions.md` § "Template substitution
 boundary" for the convention.
+
+Terraform modules are staged into the run-terraform Lambda's container
+image at `/opt/templates/<template-id>/terraform/` by
+`infra/modules/terraform-lambda-image/build-image.sh`'s "Copy templates
+into build context" step. The Dockerfile's `COPY templates
+/opt/templates` lands them at the conventional `/opt` (platform tooling)
+path; the handler resolves `${TEMPLATE_PATH}/<template-id>/terraform`
+where `TEMPLATE_PATH=/opt/templates` is wired from the dev composition.
+At runtime the handler generates a per-job wrapper main.tf at
+`/tmp/<jobId>/main.tf` that imports the template via filesystem source
+(`source = "/opt/templates/static-site/terraform"`) and supplies the
+backend "s3" block + 11 input variables. Per the ADR-009 amendment, the
+template's own `versions.tf` was modified in PR-C.6 to remove its
+`backend "s3" {}` block — terraform forbids backend declarations in
+non-root modules, and the wrapper is now the root.
 
 ## OwnerId convention
 

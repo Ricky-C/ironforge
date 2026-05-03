@@ -1,20 +1,12 @@
-import { stubTask } from "@ironforge/workflow-stub-lib";
+import { buildHandler } from "./handle-event.js";
 
-// PR-C.2 stub. Replaced at PR-C.6 with the real terraform-execution
-// model decided in the pre-PR ADR (likely CodeBuild). The output
-// shape here matches templates/static-site/terraform/outputs.tf so
-// downstream Lambdas (wait-for-cloudfront, finalize) can be wired
-// against this stub during PR-C.2 end-to-end exercises.
+// Lambda entry point. Wires production deps (real terraform binary spawn,
+// real fs operations, env-var-backed config). Tests use buildHandler
+// directly with injected dependencies — see handle-event.test.ts.
 //
-// Stub values are placeholders; real Lambda emits real resource ids.
-export const handler = stubTask({
-  stepName: "run-terraform",
-  buildOutput: (event) => ({
-    bucket_name: `ironforge-svc-${event.serviceName}-origin`,
-    distribution_id: "ESTUBSTUBSTUB",
-    distribution_domain_name: "dstub.cloudfront.net",
-    deploy_role_arn: `arn:aws:iam::000000000000:role/ironforge-svc-${event.serviceName}-deploy`,
-    live_url: `https://${event.serviceName}.ironforge.rickycaballero.com`,
-    fqdn: `${event.serviceName}.ironforge.rickycaballero.com`,
-  }),
-});
+// Per ADR-009: this Lambda is deployed as a container image with the
+// terraform 1.10.4 + AWS provider 5.83.0 binaries baked in at /opt/.
+// The handler shells out to /opt/bin/terraform via child_process.spawn
+// and uses TF_CLI_CONFIG_FILE pointing at a filesystem_mirror to keep
+// terraform init from contacting registry.terraform.io.
+export const handler = buildHandler();
