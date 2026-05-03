@@ -254,6 +254,12 @@
     "Finalize": {
       "Type": "Task",
       "Resource": "${finalize_arn}",
+      "Comment": "Terminal-success transitions: Service provisioning → live (sets liveUrl + provisionedAt, clears currentJobId); Job running → succeeded. Idempotent on retry via post-conditional-failure GetItem inspection; the Lambda treats already-at-target-with-our-markers as success and unexpected state as IronforgeFinalizeError.",
+      "Parameters": {
+        "jobId.$": "$.jobId",
+        "serviceId.$": "$.serviceId",
+        "liveUrl.$": "$.steps.run-terraform.live_url"
+      },
       "Retry": [
         {
           "ErrorEquals": [
