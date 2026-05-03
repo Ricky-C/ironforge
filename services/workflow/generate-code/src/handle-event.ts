@@ -146,8 +146,46 @@ const parseCreateRepoOutput = (raw: unknown): CreateRepoOutput | null => {
 const buildCommitMarker = (jobId: string): string =>
   `(Ironforge job ${jobId})`;
 
+// "Add starter code" rather than "Initial commit" because the literal initial
+// commit is now the auto_init README from create-repo. This commit adds the
+// starter-code tree on top, so its message describes what it does.
 const buildCommitMessage = (jobId: string): string =>
-  `Initial commit ${buildCommitMarker(jobId)}`;
+  `Add starter code ${buildCommitMarker(jobId)}`;
+
+// Three-signal check for an auto_init-only repo (per PR-Phase1-verify-003
+// architectural fix). All three must hold; any divergence means a real
+// conflict (someone or something other than auto_init wrote the commit).
+//
+//   1. Commit message is exactly "Initial commit" (no marker, no extra text).
+//   2. Author email is "noreply@github.com" (the GitHub web-flow bot).
+//   3. Tree contains exactly one entry: README.md.
+//
+// The third signal requires fetching the tree (one extra API call), but is
+// load-bearing — without it, any repo whose first commit happens to use
+// "Initial commit" + a bot author would be misidentified as auto_init and
+// have its content silently overwritten by generate-code.
+const isAutoInitCommit = async (
+  octokit: AuthenticatedOctokit,
+  owner: string,
+  repo: string,
+  message: string,
+  authorEmail: string | undefined,
+  treeSha: string,
+): Promise<boolean> => {
+  if (message !== "Initial commit") return false;
+  if (authorEmail !== "noreply@github.com") return false;
+  let treeResp;
+  try {
+    treeResp = await octokit.rest.git.getTree({ owner, repo, tree_sha: treeSha });
+  } catch {
+    // If we can't read the tree, we can't confirm signal 3 — treat as
+    // not-auto-init (i.e., real conflict). Caller will surface as conflict
+    // rather than silently overwrite content we couldn't inspect.
+    return false;
+  }
+  const entries = treeResp.data.tree as Array<{ path: string; type: string }>;
+  return entries.length === 1 && entries[0]?.path === "README.md" && entries[0]?.type === "blob";
+};
 
 export type GenerateCodeOutput = {
   commitSha: string;
@@ -220,7 +258,12 @@ const checkExistingRef = async (
   jobId: string,
   appId: string,
   installationId: string,
-): Promise<{ kind: "not-found" } | { kind: "ours"; commitSha: string; treeSha: string } | { kind: "conflict" }> => {
+): Promise<
+  | { kind: "not-found" }
+  | { kind: "ours"; commitSha: string; treeSha: string }
+  | { kind: "auto-init"; parentSha: string; parentTreeSha: string }
+  | { kind: "conflict" }
+> => {
   let refResp;
   try {
     refResp = await octokit.rest.git.getRef({
@@ -231,9 +274,10 @@ const checkExistingRef = async (
   } catch (err) {
     const status = (err as { status?: number })?.status;
     if (status === 404 || status === 409) {
-      // 404: ref doesn't exist. 409: empty repository (no refs) — git.getRef
-      // returns 409 against empty repos. Both mean "no main yet, proceed
-      // with create."
+      // 404: ref doesn't exist. 409: empty repository (no refs).
+      // create-repo now uses auto_init=true so this should be unreachable
+      // for fresh repos — but legacy repos created with auto_init=false
+      // (or any future repo whose auto_init failed) still take this path.
       return { kind: "not-found" };
     }
     throw mapHttpError(
@@ -262,10 +306,18 @@ const checkExistingRef = async (
   }
 
   const message = (commitResp.data as { message: string }).message ?? "";
+  const treeSha = (commitResp.data.tree as { sha: string }).sha;
   const marker = buildCommitMarker(jobId);
   if (message.includes(marker)) {
-    const treeSha = (commitResp.data.tree as { sha: string }).sha;
     return { kind: "ours", commitSha, treeSha };
+  }
+
+  // Distinguish auto_init's commit from a real conflict via the three-signal
+  // check. Order matters — must check auto-init BEFORE returning conflict,
+  // otherwise the auto_init commit would block every fresh repo.
+  const authorEmail = (commitResp.data.author as { email?: string } | null)?.email;
+  if (await isAutoInitCommit(octokit, owner, repo, message, authorEmail, treeSha)) {
+    return { kind: "auto-init", parentSha: commitSha, parentTreeSha: treeSha };
   }
   return { kind: "conflict" };
 };
@@ -348,6 +400,88 @@ const createInitialCommit = async (
     });
   } catch (err) {
     throw mapHttpError(err, `POST /repos/${owner}/${repo}/git/refs`, appId, installationId);
+  }
+
+  return { commitSha, treeSha };
+};
+
+// Atomic starter-code commit on top of auto_init's README commit. Same
+// blob/tree/commit shape as createInitialCommit, but commit has the auto-init
+// as its parent and the ref is updated (not created — main already points
+// at the auto-init commit). The new tree omits base_tree so the auto-init
+// README is replaced by the starter-code tree (the starter-code template
+// includes its own README, so the auto-init placeholder isn't preserved).
+const createCommitOnAutoInit = async (
+  octokit: AuthenticatedOctokit,
+  owner: string,
+  repo: string,
+  branch: string,
+  files: Record<string, string>,
+  parentSha: string,
+  jobId: string,
+  appId: string,
+  installationId: string,
+): Promise<{ commitSha: string; treeSha: string }> => {
+  const blobEntries = Object.entries(files);
+  let blobs;
+  try {
+    blobs = await Promise.all(
+      blobEntries.map(async ([path, content]) => {
+        const resp = await octokit.rest.git.createBlob({
+          owner,
+          repo,
+          content,
+          encoding: "utf-8",
+        });
+        return { path, sha: resp.data.sha };
+      }),
+    );
+  } catch (err) {
+    throw mapHttpError(err, `POST /repos/${owner}/${repo}/git/blobs`, appId, installationId);
+  }
+
+  let treeResp;
+  try {
+    treeResp = await octokit.rest.git.createTree({
+      owner,
+      repo,
+      tree: blobs.map(({ path, sha }) => ({
+        path,
+        mode: "100644",
+        type: "blob",
+        sha,
+      })),
+    });
+  } catch (err) {
+    throw mapHttpError(err, `POST /repos/${owner}/${repo}/git/trees`, appId, installationId);
+  }
+  const treeSha = treeResp.data.sha;
+
+  let commitResp;
+  try {
+    commitResp = await octokit.rest.git.createCommit({
+      owner,
+      repo,
+      message: buildCommitMessage(jobId),
+      tree: treeSha,
+      parents: [parentSha],
+    });
+  } catch (err) {
+    throw mapHttpError(err, `POST /repos/${owner}/${repo}/git/commits`, appId, installationId);
+  }
+  const commitSha = commitResp.data.sha;
+
+  // updateRef (PATCH) — main already exists pointing at the auto-init commit;
+  // we're fast-forwarding it to the starter-code commit.
+  try {
+    await octokit.rest.git.updateRef({
+      owner,
+      repo,
+      ref: `heads/${branch}`,
+      sha: commitSha,
+    });
+  } catch (err) {
+    throw mapHttpError(err, `PATCH /repos/${owner}/${repo}/git/refs/heads/${branch}`, appId, installationId);
   }
 
   return { commitSha, treeSha };
@@ -475,7 +609,7 @@ export const buildHandler = (
         console.error(
           JSON.stringify({
             level: "ERROR",
-            message: "generate-code: refs/heads/main exists without our jobId marker",
+            message: "generate-code: refs/heads/main exists without our jobId marker and is not an auto_init commit",
             stepName: STEP_NAME,
             jobId: input.jobId,
             owner,
@@ -484,8 +618,27 @@ export const buildHandler = (
           }),
         );
         throw new IronforgeRefConflictError(SANITIZED_REF_CONFLICT_MESSAGE);
+      } else if (existence.kind === "auto-init") {
+        // Step 6a — common path: starter-code commit on top of auto_init's
+        // README commit. create-repo's auto_init=true makes this the
+        // expected case for fresh repos.
+        const result = await createCommitOnAutoInit(
+          octokit,
+          owner,
+          repo,
+          branch,
+          renderedFiles,
+          existence.parentSha,
+          input.jobId,
+          config.appId,
+          config.installationId,
+        );
+        commitSha = result.commitSha;
+        treeSha = result.treeSha;
       } else {
-        // Step 6 — Git Data API initial commit.
+        // Step 6b — fallback path: legacy/anomalous repos with no main ref
+        // (auto_init=false at create time, or auto_init silently failed).
+        // Creates an initial commit and the heads/main ref.
         const result = await createInitialCommit(
           octokit,
           owner,
