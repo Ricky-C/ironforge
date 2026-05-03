@@ -208,6 +208,17 @@ data "aws_iam_policy_document" "permission_boundary" {
     resources = [var.route53_zone_arn]
   }
 
+  # Companion to AllowRoute53OnIronforgeZone — terraform's
+  # aws_route53_record refreshes zone metadata via route53:GetHostedZone.
+  # Same shape as AllowProvisionedBucketRead: bounded read wildcard
+  # scoped to the specific zone ARN. Discovered round 10.
+  statement {
+    sid       = "AllowRoute53GetOnIronforgeZone"
+    effect    = "Allow"
+    actions   = ["route53:Get*"]
+    resources = [var.route53_zone_arn]
+  }
+
   # PR-C.6 boundary widening — run-terraform Lambda needs route53:GetChange
   # to poll record-change propagation status after ChangeResourceRecordSets.
   # AWS does not support resource-level scoping for this action — it returns
