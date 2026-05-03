@@ -14,6 +14,7 @@ locals {
     run_terraform_arn       = var.task_lambda_arns.run_terraform
     wait_for_cloudfront_arn = var.task_lambda_arns.wait_for_cloudfront
     trigger_deploy_arn      = var.task_lambda_arns.trigger_deploy
+    wait_for_deploy_arn     = var.task_lambda_arns.wait_for_deploy
     finalize_arn            = var.task_lambda_arns.finalize
     cleanup_on_failure_arn  = var.task_lambda_arns.cleanup_on_failure
   })
@@ -23,7 +24,7 @@ locals {
 # State machine IAM role
 # ---------------------------------------------------------------------------
 # Trust: states.amazonaws.com. Inline policy: lambda:InvokeFunction scoped to
-# the exact 8 task Lambda ARNs (no wildcards), CloudWatch log delivery (SFN
+# the exact 9 task Lambda ARNs (no wildcards), CloudWatch log delivery (SFN
 # logging requires a fixed set of grant actions per AWS docs), and X-Ray
 # write actions for the tracing_configuration block below.
 
