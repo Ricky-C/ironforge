@@ -453,8 +453,87 @@ module "task_trigger_deploy" {
   environment             = var.environment
   permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
   source_dir              = "${path.root}/../../../services/workflow/trigger-deploy/dist"
-  environment_variables   = local.task_lambda_env
-  iam_grants              = local.task_lambda_iam_grants
+
+  # PR-C.8: real handler. GitHub App access pattern identical to
+  # create-repo + generate-code (PR-C.4b/C.5): env vars from
+  # SSM/shared outputs at plan time, identity policy with
+  # secretsmanager + kms:Decrypt narrowed via EncryptionContext
+  # binding. App needs actions:write + secrets:write at the install
+  # level (approved at PR-C.5 pre-merge); identity-policy here just
+  # narrows AWS-side access to the github-app-secret.
+  environment_variables = merge(local.task_lambda_env, {
+    GITHUB_APP_SECRET_ARN      = data.terraform_remote_state.shared.outputs.github_app_secret_arn
+    GITHUB_APP_ID              = data.aws_ssm_parameter.github_app_id.value
+    GITHUB_APP_INSTALLATION_ID = data.aws_ssm_parameter.github_app_installation_id.value
+  })
+
+  iam_grants = {
+    dynamodb_read  = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = [
+      {
+        sid       = "GetGitHubAppSecret"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+      },
+      {
+        sid       = "DecryptGitHubAppSecret"
+        actions   = ["kms:Decrypt"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_kms_key_arn]
+        conditions = [
+          {
+            test     = "StringEquals"
+            variable = "kms:EncryptionContext:SecretARN"
+            values   = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+          },
+        ]
+      },
+    ]
+  }
+}
+
+module "task_wait_for_deploy" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-wait-for-deploy"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/wait-for-deploy/dist"
+
+  # PR-C.8: new polling task Lambda. Same GitHub App access shape as
+  # trigger-deploy — listWorkflowRuns needs actions:read at the App
+  # install level (already granted, implied by actions:write from
+  # PR-C.5); identity-policy narrows AWS-side access to the github-
+  # app-secret with EncryptionContext binding.
+  environment_variables = merge(local.task_lambda_env, {
+    GITHUB_APP_SECRET_ARN      = data.terraform_remote_state.shared.outputs.github_app_secret_arn
+    GITHUB_APP_ID              = data.aws_ssm_parameter.github_app_id.value
+    GITHUB_APP_INSTALLATION_ID = data.aws_ssm_parameter.github_app_installation_id.value
+  })
+
+  iam_grants = {
+    dynamodb_read  = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = [
+      {
+        sid       = "GetGitHubAppSecret"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+      },
+      {
+        sid       = "DecryptGitHubAppSecret"
+        actions   = ["kms:Decrypt"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_kms_key_arn]
+        conditions = [
+          {
+            test     = "StringEquals"
+            variable = "kms:EncryptionContext:SecretARN"
+            values   = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+          },
+        ]
+      },
+    ]
+  }
 }
 
 module "task_finalize" {
@@ -495,6 +574,7 @@ module "provisioning_state_machine" {
     run_terraform       = module.task_run_terraform.function_arn
     wait_for_cloudfront = module.task_wait_for_cloudfront.function_arn
     trigger_deploy      = module.task_trigger_deploy.function_arn
+    wait_for_deploy     = module.task_wait_for_deploy.function_arn
     finalize            = module.task_finalize.function_arn
     cleanup_on_failure  = module.task_cleanup_on_failure.function_arn
   }
