@@ -741,6 +741,18 @@ aws lambda get-function-configuration --function-name ironforge-dev-create-repo 
 
 If the three values disagree, recovery is required.
 
+`./scripts/verify-prerequisites.sh` Check 2 catches the SSM↔GitHub mismatch automatically; Check 11 catches the SSM↔Lambda env-var mismatch (the apply-time-staleness case below). Run the script as the first diagnostic step — its output names the exact mismatch and the remediation command.
+
+### The full source chain
+
+The Installation ID lives in **three** places, in order of upstream-ness:
+
+1. `TF_VAR_GITHUB_APP_INSTALLATION_ID` — GitHub Actions secret read by `infra-apply` for the shared composition.
+2. `/ironforge/github-app/installation-id` SSM parameter — written by `module.github_app_secret` from the TF_VAR; read by the dev composition's `data.aws_ssm_parameter`.
+3. `GITHUB_APP_INSTALLATION_ID` Lambda env var — written by the dev composition at apply time from the SSM data source.
+
+A manual update at level (2) without updating (1) is fragile: the next `infra-apply-shared` run will overwrite SSM with the stale TF_VAR value. A manual update at (1) and (2) without re-applying dev leaves Lambdas at the old value (env vars are baked at apply time, not read at runtime). Recovery must touch every level above the highest stale one.
+
 ### Recovery
 
 #### Step 1 — Update SSM with the new Installation ID
@@ -763,11 +775,24 @@ Expected: prints `<NEW_INSTALLATION_ID>` exactly. **If the output differs from w
 
 This verification idiom — `put-parameter` always followed by `get-parameter` round-trip — should apply to every operator-driven SSM update. The cost is one extra command; the benefit is "did my put actually work?" with zero ambiguity.
 
-#### Step 2 — Update the Lambda env vars
+#### Step 2 — Update the upstream TF_VAR (mandatory, even if Step 1 already aligned SSM with reality)
+
+Without this, the next `infra-apply-shared` run reverts SSM to the stale value:
+
+```bash
+gh secret set TF_VAR_GITHUB_APP_INSTALLATION_ID --body <NEW_INSTALLATION_ID>
+```
+
+#### Step 3 — Update the Lambda env vars
 
 Two real paths:
 
-**Path A — terraform-driven (canonical).** Trigger a `terraform plan` against dev composition; the data source reads the new SSM value and computes the Lambda env var. CI's `infra-apply-dev` updates the function configuration. No drift; reproducible.
+**Path A — terraform-driven (canonical).** Re-apply dev composition. The data source reads the new SSM value and computes the Lambda env var. Two ways to trigger:
+
+- *On-demand.* `gh workflow run infra-apply.yml` — the `workflow_dispatch:` trigger exists for exactly this situation (state needs to re-converge against current source-of-truth values without an HCL change).
+- *Path-filtered push.* Wait for the next infra-touching commit to land on `main`. Slow; prefer on-demand for active recovery.
+
+No drift; reproducible.
 
 **Path B — direct AWS API (recovery).** When CI is slow or you need the fix immediately, update the Lambda env var directly:
 
@@ -779,22 +804,44 @@ aws lambda update-function-configuration \
 
 The full Variables map must be supplied (the API is replace-not-merge). Path B is drift-free as long as SSM has been updated first — terraform's next plan reads SSM (now matching) and computes the same env var the Lambda already has, so no diff.
 
-Repeat for every Lambda that consumes the GitHub App installation token (currently: create-repo, generate-code; future: trigger-deploy).
+Repeat for every Lambda that consumes the GitHub App installation token. Current consumers (verify by running `./scripts/verify-prerequisites.sh` Check 11 — its output enumerates them):
 
-#### Step 3 — Verify end-to-end
+- `ironforge-${env}-create-repo`
+- `ironforge-${env}-generate-code`
+- `ironforge-${env}-trigger-deploy`
+- `ironforge-${env}-wait-for-deploy`
 
-Invoke a workflow Lambda with a test payload and confirm the GitHub call succeeds:
+#### Step 4 — Verify end-to-end
+
+Run the prerequisites script — Checks 2 and 11 must both PASS before resuming verification:
+
+```bash
+./scripts/verify-prerequisites.sh
+```
+
+Or invoke a workflow Lambda with a test payload directly:
 
 ```bash
 aws lambda invoke --function-name ironforge-dev-create-repo --payload '{"...":"..."}' /tmp/out.json
 cat /tmp/out.json
 ```
 
-If still failing with 404 on installations, the SSM update didn't propagate to the Lambda env var. Re-check Step 2.
+If still failing with 404 on installations, the SSM update didn't propagate to the Lambda env var. Re-check Step 3.
+
+### Special case: App migration between accounts/orgs
+
+When the App is moved between accounts (e.g., personal → org), GitHub treats the new installation as fully distinct: new Installation ID, no shared install state with the prior account. The recovery procedure above handles the ID change, but two extra audit steps apply:
+
+1. **Check for orphaned installations on the prior account.** Visit https://github.com/settings/installations (personal) or `https://github.com/organizations/<prior-org>/settings/installations` (org). If `ironforge-provisioner` is still installed on the prior account, uninstall it — leaving it installed creates ambient confusion ("which installation owns my private key?") even though only the org installation is reachable from the new TF_VAR.
+2. **Check for orphaned repos on the prior account.** Any `ironforge-svc-*` or otherwise provisioned-by-Ironforge repos created during the prior install era are now orphaned (the App can no longer manage them — wrong installation). Decide on a per-repo basis: archive or delete. `gh repo list <prior-account> --json name --jq '.[] | select(.name | test("^ironforge"))'` enumerates candidates.
+
+Document the migration in the same PR or runbook entry that updated the TF_VAR — future-you needs to know "the App is currently on the org, not on Ricky-C personal" without reading three GitHub UIs.
 
 ### Prevention
 
 - **Always run the Step 1 verification round-trip.** A silent `put-parameter` failure (typo, wrong AWS profile, IAM denial that returned 200 misleadingly) is the most common cause of re-installation recovery taking longer than it should.
+- **Always update TF_VAR (Step 2), not just SSM.** The TF_VAR is the source-of-source; skipping it means the next `infra-apply-shared` run reverts SSM to the stale value and the cycle repeats. The verify-prerequisites Check 11 only catches Lambda↔SSM divergence, not SSM↔TF_VAR divergence (TF_VAR values aren't readable via API), so this discipline must be operator-enforced.
+- **Always run `verify-prerequisites.sh` after any GitHub App operational change.** Catches the three-level chain misalignment in one shot.
 - **Document the new Installation ID alongside the operational change** that caused the re-install (e.g., in the PR description or runbook entry). Don't rely on `aws ssm get-parameter` as the canonical record.
 - **Don't transfer App ownership or change install scope mid-provisioning-workflow.** Workflows in flight will fail mid-execution with auth errors. Wait for active workflows to drain.
 
@@ -958,6 +1005,88 @@ For `IronforgeTerraformOutputError` (apply succeeded but output extraction faile
 
 - **Lock contention.** If `CleanupOnFailure` is still running, `terraform init` against the same state will block on the DynamoDB lock (`ironforge-terraform-locks` table — wait, that's the IRONFORGE-platform lock table; per-service state uses S3-native conditional writes via `use_lockfile = true` per the deprecated `dynamodb_table` migration). If the Lambda crashed mid-apply, the lock may persist as `.tflock` next to the state file. Verify with `aws s3 ls "s3://${TFSTATE_BUCKET}/services/${SERVICE_ID}/"`. Force-unlock by deleting the `.tflock` object — but ONLY after confirming no Lambda is currently running against this service.
 - **Don't rerun the SFN execution against partial state.** SFN's `executionName` is naturally idempotent on jobId — restarting the same execution would re-fire `validate-inputs`, `create-repo` (which would 409 on existing repo), `generate-code` (which would conflict on existing main branch unless our jobId marker matches), and finally `run-terraform` (which would re-attempt apply against existing state). The downstream conflict-detection generally handles this safely, but the cleaner path is: complete CleanupOnFailure first, then start a NEW provisioning execution with a NEW jobId.
+
+---
+
+## 11. Synthetic test user for dev verification
+
+Procedural entry, not incident response — covers creating a synthetic Cognito user for end-to-end verification flows (first `POST /api/services` kickoff, drift-detector verification, demo walkthroughs) and minting an access token without weakening the dev Cognito client's auth flow config.
+
+### Why synthetic, not a real email
+
+The dev pool's app client is intentionally tight: PKCE-only public client, `ALLOW_USER_SRP_AUTH` + `ALLOW_REFRESH_TOKEN_AUTH` only, no admin password flow (see `infra/modules/cognito/main.tf`). Adding `ALLOW_ADMIN_USER_PASSWORD_AUTH` for verification convenience would weaken the surface for a one-off need; using a real email as a fixture invites accumulated test artifacts, accidental email spam from misconfigurations, and exposure in portfolio materials. A synthetic user under the RFC 2606-reserved `.test` TLD avoids both.
+
+### Creating the user
+
+Convention: `e2e-verify-NNN@ironforge.test`. Numeric suffix scales to additional test users.
+
+Generate a strong password meeting the dev pool policy (12+ chars, upper, lower, numbers; symbols not required):
+
+```bash
+openssl rand -base64 18 | tr -d '\n' && echo 'Aa1'
+```
+
+Capture the output. Then create the user with email auto-verified and the welcome-email suppressed (the address is non-routable — a delivery attempt would bounce):
+
+```bash
+aws cognito-idp admin-create-user --user-pool-id us-east-1_vnvU5BYwy --username e2e-verify-001@ironforge.test --user-attributes Name=email,Value=e2e-verify-001@ironforge.test Name=email_verified,Value=true --message-action SUPPRESS
+```
+
+Set the password as permanent (skips the FORCE_CHANGE_PASSWORD challenge — required, otherwise `mint-test-token` will fail with that exact error):
+
+```bash
+aws cognito-idp admin-set-user-password --user-pool-id us-east-1_vnvU5BYwy --username e2e-verify-001@ironforge.test --password '<password-from-above>' --permanent
+```
+
+Confirm `UserStatus: CONFIRMED`:
+
+```bash
+aws cognito-idp admin-get-user --user-pool-id us-east-1_vnvU5BYwy --username e2e-verify-001@ironforge.test --query 'UserStatus'
+```
+
+### Minting an access token
+
+Use `pnpm --silent mint-test-token` (see `scripts/mint-test-token.ts`). Performs SRP via `amazon-cognito-identity-js` — the only auth flow the dev client allows.
+
+Required env vars:
+
+- `COGNITO_USER_POOL_ID` — `us-east-1_vnvU5BYwy` for dev
+- `COGNITO_CLIENT_ID` — `5q5dvippbnq8c7msupj1pi05e6` for dev
+- `COGNITO_USERNAME` — the synthetic user
+- `COGNITO_PASSWORD` — the permanent password
+
+Mint a single token (token to stdout, progress + expiry to stderr):
+
+```bash
+COGNITO_USER_POOL_ID=us-east-1_vnvU5BYwy COGNITO_CLIENT_ID=5q5dvippbnq8c7msupj1pi05e6 COGNITO_USERNAME=e2e-verify-001@ironforge.test COGNITO_PASSWORD='<password>' pnpm --silent mint-test-token
+```
+
+Capture into a shell variable for composing `curl` calls:
+
+```bash
+TOKEN=$(COGNITO_USER_POOL_ID=us-east-1_vnvU5BYwy COGNITO_CLIENT_ID=5q5dvippbnq8c7msupj1pi05e6 COGNITO_USERNAME=e2e-verify-001@ironforge.test COGNITO_PASSWORD='<password>' pnpm --silent mint-test-token 2>/dev/null)
+```
+
+Access tokens are 30-minute TTL per `infra/modules/cognito/main.tf`. Re-mint as needed.
+
+### Common mint failures
+
+| Error code | Cause | Fix |
+|---|---|---|
+| `UserNotFoundException` | User wasn't created in this pool | Re-run admin-create-user step |
+| `NotAuthorizedException` | Wrong password, OR client not enabled for `ALLOW_USER_SRP_AUTH` | Verify password; check `aws cognito-idp describe-user-pool-client ... --query 'UserPoolClient.ExplicitAuthFlows'` includes `ALLOW_USER_SRP_AUTH` |
+| `PasswordResetRequiredException` | Pool admin reset password without `--permanent` | Re-run admin-set-user-password with `--permanent` |
+| `FORCE_CHANGE_PASSWORD` (surfaced as `newPasswordRequired` callback) | Created via admin-create-user without follow-up admin-set-user-password --permanent | Run admin-set-user-password with `--permanent` |
+
+The script surfaces each of these with the exact remediation command — no need to consult this table during the failure path itself.
+
+### Cleanup
+
+Synthetic users persist across verification runs and don't accrue cost. Delete only when rotating to a new naming scheme or decommissioning the dev pool:
+
+```bash
+aws cognito-idp admin-delete-user --user-pool-id us-east-1_vnvU5BYwy --username e2e-verify-001@ironforge.test
+```
 
 ---
 

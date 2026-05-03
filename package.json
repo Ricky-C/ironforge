@@ -12,7 +12,12 @@
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",
     "test": "pnpm -r run test",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "mint-test-token": "tsx scripts/mint-test-token.ts"
+  },
+  "devDependencies": {
+    "amazon-cognito-identity-js": "^6.3.12",
+    "tsx": "^4.19.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
