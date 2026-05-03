@@ -133,6 +133,55 @@ data "aws_iam_policy_document" "permission_boundary" {
     ]
   }
 
+  # Per-service origin buckets. The run-terraform Lambda creates and
+  # manages these buckets as part of static-site template apply.
+  # Object operations (s3:GetObject/PutObject/DeleteObject) are
+  # intentionally excluded — content uploads happen via GitHub Actions
+  # using a per-service deploy role, NOT the workflow Lambda, so the
+  # workflow has no need to read/write objects in tenant buckets.
+  #
+  # Resource pattern matches the static-site template's bucket naming
+  # exactly. When additional templates land (Phase 2+) with different
+  # bucket suffixes, this statement will need extension to cover them
+  # — keeping the suffix explicit avoids granting the workflow Lambda
+  # bucket-lifecycle access on every ironforge-svc-* bucket pattern,
+  # which would broaden the surface beyond what's needed.
+  #
+  # Discovered during Phase 1 verification round 7 — terraform apply
+  # failed with s3:CreateBucket AccessDenied with the exact error
+  # message "no permissions boundary allows the s3:CreateBucket action".
+  # Same architectural shape as the AllowTFStateBucketAccess case in
+  # round 6: identity policy grants were correct (S3BucketCRUD +
+  # S3BucketVersioning + ... in run_terraform_extra_statements), but
+  # the boundary v5 covered only object-level operations on artifacts
+  # and tfstate — not bucket-level lifecycle on tenant buckets.
+  statement {
+    sid    = "AllowProvisionedBucketLifecycle"
+    effect = "Allow"
+    actions = [
+      "s3:CreateBucket",
+      "s3:DeleteBucket",
+      "s3:GetBucketLocation",
+      "s3:GetBucketTagging",
+      "s3:PutBucketTagging",
+      "s3:ListBucket",
+      "s3:GetBucketVersioning",
+      "s3:PutBucketVersioning",
+      "s3:GetEncryptionConfiguration",
+      "s3:PutEncryptionConfiguration",
+      "s3:GetBucketPublicAccessBlock",
+      "s3:PutBucketPublicAccessBlock",
+      "s3:GetLifecycleConfiguration",
+      "s3:PutLifecycleConfiguration",
+      "s3:GetBucketPolicy",
+      "s3:PutBucketPolicy",
+      "s3:DeleteBucketPolicy",
+    ]
+    resources = [
+      "arn:aws:s3:::ironforge-svc-*-origin",
+    ]
+  }
+
   statement {
     sid    = "AllowRoute53OnIronforgeZone"
     effect = "Allow"
