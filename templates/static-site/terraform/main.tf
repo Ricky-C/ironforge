@@ -28,6 +28,26 @@ locals {
 resource "aws_s3_bucket" "origin" {
   bucket = local.bucket_name
 
+  # force_destroy = true so terraform can empty the bucket (including all
+  # object versions) on destroy, which is the deprovisioning code path
+  # (DELETE /api/services/:id, Phase 1.5). Without it, terraform's
+  # DeleteBucket call returns 409 BucketNotEmpty whenever the deployed
+  # site has any content + versioning enabled (which is always, see
+  # aws_s3_bucket_versioning below).
+  #
+  # Trade-off acknowledged: a stray terraform destroy outside the
+  # deprovisioning workflow would also wipe the user's content. Mitigation
+  # is that terraform destroy can only run via the run-terraform Lambda,
+  # which is only invoked by (a) cleanup-on-failure during provisioning
+  # failure and (b) the deprovisioning state machine. Both paths are
+  # already user/operator-initiated; force_destroy aligns with the user-
+  # explicit-DELETE intent.
+  #
+  # Discovered during Phase 1.5 PR 6 verification: deprovisioning DELETE
+  # against portfolio-demo failed at terraform destroy with BucketNotEmpty
+  # because the bucket had 4 object versions from the live site.
+  force_destroy = true
+
   tags = local.common_tags
 }
 
