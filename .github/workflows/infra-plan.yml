@@ -128,6 +128,19 @@ jobs:
         working-directory: infra/envs/${{ matrix.composition }}
         run: terraform init -backend-config=backend.hcl -input=false
 
+      - name: Write CI-managed auto.tfvars (list-typed vars)
+        # See infra-apply.yml for the full rationale. Brief summary:
+        # terraform 1.10+ rejects list-typed TF_VAR_* env vars across the
+        # internal plan->apply boundary; tfvars files don't trip that
+        # check. Written into both compositions' workspaces; dev doesn't
+        # declare budget_action_target_roles (harmless undeclared-variable
+        # warning), shared composition consumes it.
+        working-directory: infra/envs/${{ matrix.composition }}
+        run: |
+          cat > ci.auto.tfvars <<'EOF'
+          budget_action_target_roles = ["ironforge-ci-apply", "ironforge-dev-run-terraform-execution"]
+          EOF
+
       - name: Terraform plan
         working-directory: infra/envs/${{ matrix.composition }}
         env:
@@ -135,11 +148,6 @@ jobs:
           TF_VAR_github_org_name: ${{ secrets.TF_VAR_GITHUB_ORG_NAME }}
           TF_VAR_github_app_id: ${{ secrets.TF_VAR_GITHUB_APP_ID }}
           TF_VAR_github_app_installation_id: ${{ secrets.TF_VAR_GITHUB_APP_INSTALLATION_ID }}
-          # See infra-apply.yml for the full rationale on this variable.
-          # Set unconditionally across the matrix; dev composition doesn't
-          # declare it (terraform emits a harmless "value for undeclared
-          # variable" warning), shared composition consumes it.
-          TF_VAR_budget_action_target_roles: '["ironforge-ci-apply", "ironforge-dev-run-terraform-execution"]'
         run: |
           terraform plan -input=false -no-color -out=tfplan
           terraform show -no-color tfplan > plan.txt
