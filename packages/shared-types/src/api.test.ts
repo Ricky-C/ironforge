@@ -22,6 +22,10 @@ describe("ApiErrorCodeSchema", () => {
     expect(API_ERROR_CODES).toContain("INVALID_INPUTS");
     expect(API_ERROR_CODES).toContain("CONFLICT");
   });
+
+  it("includes DELETE /api/services/:id error codes (Phase 1.5)", () => {
+    expect(API_ERROR_CODES).toContain("SERVICE_IN_FLIGHT");
+  });
 });
 
 describe("ApiErrorSchema", () => {
@@ -44,6 +48,23 @@ describe("ApiErrorSchema", () => {
   it("rejects when message is missing", () => {
     const result = ApiErrorSchema.safeParse({ code: "INTERNAL" });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts SERVICE_IN_FLIGHT with currentState", () => {
+    const result = ApiErrorSchema.safeParse({
+      code: "SERVICE_IN_FLIGHT",
+      message: "Service is currently provisioning.",
+      currentState: "provisioning",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts errors without optional currentState (back-compat for existing codes)", () => {
+    const result = ApiErrorSchema.safeParse({
+      code: "INTERNAL",
+      message: "internal server error",
+    });
+    expect(result.success).toBe(true);
   });
 });
 

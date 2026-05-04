@@ -19,13 +19,15 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   region     = data.aws_region.current.name
 
-  # State machine ARN computed up-front so the API Lambda can scope its
-  # states:StartExecution grant before the state machine resource exists
-  # (terraform graph dependency: API Lambda role → state machine name,
-  # state machine → 8 task Lambda ARNs). Naming has to match the
-  # step-functions module's local.state_machine_name exactly.
-  state_machine_name = "ironforge-${var.environment}-provisioning"
-  state_machine_arn  = "arn:aws:states:${local.region}:${local.account_id}:stateMachine:${local.state_machine_name}"
+  # State machine ARNs computed up-front so the API Lambda can scope its
+  # states:StartExecution grants before the state machine resources exist
+  # (terraform graph dependency: API Lambda role → state machine names,
+  # state machines → task Lambda ARNs). Naming has to match the
+  # step-functions module's local.<...>_state_machine_name exactly.
+  state_machine_name                = "ironforge-${var.environment}-provisioning"
+  state_machine_arn                 = "arn:aws:states:${local.region}:${local.account_id}:stateMachine:${local.state_machine_name}"
+  deprovisioning_state_machine_name = "ironforge-${var.environment}-deprovisioning"
+  deprovisioning_state_machine_arn  = "arn:aws:states:${local.region}:${local.account_id}:stateMachine:${local.deprovisioning_state_machine_name}"
 }
 
 module "dynamodb" {
@@ -827,11 +829,12 @@ module "api_lambda" {
   source_dir = "${path.root}/../../../services/api/dist"
 
   environment_variables = {
-    DYNAMODB_TABLE_NAME            = module.dynamodb.table_name
-    PROVISIONING_STATE_MACHINE_ARN = local.state_machine_arn
-    IRONFORGE_ENV                  = var.environment
-    POWERTOOLS_SERVICE_NAME        = "ironforge-api"
-    LOG_LEVEL                      = "INFO"
+    DYNAMODB_TABLE_NAME              = module.dynamodb.table_name
+    PROVISIONING_STATE_MACHINE_ARN   = local.state_machine_arn
+    DEPROVISIONING_STATE_MACHINE_ARN = local.deprovisioning_state_machine_arn
+    IRONFORGE_ENV                    = var.environment
+    POWERTOOLS_SERVICE_NAME          = "ironforge-api"
+    LOG_LEVEL                        = "INFO"
   }
 
   iam_grants = {
@@ -847,6 +850,15 @@ module "api_lambda" {
         sid       = "StartProvisioningExecution"
         actions   = ["states:StartExecution"]
         resources = [local.state_machine_arn]
+      },
+      {
+        # Phase 1.5 — DELETE /api/services/:id kicks off the deprovisioning
+        # state machine. Same naming convention as the provisioning ARN
+        # constructed in locals (the step-functions module's deprovisioning
+        # state machine resource uses the same name format).
+        sid       = "StartDeprovisioningExecution"
+        actions   = ["states:StartExecution"]
+        resources = [local.deprovisioning_state_machine_arn]
       },
     ]
   }

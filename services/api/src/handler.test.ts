@@ -56,15 +56,33 @@ const callPath = (path: string, claims: unknown) =>
     event: eventWithClaims(claims),
   } as AuthEnv["Bindings"]);
 
+const callMethod = (
+  path: string,
+  method: "GET" | "DELETE" | "POST",
+  claims: unknown,
+) =>
+  createApp().request(path, { method }, {
+    event: eventWithClaims(claims),
+  } as AuthEnv["Bindings"]);
+
 const ORIGINAL_TABLE_NAME = process.env["DYNAMODB_TABLE_NAME"];
+const ORIGINAL_DEPROVISION_ARN = process.env["DEPROVISIONING_STATE_MACHINE_ARN"];
+const TEST_DEPROVISION_ARN =
+  "arn:aws:states:us-east-1:000000000000:stateMachine:ironforge-test-deprovisioning";
 beforeAll(() => {
   process.env["DYNAMODB_TABLE_NAME"] = "ironforge-test";
+  process.env["DEPROVISIONING_STATE_MACHINE_ARN"] = TEST_DEPROVISION_ARN;
 });
 afterAll(() => {
   if (ORIGINAL_TABLE_NAME === undefined) {
     delete process.env["DYNAMODB_TABLE_NAME"];
   } else {
     process.env["DYNAMODB_TABLE_NAME"] = ORIGINAL_TABLE_NAME;
+  }
+  if (ORIGINAL_DEPROVISION_ARN === undefined) {
+    delete process.env["DEPROVISIONING_STATE_MACHINE_ARN"];
+  } else {
+    process.env["DEPROVISIONING_STATE_MACHINE_ARN"] = ORIGINAL_DEPROVISION_ARN;
   }
 });
 beforeEach(() => {
@@ -393,6 +411,105 @@ describe("GET /api/services/:id — failure modes", () => {
     ddbMock.on(GetCommand).rejects(new Error("simulated DynamoDB failure"));
     const res = await callPath(`/api/services/${SERVICE_ID}`, accessTokenClaims());
     expect(res.status).toBe(500);
+  });
+});
+
+// ===========================================================================
+// DELETE /api/services/:id — route-level coverage (lib logic in
+// services/api/src/lib/deprovision-service.test.ts)
+// ===========================================================================
+
+describe("DELETE /api/services/:id — validation + 404 envelope parity", () => {
+  it.each(["abc", "not-a-uuid", "12345", "11111111-1111-4111-8111"])(
+    "rejects bad id %j with 400 INVALID_REQUEST",
+    async (badId) => {
+      const res = await callMethod(
+        `/api/services/${badId}`,
+        "DELETE",
+        accessTokenClaims(),
+      );
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe("INVALID_REQUEST");
+    },
+  );
+
+  it("rejects unauthenticated DELETE with 401 (no path-leak via 404)", async () => {
+    const app = createApp();
+    const res = await app.request(
+      `/api/services/${SERVICE_ID}`,
+      { method: "DELETE" },
+      { event: { requestContext: { requestId: "x" } } } as AuthEnv["Bindings"],
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 NOT_FOUND when item does not exist", async () => {
+    ddbMock.on(GetCommand).resolves({ Item: undefined });
+    const res = await callMethod(
+      `/api/services/${SERVICE_ID}`,
+      "DELETE",
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "service not found" },
+    });
+  });
+
+  it("returns 404 with byte-identical envelope when service is found-but-not-owned", async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: sampleItem({ ownerId: OTHER_SUB }),
+    });
+    const res = await callMethod(
+      `/api/services/${SERVICE_ID}`,
+      "DELETE",
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "service not found" },
+    });
+  });
+
+  it("returns 404 NOT_FOUND when service is already archived (don't leak existence)", async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: sampleItem({
+        status: "archived",
+        archivedAt: TIMESTAMP,
+      }),
+    });
+    const res = await callMethod(
+      `/api/services/${SERVICE_ID}`,
+      "DELETE",
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("DELETE /api/services/:id — 409 SERVICE_IN_FLIGHT", () => {
+  it("returns 409 with currentState when service is provisioning", async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: sampleItem({
+        status: "provisioning",
+        jobId: "44444444-4444-4444-8444-444444444444",
+        currentJobId: "44444444-4444-4444-8444-444444444444",
+      }),
+    });
+    const res = await callMethod(
+      `/api/services/${SERVICE_ID}`,
+      "DELETE",
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as {
+      error: { code: string; currentState: string };
+    };
+    expect(body.error.code).toBe("SERVICE_IN_FLIGHT");
+    expect(body.error.currentState).toBe("provisioning");
   });
 });
 

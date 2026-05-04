@@ -24,6 +24,11 @@ export const API_ERROR_CODES = [
   "UNKNOWN_TEMPLATE",
   "INVALID_INPUTS",
   "CONFLICT",
+  // DELETE /api/services/:id-specific (Phase 1.5):
+  //   - SERVICE_IN_FLIGHT : Service is in pending or provisioning. DELETE
+  //                         is not available until terminal state. Phase 2
+  //                         may add cancellation; for now the user waits.
+  "SERVICE_IN_FLIGHT",
   "NOT_FOUND",
   "INTERNAL",
 ] as const;
@@ -31,9 +36,24 @@ export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 
 export const ApiErrorCodeSchema = z.enum(API_ERROR_CODES);
 
+// Optional code-specific context fields. Currently only SERVICE_IN_FLIGHT
+// populates currentState; other codes leave it absent. Adding code-specific
+// fields here (rather than a generic `details: Record<string, unknown>`)
+// keeps the API response shape discoverable from the schema — clients that
+// switch on `code` can read the relevant fields with full type safety.
+//
+// Why no currentStep / estimatedRemainingMinutes on SERVICE_IN_FLIGHT yet:
+// Job.currentStep is currently set once at kickoff (create-service.ts) and
+// not updated by task Lambdas as the workflow progresses, so an in-flight
+// rejection would always report `validate-inputs` regardless of actual
+// progress. Adding meaningful currentStep tracking is tracked in tech-debt.
 export const ApiErrorSchema = z.object({
   code: ApiErrorCodeSchema,
   message: z.string(),
+  // SERVICE_IN_FLIGHT: the Service's current status (pending | provisioning
+  // | deprovisioning) so callers can distinguish "wait" from "already
+  // deprovisioning" without re-reading the Service.
+  currentState: z.string().optional(),
 });
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 
