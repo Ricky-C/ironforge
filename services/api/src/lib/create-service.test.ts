@@ -89,6 +89,44 @@ describe("createService — happy path", () => {
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(2);
   });
 
+  it("Service kickoff UpdateItem writes BOTH currentJobId and jobId in same expression", async () => {
+    // Regression guard for the create-service jobId-write bug
+    // (PR #80, "fix/create-service-write-jobid"). The pre-fix code
+    // wrote only currentJobId on the kickoff transition, leaving the
+    // schema-required `jobId` field unset on the Service row in DDB.
+    // GET /api/services/:id during the in-flight provisioning window
+    // would 500 with SERVICE_PARSE_FAILURE because
+    // ServiceProvisioningSchema's discriminated-union variant requires
+    // jobId. This assertion locks the kickoff write shape so the
+    // regression cannot return silently.
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    ddbMock.on(TransactWriteCommand).resolves({});
+    ddbMock.on(UpdateCommand).resolves({});
+    sfnMock.on(StartExecutionCommand).resolves({
+      executionArn: `${STATE_MACHINE_ARN.replace(":stateMachine:", ":execution:")}:eee`,
+      startDate: new Date(),
+    });
+
+    await createService({
+      tableName: TABLE,
+      stateMachineArn: STATE_MACHINE_ARN,
+      ownerId: OWNER,
+      body: validBody(),
+      idempotencyKey: undefined,
+    });
+
+    const updates = ddbMock.commandCalls(UpdateCommand);
+    // Service kickoff is the first of the two UpdateItems (Service then Job).
+    const serviceKickoff = updates[0]!.args[0].input;
+    expect(serviceKickoff.UpdateExpression).toContain("currentJobId = :jobId");
+    expect(serviceKickoff.UpdateExpression).toContain("jobId = :jobId");
+    // :jobId resolves to the same UUID for both — denormalized snapshot
+    // and operational pointer reference the same active Job.
+    const jobIdValue = serviceKickoff.ExpressionAttributeValues?.[":jobId"];
+    expect(typeof jobIdValue).toBe("string");
+    expect(jobIdValue).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
   it("response body shape is { service, job } with provisioning + running", async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
     ddbMock.on(TransactWriteCommand).resolves({});
