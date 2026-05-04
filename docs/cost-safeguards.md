@@ -284,7 +284,7 @@ aws iam get-user --user-name "$TEST_USER" 2>&1 | grep -q NoSuchEntity \
 - The deny policy is targeted — non-listed actions still pass (Step 4d).
 - The procedure leaves no residue (Step 5d).
 
-**What was not tested.** AWS Budgets' threshold-detection and role-assumption path is AWS-internal. The only ways to exercise it are (a) an actual budget breach or (b) a force-fire API for `AUTOMATIC` actions, which AWS does not provide. Accepted as outside our test surface.
+**What was not tested.** AWS Budgets' threshold-detection and role-assumption path is AWS-internal. The only ways to exercise it are (a) an actual budget breach or (b) a force-fire API for `AUTOMATIC` actions, which AWS does not provide. Accepted as outside our test surface; the explicitly-pushed verification of this path (Phase 4 — forced threshold breach via threshold lowering) is tracked in [`docs/tech-debt.md`](tech-debt.md) § "Phase 4: live threshold-trigger verification of cost-safeguards" with concrete completion triggers.
 
 **Cleanup on failure.** If the procedure fails at any step, run this block to return to a clean state. Idempotent — safe to re-run.
 
@@ -336,7 +336,7 @@ If the cleanup block also fails, the residual state is a single test user (`iron
 
 | Date | Account ID | Step 2a | Step 2b | Step 4a | Step 4b | Step 4c | Step 4d | Notes |
 |---|---|---|---|---|---|---|---|---|
-| _(first run pending)_ | | | | | | | | |
+| 2026-05-04 | 010438464240 | allowed | implicitDeny | explicitDeny | explicitDeny | explicitDeny | allowed | Phases 1-3 ✅; Phase 4 deferred. Operator: `iamadmin`. Full evidence: [`cost-safeguards-verification-runs/2026-05-04.md`](cost-safeguards-verification-runs/2026-05-04.md). |
 
 ### 4. Manual reversal procedure (real breach)
 
