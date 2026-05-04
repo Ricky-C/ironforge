@@ -94,6 +94,32 @@ jobs:
         working-directory: infra/envs/shared
         run: terraform init -backend-config=backend.hcl -input=false
 
+      - name: Write CI-managed auto.tfvars (list-typed vars)
+        # terraform 1.10+ rejects list/tuple TF_VAR_* env vars as
+        # conflicting with the in-memory saved plan that `terraform apply`
+        # builds: the saved plan freezes the value's tuple-vs-list type,
+        # and re-evaluating the env var at apply produces a structurally-
+        # equal but type-tagged-differently tuple, which trips the "Can't
+        # change variable when applying a saved plan" guard. Scalar TF_VAR_*
+        # env vars (alert_email, github_*) are unaffected and stay below.
+        # List-typed values move to a tfvars file (auto-loaded by the
+        # *.auto.tfvars naming, read consistently across plan and apply).
+        # File matched by repo .gitignore's `*.tfvars` rule.
+        #
+        # budget_action_target_roles enables the cost-safeguards $50 budget
+        # action by populating the role list the deny policy attaches to
+        # at breach. Single-source via this workflow file (PR-tracked,
+        # git-visible); local terraform.tfvars stays empty to avoid
+        # oscillating state. Role names are non-sensitive (already in
+        # `aws iam list-roles`) so a literal is preferred over a Secret.
+        # To add/remove a target principal, edit the heredoc value below
+        # in both apply + plan workflows.
+        working-directory: infra/envs/shared
+        run: |
+          cat > ci.auto.tfvars <<'EOF'
+          budget_action_target_roles = ["ironforge-ci-apply", "ironforge-dev-run-terraform-execution"]
+          EOF
+
       - name: Terraform apply
         working-directory: infra/envs/shared
         env:
@@ -101,15 +127,6 @@ jobs:
           TF_VAR_github_org_name: ${{ secrets.TF_VAR_GITHUB_ORG_NAME }}
           TF_VAR_github_app_id: ${{ secrets.TF_VAR_GITHUB_APP_ID }}
           TF_VAR_github_app_installation_id: ${{ secrets.TF_VAR_GITHUB_APP_INSTALLATION_ID }}
-          # budget_action_target_roles enables the cost-safeguards $50 budget
-          # action by populating the role list the deny policy attaches to at
-          # breach. Single-source via the workflow file (PR-tracked, git-
-          # visible); local terraform.tfvars stays empty to avoid oscillating
-          # state between operator and CI applies. Role names are non-
-          # sensitive (already in `aws iam list-roles` output) so a literal
-          # is preferred over a GitHub Secret. To add/remove a target
-          # principal, edit this value in both apply + plan workflows.
-          TF_VAR_budget_action_target_roles: '["ironforge-ci-apply", "ironforge-dev-run-terraform-execution"]'
         run: terraform apply -input=false -auto-approve
 
   apply-dev:

@@ -2,16 +2,22 @@
 
 alert_email = "you@example.com"
 
-# budget_action_target_roles is managed via CI workflow env vars
-# (TF_VAR_budget_action_target_roles in infra-apply.yml + infra-plan.yml).
-# Do NOT populate locally — would conflict with CI's literal during apply,
-# causing oscillating state between operator and CI runs. Value as of
-# 2026-05-04: ["ironforge-ci-apply", "ironforge-dev-run-terraform-execution"].
-# To add or remove a target principal, edit the workflow files (PR-tracked,
-# single-source) — not this file.
+# budget_action_target_roles is managed via a CI-written ci.auto.tfvars
+# (the "Write CI-managed auto.tfvars" step in infra-apply.yml +
+# infra-plan.yml). Do NOT populate locally — would conflict with CI's
+# literal during apply, causing oscillating state between operator and CI
+# runs. Value as of 2026-05-04:
+#   ["ironforge-ci-apply", "ironforge-dev-run-terraform-execution"].
+# To add or remove a target principal, edit the heredoc in both workflow
+# files (PR-tracked, single-source) — not this file.
+#
+# Why a tfvars file rather than a TF_VAR_* env var: terraform 1.10+
+# rejects list-typed env vars across the internal plan->apply boundary
+# (saved-plan type-mismatch check). Tfvars files are read consistently
+# at both phases. Scalar variables remain fine via TF_VAR_*.
 #
 # budget_action_target_users and _groups follow the same pattern; if
-# populated, manage them via the same workflow env vars.
+# populated, manage them via the same ci.auto.tfvars heredoc.
 
 # GitHub App + org identifiers. Captured during the one-time GitHub org +
 # App registration (docs/runbook.md § "GitHub org + App registration").
