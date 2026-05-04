@@ -1,33 +1,28 @@
-// cleanup-on-failure: minimum-viable destroy chain (Phase 1.5).
+// cleanup-on-failure: best-effort destroy chain + DDB status writes.
 //
-// Replaces the PR-C.2 stub. On workflow failure, attempts three best-effort
-// cleanup phases in order, then delegates to the existing cleanupStub for
-// DDB status writes (Service/Job/JobStep transitions). Each phase is
-// independently failure-tolerant: log + skip on error, never block the
-// next phase or the status writes.
+// On workflow failure, runs the destroy chain (terraform destroy →
+// GitHub repo → tfstate) via the shared @ironforge/destroy-chain
+// package, then delegates to cleanupStub for the DDB transitions
+// (Service: provisioning → failed, Job: running → failed, JobStep
+// upserts).
 //
-// Phases:
-//   1. terraform destroy (synchronous Lambda invoke of run-terraform with
-//      action="destroy"). Bounded to the destroy Lambda's 10-min timeout;
-//      CloudFront-distribution destroys may exceed this and fall back to
-//      manual cleanup (acknowledged Phase 2+ refactor).
-//   2. GitHub repo deletion via App-authenticated Octokit. 404 = success.
-//   3. Tfstate file deletion via S3 SDK. NoSuchKey = success.
+// Each phase is independently failure-tolerant: log + continue on
+// error, never block the next phase or the status writes. Failures
+// log WARN with "leaving resources for manual cleanup" because we
+// won't auto-retry — operators can re-run from the SFN console or
+// clean up manually using the runbook.
 //
 // See docs/tech-debt.md § "Cleanup-on-failure destroy chain (Promoted)"
 // for the deliberate scope cuts (concurrent-failure handling, alerting,
 // audit logging beyond CloudWatch ERROR lines).
 
-import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
-import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
-  buildAuthenticatedOctokit,
-  getInstallationToken,
-} from "@ironforge/shared-utils";
+  buildTfstateKey,
+  destroyTerraform,
+  deleteGithubRepo,
+  deleteTfstate,
+} from "@ironforge/destroy-chain";
 import { cleanupStub } from "@ironforge/workflow-stub-lib";
-
-const lambdaClient = new LambdaClient({});
-const s3Client = new S3Client({});
 
 const requireEnv = (name: string): string => {
   const value = process.env[name];
@@ -47,88 +42,90 @@ const log = (level: "INFO" | "WARN" | "ERROR", payload: Record<string, unknown>)
   console.log(JSON.stringify({ level, source: "cleanup-on-failure", ...payload }));
 };
 
-const runDestroy = async (event: unknown, jobId: string): Promise<void> => {
-  try {
-    const cmd = new InvokeCommand({
-      FunctionName: requireEnv("RUN_TERRAFORM_LAMBDA_NAME"),
-      InvocationType: "RequestResponse",
-      Payload: Buffer.from(JSON.stringify({ ...(event as object), action: "destroy" })),
-    });
-    const result = await lambdaClient.send(cmd);
-    if (result.FunctionError) {
-      const payloadStr = result.Payload
-        ? Buffer.from(result.Payload).toString("utf-8").slice(0, 1000)
-        : "";
-      log("WARN", {
-        message: "terraform destroy invocation returned FunctionError — leaving resources for manual cleanup",
-        jobId,
-        functionError: result.FunctionError,
-        payloadPreview: payloadStr,
-      });
-      return;
-    }
+const phaseTerraform = async (event: unknown, jobId: string): Promise<void> => {
+  const outcome = await destroyTerraform({
+    runTerraformLambdaName: requireEnv("RUN_TERRAFORM_LAMBDA_NAME"),
+    event,
+  });
+  if (outcome.status === "succeeded") {
     log("INFO", { message: "terraform destroy completed successfully", jobId });
-  } catch (err) {
-    log("WARN", {
-      message: "terraform destroy threw — leaving resources for manual cleanup",
-      jobId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    return;
   }
+  if (outcome.status === "skipped") {
+    log("INFO", { message: "terraform destroy skipped", jobId, reason: outcome.reason });
+    return;
+  }
+  if (outcome.failureKind === "function-error") {
+    log("WARN", {
+      message: "terraform destroy invocation returned FunctionError — leaving resources for manual cleanup",
+      jobId,
+      functionError: outcome.functionError,
+      payloadPreview: outcome.payloadPreview,
+    });
+    return;
+  }
+  log("WARN", {
+    message: "terraform destroy threw — leaving resources for manual cleanup",
+    jobId,
+    error: outcome.error,
+  });
 };
 
-const deleteGitHubRepo = async (serviceName: string, jobId: string): Promise<void> => {
-  try {
-    const { token } = await getInstallationToken({
+const phaseGithubRepo = async (serviceName: string, jobId: string): Promise<void> => {
+  const outcome = await deleteGithubRepo({
+    owner: requireEnv("GITHUB_ORG_NAME"),
+    repo: serviceName,
+    appAuth: {
       secretArn: requireEnv("GITHUB_APP_SECRET_ARN"),
       appId: requireEnv("GITHUB_APP_ID"),
       installationId: requireEnv("GITHUB_APP_INSTALLATION_ID"),
-    });
-    const octokit = buildAuthenticatedOctokit({ token });
-    await octokit.rest.repos.delete({
-      owner: requireEnv("GITHUB_ORG_NAME"),
-      repo: serviceName,
-    });
-    log("INFO", { message: "GitHub repo deleted", repo: serviceName, jobId });
-  } catch (err) {
-    const status = (err as { status?: number })?.status;
-    if (status === 404) {
+    },
+  });
+  if (outcome.status === "succeeded") {
+    if (outcome.detail === "already-absent") {
       log("INFO", { message: "GitHub repo already absent (404)", repo: serviceName, jobId });
-      return;
+    } else {
+      log("INFO", { message: "GitHub repo deleted", repo: serviceName, jobId });
     }
-    log("WARN", {
-      message: "GitHub repo delete failed — leaving for manual cleanup",
-      repo: serviceName,
-      jobId,
-      status,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    return;
   }
+  if (outcome.status === "skipped") {
+    log("INFO", { message: "GitHub repo delete skipped", repo: serviceName, jobId, reason: outcome.reason });
+    return;
+  }
+  log("WARN", {
+    message: "GitHub repo delete failed — leaving for manual cleanup",
+    repo: serviceName,
+    jobId,
+    status: outcome.httpStatus,
+    error: outcome.error,
+  });
 };
 
-const deleteTfstate = async (serviceId: string, jobId: string): Promise<void> => {
-  const key = `services/${serviceId}/terraform.tfstate`;
-  try {
-    await s3Client.send(
-      new DeleteObjectCommand({
-        Bucket: requireEnv("TFSTATE_BUCKET"),
-        Key: key,
-      }),
-    );
-    log("INFO", { message: "tfstate file deleted", key, jobId });
-  } catch (err) {
-    const code = (err as { name?: string })?.name;
-    if (code === "NoSuchKey") {
+const phaseTfstate = async (serviceId: string, jobId: string): Promise<void> => {
+  const key = buildTfstateKey(serviceId);
+  const outcome = await deleteTfstate({
+    tfstateBucket: requireEnv("TFSTATE_BUCKET"),
+    serviceId,
+  });
+  if (outcome.status === "succeeded") {
+    if (outcome.detail === "already-absent") {
       log("INFO", { message: "tfstate file already absent", key, jobId });
-      return;
+    } else {
+      log("INFO", { message: "tfstate file deleted", key, jobId });
     }
-    log("WARN", {
-      message: "tfstate delete failed — leaving for manual cleanup",
-      key,
-      jobId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    return;
   }
+  if (outcome.status === "skipped") {
+    log("INFO", { message: "tfstate delete skipped", key, jobId, reason: outcome.reason });
+    return;
+  }
+  log("WARN", {
+    message: "tfstate delete failed — leaving for manual cleanup",
+    key,
+    jobId,
+    error: outcome.error,
+  });
 };
 
 export const handler = async (event: unknown): Promise<unknown> => {
@@ -148,21 +145,17 @@ export const handler = async (event: unknown): Promise<unknown> => {
     return cleanupStub(event);
   }
 
-  // Phase 1 — terraform destroy. Bounded best-effort.
-  await runDestroy(event, jobId);
+  // Phase ordering matters — see runDestroyChain comment for the full
+  // rationale. Briefly: terraform destroy reads tfstate (so tfstate
+  // must outlive it), GitHub repo deletion drops the OIDC-trust target
+  // (so terraform-managed deploy role must be torn down first).
 
-  // Phase 2 — GitHub repo. Bounded best-effort. Runs after destroy because
-  // the deploy IAM role's terraform-managed lifecycle should be cleaned up
-  // before its referenced repo is removed (avoids a transient state where
-  // the role exists but the repo it grants OIDC access for doesn't).
-  await deleteGitHubRepo(serviceName, jobId);
+  await phaseTerraform(event, jobId);
+  await phaseGithubRepo(serviceName, jobId);
+  await phaseTfstate(serviceId, jobId);
 
-  // Phase 3 — tfstate file. Last because terraform destroy reads the state
-  // to know what to destroy; deleting it earlier would force destroy into
-  // a no-op refresh path against an empty state.
-  await deleteTfstate(serviceId, jobId);
-
-  // Phase 4 — DDB status writes. Always runs regardless of upstream phase
-  // outcomes. cleanupStub is the existing PR-C.2 implementation.
+  // Phase 4 — DDB status writes. Always runs regardless of upstream
+  // phase outcomes. cleanupStub writes Service: provisioning → failed
+  // (failedWorkflow="provisioning") and Job: running → failed.
   return cleanupStub(event);
 };
