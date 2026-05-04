@@ -400,6 +400,43 @@ importers:
         specifier: ^4.1.5
         version: 4.1.5(@types/node@25.6.0)(vite@7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
 
+  services/workflow/deprovision-failed:
+    dependencies:
+      '@ironforge/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
+      '@ironforge/shared-utils':
+        specifier: workspace:*
+        version: link:../../../packages/shared-utils
+      zod:
+        specifier: ^4.4.1
+        version: 4.4.1
+    devDependencies:
+      '@aws-sdk/client-dynamodb':
+        specifier: ^3.1039.0
+        version: 3.1041.0
+      '@aws-sdk/lib-dynamodb':
+        specifier: ^3.1039.0
+        version: 3.1041.0(@aws-sdk/client-dynamodb@3.1041.0)
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      aws-sdk-client-mock:
+        specifier: ^4.1.0
+        version: 4.1.0
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.5(@types/node@25.6.0)(vite@7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
+
   services/workflow/finalize:
     dependencies:
       '@ironforge/shared-types':

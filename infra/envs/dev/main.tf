@@ -677,15 +677,111 @@ module "task_cleanup_on_failure" {
 }
 
 # ===========================================================================
-# Provisioning state machine
+# Phase 1.5 deprovisioning Lambdas
 # ===========================================================================
+#
+# Two new task Lambdas land alongside the provisioning fleet:
+#
+#   delete-external-resources — State 2 happy path of the deprovisioning
+#     SFN. Deletes GitHub repo + tfstate via @ironforge/destroy-chain
+#     primitives, then transitions Service deprovisioning -> archived
+#     and Job running -> succeeded. Throws on any sub-op failure so
+#     SFN's Catch routes to DeprovisionFailed.
+#
+#   deprovision-failed — terminal-failure handler for the deprovisioning
+#     SFN. Writes Service deprovisioning -> failed (failedWorkflow=
+#     "deprovisioning") and Job running -> failed. Does NOT re-run the
+#     destroy chain (would mask original failure / hit inconsistent
+#     partial-destroy state).
+#
+# State 1 of the deprovisioning SFN reuses module.task_run_terraform
+# above with action="destroy" injected via SFN Parameters.
+
+module "task_delete_external_resources" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-delete-external-resources"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/delete-external-resources/dist"
+
+  # Env vars: DDB + GitHub App identifiers (for repo deletion) + tfstate
+  # bucket (for state-file deletion). Mirrors cleanup-on-failure's env
+  # set minus RUN_TERRAFORM_LAMBDA_NAME — this Lambda does NOT invoke
+  # run-terraform (State 1 of the SFN owns that).
+  environment_variables = merge(local.task_lambda_env, {
+    TFSTATE_BUCKET             = data.terraform_remote_state.shared.outputs.tfstate_dev_bucket_name
+    GITHUB_APP_SECRET_ARN      = data.terraform_remote_state.shared.outputs.github_app_secret_arn
+    GITHUB_APP_ID              = data.aws_ssm_parameter.github_app_id.value
+    GITHUB_APP_INSTALLATION_ID = data.aws_ssm_parameter.github_app_installation_id.value
+    GITHUB_ORG_NAME            = data.aws_ssm_parameter.github_org_name.value
+  })
+
+  iam_grants = {
+    dynamodb_read  = local.task_lambda_iam_grants.dynamodb_read
+    dynamodb_write = local.task_lambda_iam_grants.dynamodb_write
+    extra_statements = [
+      # GitHub App auth — same shape as create-repo / cleanup-on-failure.
+      {
+        sid       = "GetGitHubAppSecret"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+      },
+      {
+        sid       = "DecryptGitHubAppSecret"
+        actions   = ["kms:Decrypt"]
+        resources = [data.terraform_remote_state.shared.outputs.github_app_kms_key_arn]
+        conditions = [
+          {
+            test     = "StringEquals"
+            variable = "kms:EncryptionContext:SecretARN"
+            values   = [data.terraform_remote_state.shared.outputs.github_app_secret_arn]
+          },
+        ]
+      },
+      # tfstate file deletion. Scoped to services/* prefix (same as
+      # run-terraform's S3TFStateObjectAccess and cleanup-on-failure's
+      # DeleteTFStateForService).
+      {
+        sid       = "DeleteTFStateForService"
+        actions   = ["s3:DeleteObject"]
+        resources = ["${data.terraform_remote_state.shared.outputs.tfstate_dev_bucket_arn}/services/*"]
+      },
+    ]
+  }
+}
+
+module "task_deprovision_failed" {
+  source = "../../modules/lambda"
+
+  function_name           = "ironforge-${var.environment}-deprovision-failed"
+  environment             = var.environment
+  permission_boundary_arn = data.terraform_remote_state.shared.outputs.permission_boundary_arn
+  source_dir              = "${path.root}/../../../services/workflow/deprovision-failed/dist"
+
+  # DDB-only Lambda. No external resources touched — the destroy chain
+  # is not re-run from this terminal handler (see the source comment in
+  # services/workflow/deprovision-failed/src/handle-event.ts for why).
+  environment_variables = local.task_lambda_env
+  iam_grants            = local.task_lambda_iam_grants
+}
+
+# ===========================================================================
+# State machines (provisioning + deprovisioning)
+# ===========================================================================
+# Module instance name is historical — it now houses BOTH state machines
+# (provisioning + deprovisioning) under one shared SFN role since both
+# share IAM patterns and security posture (Ironforge platform-side
+# control plane). Renaming the module instance would force Terraform to
+# destroy/recreate the provisioning state machine without a `moved`
+# block; not worth the diff noise for a cosmetic rename.
 
 module "provisioning_state_machine" {
   source = "../../modules/step-functions"
 
   environment = var.environment
 
-  task_lambda_arns = {
+  provisioning_lambda_arns = {
     validate_inputs     = module.task_validate_inputs.function_arn
     create_repo         = module.task_create_repo.function_arn
     generate_code       = module.task_generate_code.function_arn
@@ -695,6 +791,14 @@ module "provisioning_state_machine" {
     wait_for_deploy     = module.task_wait_for_deploy.function_arn
     finalize            = module.task_finalize.function_arn
     cleanup_on_failure  = module.task_cleanup_on_failure.function_arn
+  }
+
+  deprovisioning_lambda_arns = {
+    # State 1 reuses run-terraform with action="destroy" injected at the
+    # SFN Parameters layer — same Lambda ARN as the provisioning bundle.
+    run_terraform             = module.task_run_terraform.function_arn
+    delete_external_resources = module.task_delete_external_resources.function_arn
+    deprovision_failed        = module.task_deprovision_failed.function_arn
   }
 }
 
