@@ -26,6 +26,14 @@ const IsoTimestampSchema = z
 // wildcard cert. Re-introduction would happen in tandem with the
 // per-service cert opt-in feature tracked in `docs/tech-debt.md` —
 // extending this enum is one of the change-set items there.
+//
+// The `deprovision-*` entries belong to the Phase 1.5 deprovisioning
+// state machine (DELETE /api/services/:id). Two-state SFN: terraform
+// destroy, then external-resources cleanup (GitHub repo + tfstate +
+// Service archive). `deprovision-failed` mirrors `cleanup-on-failure`
+// for the deprovisioning workflow's terminal-failure path. Steps live
+// in the same enum because they're partitioned by Job ID at read time
+// (each Job has its own JobStep rows).
 export const STEP_NAMES = [
   "validate-inputs",
   "create-repo",
@@ -36,6 +44,9 @@ export const STEP_NAMES = [
   "wait-for-deploy",
   "finalize",
   "cleanup-on-failure",
+  "deprovision-terraform",
+  "deprovision-external-resources",
+  "deprovision-failed",
 ] as const;
 export const StepNameSchema = z.enum(STEP_NAMES);
 export type StepName = (typeof STEP_NAMES)[number];
