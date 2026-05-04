@@ -190,6 +190,25 @@ When any of these fires, the ADR's original CodeBuild migration plan applies —
 
 **Tracked.** `docs/tech-debt.md` § "Future migration: run-terraform to CodeBuild execution model" updated with both the original timing triggers and these new container-Lambda-specific triggers.
 
+### 2026-05-04 (Phase 1.5 PR 6 verification) — 8-min apply trigger fired empirically; timeout bumped 600s → 900s, NOT CodeBuild migration (yet)
+
+**What triggered.** The first operational trigger from § "When to reconsider" — "Single apply exceeds 8 minutes" — fired during Phase 1.5 PR 6 verification when the re-POST of `portfolio-demo` saw `run-terraform` time out at the 600s ceiling mid-`aws_cloudfront_distribution` create. Phase 1's run #12 measured 3:43 (tracking the ADR's 3m47s nominal); this run was still in apply at 10:00. CloudFront tail latency was the variance source.
+
+**Why timeout bump and NOT CodeBuild migration.** The trigger fires when "the 4× headroom from the measured 3m47s drops to ~2× — the ceiling becomes a real concern under tail latency." The empirical observation (one apply at >10:00 vs nominal 3:47) confirms tail latency exists; it does NOT confirm that tail latency consistently exceeds 12 minutes (which would breach a 900s ceiling too). Bumping to Lambda's hard 900s ceiling buys 50% additional headroom against the same nominal — enough to absorb the observed variance. CodeBuild migration's 1-2 weeks of focused work doesn't yet earn itself against one observed timeout.
+
+**Trade-off acknowledged.** This consumes the remaining Lambda headroom. There is no further raw-timeout escalation available — the next time the trigger fires, the answer is migration, not another bump.
+
+**New triggers calibrated to the 900s ceiling:**
+
+- **Single apply exceeds 12 minutes (75% of new ceiling).** Same headroom-erosion logic at the new ceiling. CodeBuild migration warranted.
+- **Variance compresses headroom such that >5% of applies time out.** Statistical, not single-event. Operationally surfaces as cleanup-on-failure firing on a schedule rather than from real failures.
+- **Any future template's nominal apply exceeds 600s.** The static-site template's 3:47 leaves the ceiling well clear; a future template with stateful resources or longer chains might not.
+- **A second binary-footprint or compute-class constraint fires.** From the 2026-05-02 amendment's container Lambda triggers — image >5GB, cold-start user-visible, 2+ workflow Lambdas need container delivery, image build >5min.
+
+**Related verification-discovered concern (Phase 2 architectural).** The 600s timeout was the proximate cause but not the only finding. The destroy chain only handles resources visible in `terraform.tfstate`; resources created in-flight during a failed apply can land as orphans (no state record → invisible to destroy). PR 6's failed run left a CloudFront distribution + OAC orphan that required manual cleanup. Tracked separately in `docs/tech-debt.md` § "Phase 2: destroy chain doesn't handle in-flight resources." Architectural options (tag-based orphan detection, pre-apply state snapshots, refresh-then-destroy) listed there.
+
+**Where.** `infra/envs/dev/main.tf` § `module.task_run_terraform.timeout_seconds`; tech-debt entry on the in-flight-resource gap.
+
 ## Related
 
 - **ADR-002** — managed IAM policies. The template-derived IAM is a custom policy generated programmatically; this ADR establishes that programmatic generation as the canonical pattern when manifest-derived constraints exist.
