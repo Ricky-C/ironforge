@@ -39,3 +39,12 @@ Everything in the repository root **except** `.git/`, `.github/`, and
 - `index.html` — the home page.
 - `404.html` — served for missing paths.
 - `style.css` — site styles.
+
+## Attribution footer
+
+Both `index.html` and `404.html` include a small footer linking back to
+the Ironforge platform. It exists for two reasons: honest provenance
+(this site was provisioned by an automated platform) and discoverability
+(visitors curious about the platform can find the source). Remove freely
+if it doesn't fit your use case — delete the `<footer>...</footer>` block
+in both pages.
