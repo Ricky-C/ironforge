@@ -179,6 +179,21 @@ Each entry has:
 
 ### Terraform / AWS provider
 
+#### `force_destroy` on `aws_s3_bucket` is forward-only — config-only attributes don't sync via `terraform destroy` alone
+
+- **What:** When `force_destroy = true` is added to an `aws_s3_bucket` config that's already been applied without it, `terraform destroy` does NOT empty the bucket — it reads `force_destroy` from STATE (where it's `false`), not from the updated config. The destroy-time `Delete` handler in the AWS provider operates on `ResourceData` populated from state. To make a config-only attribute take effect, a `terraform apply` is required first to sync state with config; only after that can `terraform destroy` see the new value.
+- **Concrete impact (Phase 1.5):** `templates/static-site/terraform/main.tf`'s `aws_s3_bucket.origin` was missing `force_destroy = true` until PR #82. The fix is forward-only: services CREATED with the post-#82 template have `force_destroy=true` in state from day 1 and deprovision cleanly. Services created BEFORE #82 have `force_destroy=false` in state and need either (a) manual bucket-empty via AWS CLI before deprovision retry, or (b) a state-surgery step that updates the bucket attribute. Currently only `portfolio-demo` was in this state; we used (a) once. Going forward, no existing-services-without-force_destroy exist, so this is dormant.
+- **Why deferred:** No active impact post-Phase-1.5 verification. The class of bug only surfaces if (i) a config-only attribute is added to a resource AFTER initial creation, AND (ii) `terraform destroy` is the only intervening operation (no apply). For Ironforge specifically, the `run-terraform` Lambda only invokes `terraform destroy` for cleanup-on-failure or deprovisioning paths — not `apply` followed by destroy. So any future "add a config-only attribute that takes effect on destroy" change has the same class of issue.
+- **When to revisit (any one of):**
+  - **Adding another config-only destroy-time attribute** to a resource that's already been applied — e.g., adding `skip_final_snapshot=true` to an existing RDS instance, or `force_delete=true` to ECR repos that have images. Same pattern, same gap.
+  - **The next deprovisioning of a service that pre-dates a config change** — by definition there are no such services as of 2026-05-04, but if the platform persists across template bumps and a customer's old service hits a config change before its deprovision, the same fix path is needed.
+  - **Phase 2 multi-tenancy** — operators won't be on the hook to manually empty buckets per tenant.
+- **Action — implementation candidates:**
+  1. **Two-phase destroy in `run-terraform`**: before `terraform destroy`, run `terraform apply -refresh-only` and then `terraform apply -target=aws_s3_bucket.origin -auto-approve` to sync state with config for any config-only attributes. Trade-off: extra ~15-30s per destroy + risk of unintended apply-time changes if config has drifted from intent. Mitigated by `-target` scoping.
+  2. **AWS-SDK pre-destroy emptying** in `run-terraform` or in the destroy-chain package: detect bucket presence + non-empty, run the equivalent of `aws s3 rm --recursive` + delete-marker cleanup directly via SDK. Bypasses terraform's force_destroy entirely. Trade-off: re-implements a feature terraform already provides; harder to keep aligned with future bucket configs (e.g. ObjectLock).
+  3. **Forward-discipline only**: document that adding a config-only attribute mid-stream requires a manual apply pass. Acceptable for portfolio-scale single-template state; insufficient for multi-tenant.
+- **Where:** `services/workflow/run-terraform/src/handle-event.ts` (the destroy invocation site, line ~499); `templates/static-site/terraform/main.tf` (the bucket resource); discovery context in `project_phase1_5_verification_complete.md` § "Run 3" (memory).
+
 #### GSI `hash_key` / `range_key` deprecation
 
 - **What:** `hash_key` and `range_key` arguments on `global_secondary_index` blocks in `aws_dynamodb_table` are deprecated in AWS provider 6.x. **Verified by inspecting both schemas:** under our pinned `~> 5.70` (resolves to 5.100.0) the arguments are NOT deprecated; under 6.x they ARE deprecated, replaced by a `key_schema` nested block matching the AWS API shape. The IDE's terraform-ls fetches the latest registry schema (6.x), which is why warnings appear in the editor but not at apply time. Table-level `hash_key`/`range_key` remain non-deprecated in both versions; only the GSI/LSI nested-block versions are.
@@ -203,6 +218,23 @@ Each entry has:
 - **Where:** `infra/modules/dynamodb/main.tf` (GSI1 definition).
 
 ### Workflow / state machine
+
+#### Phase 2: destroy chain doesn't handle in-flight resources
+
+- **What:** `terraform destroy`'s cleanup is bounded by what's in state. If `terraform apply` fails partway (e.g., Lambda timeout mid-`aws_cloudfront_distribution` create), `terraform.tfstate` may not reflect what was actually created at the AWS API layer. Subsequent `terraform destroy` operates only on the persisted state and leaves AWS-side orphans. Same class of issue applies to any provider that returns a resource ID before the resource reaches its terminal state.
+- **Concrete impact (Phase 1.5 verification):** PR 6's re-POST of `portfolio-demo` timed out at 600s mid-CloudFront-create. Cleanup-on-failure's destroy chain ran but `terraform.tfstate` had no record of the distribution (state save happened post-OAC-create, pre-distribution-state-write). Destroy successfully cleaned Route53 + IAM + GitHub repo + tfstate file, but the CloudFront distribution + OAC + S3 bucket persisted as AWS orphans. Manual cleanup cost: ~10 min (disable distribution → wait for `Deployed` → delete distribution → delete OAC → empty + delete bucket). At portfolio scale (single tenant, low provisioning frequency, operator on hand) the manual cleanup is acceptable. At any larger scale it isn't.
+- **Why deferred:** Phase 1.5's scope was DELETE / deprovisioning. The orphan-handling gap surfaces only on apply failures, not normal operation. With the timeout bump landing in the same PR as this entry, the proximate trigger is mitigated; the architectural gap remains.
+- **When to revisit (any one of):**
+  - **Second observed orphan after the timeout bump** — the bump bought headroom but isn't a solution. Two failures with orphans signals the bump wasn't enough.
+  - **Multi-tenancy or higher provisioning rate** — operator-on-hand cleanup doesn't scale.
+  - **Compliance / accidental-cost sensitivity** — orphaned CloudFront distributions accrue ongoing baseline cost. A control plane that can leave orphans is a real concern at any non-portfolio scale.
+  - **Concurrent with the CodeBuild migration trigger** — if `run-terraform` is migrated per ADR-009, orphan handling would be a natural co-design item.
+- **Architectural options to evaluate at revisit:**
+  1. **Tag-based orphan detection** — every resource the platform provisions carries `ironforge-job-id`, `ironforge-service-id`, etc. (per CLAUDE.md § AWS Resource Conventions). After cleanup-on-failure's destroy phase, run a post-destroy scan via Resource Groups Tagging API filtered to the failed Job's tags; anything still present is an orphan. Delete via SDK or surface for operator action. Pro: leverages existing tagging convention. Con: implementing the SDK delete chain reimplements resource-specific cleanup outside terraform's lifecycle.
+  2. **Pre-apply state snapshots** — capture `terraform.tfstate` at the start of apply; on failure, diff against current state to find resources that should-have-been-tracked-but-aren't. Pro: stays inside terraform's model. Con: race-prone (the snapshot is between an apply that wrote partial state and a destroy that reads it), doesn't solve the fundamental "state save lags resource create" race.
+  3. **Refresh-then-destroy pattern** — before destroy, run `terraform apply -refresh-only` to reconcile state with AWS reality. Pro: leverages a built-in mechanism. Con: refresh only updates attributes of resources already in state; it does NOT add resources that were created at AWS but not yet in state.
+  4. **Move `run-terraform` to CodeBuild** (ADR-009 § Future) — CodeBuild's longer execution window reduces the in-flight failure mode's frequency. Doesn't eliminate the class of bug (network partitions, signal kills) but makes it rare. Co-design with cleanup-on-failure's evolution.
+- **Where:** `services/workflow/cleanup-on-failure/src/handler.ts` (current destroy chain); `packages/destroy-chain/` (would be the home for any tag-based orphan-detection primitive); `services/workflow/run-terraform/src/handle-event.ts` (apply-side state-write timing); ADR-009 § Amendments (2026-05-04 amendment cross-references this entry).
 
 #### ~~Cleanup-on-failure destroy chain~~ — Promoted
 

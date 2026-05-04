@@ -444,10 +444,15 @@ module "task_run_terraform" {
   package_type = "Image"
   image_uri    = trimspace(data.local_file.run_terraform_image_uri.content)
 
-  # Timeout: 600s. Per ADR-009's empirical 3m47s nominal apply +
-  # cold-start + 2× variance budget, 480s is the math; 600s gives 25%
-  # safety margin under Lambda's 900s ceiling.
-  timeout_seconds = 600
+  # Timeout: 900s (Lambda hard ceiling). Bumped from 600s during Phase 1.5
+  # PR 6 verification when a re-POST of portfolio-demo timed out at 600s
+  # mid-CloudFront-create. Phase 1's run #12 took 3:43; this run was still
+  # in apply at 10:00 — CloudFront tail latency was the variance source.
+  # ADR-009's "single apply exceeds 8 min" trigger fired empirically.
+  # Consumes the remaining Lambda headroom; next escalation is the
+  # CodeBuild migration (ADR-009 § Future). New triggers calibrated to
+  # the 900s ceiling are in the ADR amendment.
+  timeout_seconds = 900
 
   # Memory: 2048MB. Terraform's binary + provider's in-process state
   # representation is ~300MB resident at apply time on large diffs.
