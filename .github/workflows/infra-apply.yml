@@ -8,6 +8,15 @@ on:
       - "services/api/**"
       - "services/cost-reporter/**"
       - "services/workflow/**"
+      # templates/** is baked into the run-terraform Lambda image at
+      # build time (per ADR-009 — Dockerfile COPY). A change to a
+      # template requires the image to be rebuilt + pushed + the
+      # Lambda's image_uri updated via terraform apply. Discovered
+      # missing during Phase 1.5 PR 6a (force_destroy fix on the
+      # static-site origin bucket), where the merge succeeded but the
+      # Lambda kept running the old image until infra-apply was
+      # manually dispatched.
+      - "templates/**"
       - ".github/workflows/infra-apply.yml"
   # Manual trigger for cases where state needs to re-converge against
   # current source-of-truth values without an HCL change. Required when
