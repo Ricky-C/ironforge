@@ -17,6 +17,11 @@ You received a budget breach or anomaly notification. What do you do first?
 
 The $50 budget action triggered. The deny policy is attached. How do you safely lift it?
 
+**Verified recovery paths** (per cost-safeguards verification runs in `cost-safeguards.md` § "Verification log"):
+
+- **Canonical**: `aws budgets execute-budget-action --execution-type REVERSE_BUDGET_ACTION` (full procedure in `cost-safeguards.md` § 4).
+- **Manual fallback**: `aws iam detach-role-policy` against each target principal. Verified working in the [2026-05-04 verification run](cost-safeguards-verification-runs/2026-05-04.md) (Phase 3) — both `ironforge-ci-apply` and `ironforge-dev-run-terraform-execution` confirmed `allowed → explicitDeny → allowed` lifecycle. Use only if `REVERSE_BUDGET_ACTION` is unavailable.
+
 **TODO:**
 - [ ] Confirm root cause is addressed before reversing
 - [ ] Step-by-step reset (CLI + Console) — partial procedure already in `cost-safeguards.md` § 4; cross-link here once expanded
