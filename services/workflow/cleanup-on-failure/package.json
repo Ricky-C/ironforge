@@ -2,7 +2,7 @@
   "name": "@ironforge/workflow-cleanup-on-failure",
   "version": "0.0.0",
   "private": true,
-  "description": "Workflow task Lambda — cleanup-on-failure. PR-C.2 stub: re-exports cleanupStub from @ironforge/workflow-stub-lib (status writes only; no destroy chain — see docs/tech-debt.md § Cleanup-on-failure destroy chain).",
+  "description": "Workflow task Lambda — cleanup-on-failure. Best-effort destroy chain (terraform destroy + GitHub repo + tfstate) via @ironforge/destroy-chain, then DDB status writes via @ironforge/workflow-stub-lib's cleanupStub.",
   "license": "UNLICENSED",
   "scripts": {
     "build": "node ./build.mjs",
@@ -10,8 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-lambda": "^3.1039.0",
-    "@aws-sdk/client-s3": "^3.1039.0",
+    "@ironforge/destroy-chain": "workspace:*",
     "@ironforge/shared-types": "workspace:*",
     "@ironforge/shared-utils": "workspace:*",
     "@ironforge/workflow-stub-lib": "workspace:*"
