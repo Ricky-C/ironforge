@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>portfolio-demo</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* Overrides for content-rich layout (template default centers text;
+         bespoke content needs left-aligned prose with centered heading). */
+      main {
+        text-align: left;
+      }
+      main h1 {
+        text-align: center;
+      }
+      main h2 {
+        margin-top: 2rem;
+        margin-bottom: 0.5rem;
+        font-size: 1.25rem;
+      }
+      main ul {
+        padding-left: 1.5rem;
+      }
+      main li {
+        margin: 0.75rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>portfolio-demo</h1>
+      <p>
+        This site was provisioned by <strong>Ironforge</strong>, an
+        internal developer platform I built as a portfolio project.
+        Hitting <code>POST /api/services</code> stands up the AWS
+        infrastructure (S3, CloudFront, Route53, and an IAM deploy
+        role), creates a GitHub repo wired to deploy via OIDC, and
+        returns a live site in about 5 minutes. <code>DELETE</code>
+        tears it back down.
+      </p>
+      <h2>Engineering highlights</h2>
+      <ul>
+        <li>
+          <strong>Container Lambda with bundled Terraform.</strong> The
+          AWS provider is too big for a Lambda layer (the 250MB limit),
+          so I packaged <code>run-terraform</code> as a container image
+          instead of moving the work into CodeBuild. One Lambda runs
+          <code>terraform apply</code> over
+          <code>child_process.spawn</code>, with about 4× headroom on
+          the 15-minute timeout for the static-site template.
+        </li>
+        <li>
+          <strong>Template-derived IAM.</strong> Each template declares
+          an <code>allowedResourceTypes</code> list in its manifest,
+          and the run-terraform Lambda's IAM policy is generated from
+          that list. If I add a resource type to the manifest without
+          updating the IAM mapping, the next provision fails closed at
+          the AWS API layer with <code>AccessDenied</code>. That's the
+          point. Better to fail loudly than to let IAM silently exceed
+          what the manifest declares.
+        </li>
+        <li>
+          <strong>End-to-end verification across two phases.</strong>
+          Running the platform against real AWS turned up 15 issues
+          that unit tests had missed: IAM scope corrections, race
+          conditions, S3 lifecycle quirks, tail-latency timeouts. Each
+          landed as a code fix, an IAM expansion, or a runbook entry.
+        </li>
+      </ul>
+      <h2>Source</h2>
+      <p>
+        <a
+          href="https://github.com/Ricky-C/ironforge"
+          rel="noopener noreferrer"
+          target="_blank"
+          >github.com/Ricky-C/ironforge</a
+        >. 8 ADRs, a runbook, conventions.md, and a tech-debt ledger.
+      </p>
+    </main>
+    <footer>
+      <p>
+        Provisioned by
+        <a
+          href="https://github.com/Ricky-C/ironforge"
+          rel="noopener noreferrer"
+          target="_blank"
+          >Ironforge</a
+        >
+      </p>
+    </footer>
+  </body>
+</html>
