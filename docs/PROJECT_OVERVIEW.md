@@ -162,10 +162,10 @@ AWS Resources (via Terraform):
 
 GitHub Repository Contents:
 
-    Astro static site starter (recommended for static site simplicity)
+    Plain HTML/CSS starter — no build step (revised from Astro during implementation; see "Locked Decisions" below)
     README with deployment instructions
-    GitHub Actions workflow for build + deploy + invalidation
-    Sensible .gitignore, package.json, basic styling
+    GitHub Actions workflow for sync-to-S3 + CloudFront invalidation
+    Sensible .gitignore, basic styling
 
 The Terraform module is the artifact developers pre-approve. Ironforge maintainers (Ricky) curate the module. Users only supply inputs (service name, etc.). This abstraction — opinionated module + user inputs — is the platform engineering pattern.
 Provisioning Workflow (Step Functions)
@@ -388,7 +388,7 @@ Domain. ironforge.rickycaballero.com for the portal. *.ironforge.rickycaballero.
 
 GitHub Account For Generated Repos. Dedicated GitHub organization (ironforge-managed or similar) created during Phase 0 setup.
 
-Static Site Starter Framework. Astro. Lightweight, modern, builds to plain static files cleanly.
+Static Site Starter Framework. Plain HTML/CSS, no build step. (Original plan was Astro; revised during implementation — at portfolio scale a static site doesn't need a build framework, and the zero-toolchain choice removes a class of CI complexity, npm-install caching concerns, and supply-chain surface that earned no offsetting benefit for the static-site template's simple content shape. The deploy workflow becomes `aws s3 sync` + CloudFront invalidation; that's it.)
 
 AWS Account Structure. Single AWS account for MVP. Multi-account is post-MVP if pursued.
 
