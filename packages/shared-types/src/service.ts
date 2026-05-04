@@ -77,16 +77,30 @@ export const ServiceProvisioningSchema = ServiceBaseSchema.extend({
   jobId: z.string().uuid(),
 });
 
+// Mid-DELETE state: live | failed → deprovisioning → archived (success)
+// or → failed with failedWorkflow="deprovisioning" (terminal failure).
+// jobId points at the active deprovisioning Job, mirroring
+// ServiceProvisioningSchema's invariant.
+export const ServiceDeprovisioningSchema = ServiceBaseSchema.extend({
+  status: z.literal("deprovisioning"),
+  jobId: z.string().uuid(),
+});
+
 export const ServiceLiveSchema = ServiceBaseSchema.extend({
   status: z.literal("live"),
   liveUrl: z.string().url(),
   provisionedAt: IsoTimestampSchema,
 });
 
+// `failedWorkflow` distinguishes provisioning vs. deprovisioning failures
+// at read time without log spelunking. A status=failed Service that
+// failed during deprovisioning is retriable via re-issuing DELETE; one
+// that failed during provisioning has different recovery semantics.
 export const ServiceFailedSchema = ServiceBaseSchema.extend({
   status: z.literal("failed"),
   failureReason: z.string().min(1),
   failedAt: IsoTimestampSchema,
+  failedWorkflow: z.enum(["provisioning", "deprovisioning"]),
 });
 
 export const ServiceArchivedSchema = ServiceBaseSchema.extend({
@@ -97,6 +111,7 @@ export const ServiceArchivedSchema = ServiceBaseSchema.extend({
 export const ServiceSchema = z.discriminatedUnion("status", [
   ServicePendingSchema,
   ServiceProvisioningSchema,
+  ServiceDeprovisioningSchema,
   ServiceLiveSchema,
   ServiceFailedSchema,
   ServiceArchivedSchema,
@@ -106,6 +121,7 @@ export type Service = z.infer<typeof ServiceSchema>;
 export const SERVICE_STATUSES = [
   "pending",
   "provisioning",
+  "deprovisioning",
   "live",
   "failed",
   "archived",

@@ -7,6 +7,7 @@ import {
   buildServicePK,
   CreateServiceRequestSchema,
   ServiceArchivedSchema,
+  ServiceDeprovisioningSchema,
   ServiceFailedSchema,
   ServiceLiveSchema,
   ServiceNameSchema,
@@ -115,14 +116,64 @@ describe("ServiceSchema variants", () => {
     expect(result.success).toBe(false);
   });
 
-  it("parses failed with failureReason and failedAt", () => {
+  it("parses provisioning-failed with failedWorkflow=provisioning", () => {
     const result = ServiceFailedSchema.safeParse({
       ...baseFields,
       status: "failed",
       failureReason: "ACM cert validation timeout",
       failedAt: VALID_TIMESTAMP,
+      failedWorkflow: "provisioning",
     });
     expect(result.success).toBe(true);
+  });
+
+  it("parses deprovisioning-failed with failedWorkflow=deprovisioning", () => {
+    const result = ServiceFailedSchema.safeParse({
+      ...baseFields,
+      status: "failed",
+      failureReason: "terraform destroy timed out",
+      failedAt: VALID_TIMESTAMP,
+      failedWorkflow: "deprovisioning",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects failed without failedWorkflow", () => {
+    const result = ServiceFailedSchema.safeParse({
+      ...baseFields,
+      status: "failed",
+      failureReason: "anything",
+      failedAt: VALID_TIMESTAMP,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects failed with unknown failedWorkflow value", () => {
+    const result = ServiceFailedSchema.safeParse({
+      ...baseFields,
+      status: "failed",
+      failureReason: "anything",
+      failedAt: VALID_TIMESTAMP,
+      failedWorkflow: "rollback",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("parses deprovisioning with jobId", () => {
+    const result = ServiceDeprovisioningSchema.safeParse({
+      ...baseFields,
+      status: "deprovisioning",
+      jobId: VALID_JOB_ID,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects deprovisioning without jobId", () => {
+    const result = ServiceDeprovisioningSchema.safeParse({
+      ...baseFields,
+      status: "deprovisioning",
+    });
+    expect(result.success).toBe(false);
   });
 
   it("parses archived with archivedAt", () => {
@@ -197,7 +248,7 @@ describe("ServiceSchema variants", () => {
 
   it("SERVICE_STATUSES enumerates all variant statuses", () => {
     expect([...SERVICE_STATUSES].sort()).toEqual(
-      ["archived", "failed", "live", "pending", "provisioning"].sort(),
+      ["archived", "deprovisioning", "failed", "live", "pending", "provisioning"].sort(),
     );
   });
 });

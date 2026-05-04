@@ -114,6 +114,9 @@ export const cleanupStub = async (event: unknown): Promise<{ cleanedUp: true }> 
 
   // Service: provisioning → failed. Idempotent on already-failed via
   // condition + currentStatus check below — re-fired cleanup is a no-op.
+  // failedWorkflow="provisioning" tags this as a provisioning-side failure
+  // (schema requires the field per ServiceFailedSchema); deprovisioning-
+  // failures are written by their own terminal handler.
   const serviceResult = await transitionStatus({
     tableName,
     key: { PK: buildServicePK(input.serviceId), SK: SERVICE_SK_META },
@@ -123,6 +126,7 @@ export const cleanupStub = async (event: unknown): Promise<{ cleanedUp: true }> 
       currentJobId: null,
       failureReason,
       failedAt: now,
+      failedWorkflow: "provisioning",
       updatedAt: now,
     },
   });
