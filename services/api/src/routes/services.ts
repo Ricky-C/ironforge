@@ -18,14 +18,26 @@ import { flattenError } from "zod";
 import type { AppEnv } from "../env.js";
 import { createService } from "../lib/create-service.js";
 import { decodeServiceListCursor, encodeServiceListCursor } from "../lib/cursor.js";
+import { deprovisionService } from "../lib/deprovision-service.js";
 
 const STATE_MACHINE_ARN_ENV = "PROVISIONING_STATE_MACHINE_ARN";
+const DEPROVISIONING_STATE_MACHINE_ARN_ENV = "DEPROVISIONING_STATE_MACHINE_ARN";
 
 const getStateMachineArnFromEnv = (): string => {
   const arn = process.env[STATE_MACHINE_ARN_ENV];
   if (!arn) {
     throw new Error(
       "PROVISIONING_STATE_MACHINE_ARN env var is not set. Lambda config must populate it.",
+    );
+  }
+  return arn;
+};
+
+const getDeprovisioningStateMachineArnFromEnv = (): string => {
+  const arn = process.env[DEPROVISIONING_STATE_MACHINE_ARN_ENV];
+  if (!arn) {
+    throw new Error(
+      "DEPROVISIONING_STATE_MACHINE_ARN env var is not set. Lambda config must populate it.",
     );
   }
   return arn;
@@ -318,6 +330,48 @@ servicesRoutes.get("/:id", async (c) => {
       return c.json(INTERNAL_BODY, 500);
     }
     logDynamoError(err, c, "GetItem service detail");
+    return c.json(INTERNAL_BODY, 500);
+  }
+});
+
+// -----------------------------------------------------------------------
+// DELETE /api/services/:id — kick off deprovisioning (Phase 1.5)
+// -----------------------------------------------------------------------
+//
+// Status routing:
+//   - pending | provisioning  → 409 SERVICE_IN_FLIGHT (caller waits;
+//                                cancellation is Phase 2+)
+//   - live | failed           → 202 with new deprovisioning Job
+//   - deprovisioning          → 202 with the existing in-flight Job
+//                                (idempotent re-DELETE)
+//   - archived | not-found    → 404 (same envelope; no leak)
+//
+// All status decisions live in lib/deprovision-service.ts. The route
+// handler does HTTP-level concerns: UUID validation, env resolution,
+// status-code mapping.
+
+servicesRoutes.delete("/:id", async (c) => {
+  const user = c.get("user");
+  const id = c.req.param("id");
+
+  if (!UUID_PATTERN.test(id)) {
+    const body: ApiFailure = {
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "id must be a UUID" },
+    };
+    return c.json(body, 400);
+  }
+
+  try {
+    const result = await deprovisionService({
+      tableName: getTableName(),
+      deprovisioningStateMachineArn: getDeprovisioningStateMachineArnFromEnv(),
+      ownerId: user.sub,
+      serviceId: id,
+    });
+    return c.json(result.body as Record<string, unknown>, result.statusCode);
+  } catch (err) {
+    logDynamoError(err, c, "DELETE /api/services/:id");
     return c.json(INTERNAL_BODY, 500);
   }
 });
