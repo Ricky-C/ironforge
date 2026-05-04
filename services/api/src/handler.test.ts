@@ -296,6 +296,32 @@ describe("GET /api/services/:id — happy path", () => {
     const input = ddbMock.commandCalls(GetCommand)[0]!.args[0].input;
     expect(input.Key).toEqual({ PK: `SERVICE#${SERVICE_ID}`, SK: "META" });
   });
+
+  it("returns 200 for in-flight (provisioning) service with both jobId + currentJobId set", async () => {
+    // Schema-compliance regression: create-service.ts writes BOTH jobId
+    // (the denormalized snapshot required by ServiceProvisioningSchema's
+    // discriminated union) and currentJobId (the operational "is a Job
+    // active?" pointer). A GET during the in-flight window must return
+    // a row that parses cleanly against the variant. Without the kickoff
+    // fix this test 500s with SERVICE_PARSE_FAILURE.
+    const JOB_ID = "44444444-4444-4444-8444-444444444444";
+    ddbMock.on(GetCommand).resolves({
+      Item: sampleItem({
+        status: "provisioning",
+        jobId: JOB_ID,
+        currentJobId: JOB_ID,
+      }),
+    });
+    const res = await callPath(`/api/services/${SERVICE_ID}`, accessTokenClaims());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: true; data: Record<string, unknown> };
+    expect(body.data).toMatchObject({
+      id: SERVICE_ID,
+      status: "provisioning",
+      jobId: JOB_ID,
+      currentJobId: JOB_ID,
+    });
+  });
 });
 
 describe("GET /api/services/:id — 404 envelope shape parity", () => {

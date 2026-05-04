@@ -292,6 +292,20 @@ These remain deferred because they're production-grade quality on top of a worki
 
 ### Operational verification / monitoring
 
+#### End-to-end verification flow doesn't exercise in-flight GETs
+
+- **What:** Phase 1 verification (run #12, 2026-05-03) tested the workflow as POST → wait for terminal SFN state → check final result. It did NOT exercise `GET /api/services/:id` *during* the in-flight provisioning window. PR 5a drafting (the create-service jobId-write fix) surfaced this gap empirically: `ServiceProvisioningSchema` requires `jobId`, but `create-service.ts` was only writing `currentJobId` on the kickoff transition — every in-flight GET would have returned 500 with `SERVICE_PARSE_FAILURE`. The bug existed for the entire Phase 1 window without surfacing because the verification flow happened to skip the only window where it could fire.
+- **Why deferred:** The fix (PR 5a) closes the immediate bug. Expanding the verification flow to exercise in-flight GETs is a Phase 2 polish item — useful coverage but not blocking Phase 1.5's delivery. The deeper meta-finding (verification flows have systematic blind spots; new feature drafting is one of the better tools for surfacing them) is a process observation, not an action item.
+- **When to revisit:**
+  - **Phase 2 verification expansion** — add an in-flight-poll step to `scripts/verify-prerequisites.sh` (or a new `scripts/verify-flow.sh`): kick off a real provisioning, poll `GET /api/services/:id` every ~5s while it runs, assert each response parses against `ServiceSchema` for whatever variant is current. Catches schema/code drift on every variant.
+  - **Same expansion applied to the deprovisioning flow** once PR 6 lands — `GET` during the deprovisioning window should likewise return a `deprovisioning`-variant Service that parses cleanly. Same write-shape verification approach as PR 5a's regression test, but exercised against the live workflow.
+  - **Any future schema variant added without a corresponding write-shape test** — adding a variant means adding both a write-site test (DDB shape) and an in-flight-read test (handler shape), or the same class of bug recurs.
+- **Action:**
+  1. Extend `scripts/verify-prerequisites.sh` (or branch a new verify-flow script) with an in-flight-GET loop: trigger a provisioning workflow against a synthetic test service, poll `GET /api/services/:id` until terminal, assert each response is `200` with a parsing Service body.
+  2. Mirror for deprovisioning post-PR 6: trigger a DELETE on a `live` service, poll until `archived` (or `failed`), assert each in-flight response parses cleanly.
+  3. Document the meta-pattern in `docs/runbook.md` § verification: every Service status variant must have one write-shape test (DDB shape) AND one read-shape test (handler returns parseable body) — the pair forms the schema/code-alignment contract.
+- **Where:** `scripts/verify-prerequisites.sh` (current 11-check sanity script); `services/api/src/handler.test.ts` (where in-flight read-shape tests live); `services/api/src/lib/create-service.test.ts` and forthcoming `services/api/src/lib/deprovision-service.test.ts` (where write-shape tests live); `docs/runbook.md` § verification (where the meta-pattern would be documented).
+
 #### Production API Gateway throttling values are placeholder
 
 - **What:** `throttling_burst_limit = 50` and `throttling_rate_limit = 20` (RPS) on the dev stage. These were chosen to unblock Phase 1 verification (which surfaced the original 0/0 misconfiguration that 429'd every request) and are intentionally permissive for a single-user dev environment. No environment-specific overrides for prod yet — when `infra/envs/prod` lights up, it will inherit the dev-tuned defaults from `infra/modules/api-gateway/variables.tf`.

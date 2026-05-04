@@ -298,13 +298,24 @@ const executeCreation = async (params: {
   // routes to CleanupOnFailure, which re-enters and writes Service/Job
   // failed if these post-kickoff updates land but the workflow itself
   // can't proceed. So even partial-kickoff is recoverable downstream.
+  //
+  // Field semantics — both jobId and currentJobId are set:
+  //   - jobId is the denormalized snapshot for schema compliance
+  //     (required by ServiceProvisioningSchema's discriminated union;
+  //     a GET during the in-flight window must return a row that
+  //     parses cleanly against the variant).
+  //   - currentJobId is the operational pointer for O(1) "which Job is
+  //     active?" lookup, cleared on terminal states (live, failed,
+  //     archived) so a re-provision later (live → provisioning → live)
+  //     can distinguish "is anything running?" from "what was running?"
+  //   They serve complementary roles; both must be written here.
   // ---------------------------------------------------------------------
   await docClient.send(
     new UpdateCommand({
       TableName: tableName,
       Key: { PK: buildServicePK(serviceId), SK: SERVICE_SK_META },
       UpdateExpression:
-        "SET #status = :provisioning, currentJobId = :jobId, updatedAt = :now",
+        "SET #status = :provisioning, currentJobId = :jobId, jobId = :jobId, updatedAt = :now",
       ConditionExpression:
         "#status = :pending AND attribute_type(currentJobId, :null)",
       ExpressionAttributeNames: { "#status": "status" },
