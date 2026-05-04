@@ -2,11 +2,16 @@
 
 alert_email = "you@example.com"
 
-# Populate as Ironforge IAM roles come online. The budget action stays
-# disabled while all three lists are empty.
-# budget_action_target_roles  = ["ironforge-ci", "ironforge-workflow-terraform-executor"]
-# budget_action_target_users  = []
-# budget_action_target_groups = []
+# budget_action_target_roles is managed via CI workflow env vars
+# (TF_VAR_budget_action_target_roles in infra-apply.yml + infra-plan.yml).
+# Do NOT populate locally — would conflict with CI's literal during apply,
+# causing oscillating state between operator and CI runs. Value as of
+# 2026-05-04: ["ironforge-ci-apply", "ironforge-dev-run-terraform-execution"].
+# To add or remove a target principal, edit the workflow files (PR-tracked,
+# single-source) — not this file.
+#
+# budget_action_target_users and _groups follow the same pattern; if
+# populated, manage them via the same workflow env vars.
 
 # GitHub App + org identifiers. Captured during the one-time GitHub org +
 # App registration (docs/runbook.md § "GitHub org + App registration").
