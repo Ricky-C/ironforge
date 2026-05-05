@@ -94,6 +94,25 @@ Each entry has:
 - **Action:** Create a new GitHub Environment `dev-apply` with no required reviewer and a short wait timer (1–2 min for cancel window). Update `ironforge-ci-apply`'s trust policy to accept `sub` matching either `repo:Ricky-C/ironforge:environment:production` *or* `repo:Ricky-C/ironforge:environment:dev-apply` (use a `StringEquals` array, not a `StringLike` pattern — exact match preserves the security posture). Change `apply-dev` to declare `environment: dev-apply`. Update `infra/OIDC_BOOTSTRAP.md` Step 4 to document both sub claims and the rationale.
 - **Where:** `.github/workflows/infra-apply.yml`, `infra/OIDC_BOOTSTRAP.md`.
 
+#### ARM-native CI runners for Lambda image builds
+
+- **What:** `.github/workflows/app-deploy.yml` builds the portal Lambda image as `linux/arm64` via `docker/setup-qemu-action` + buildx on the amd64 `ubuntu-latest` runner. QEMU emulation adds ~3-5× to the Next.js build step versus a native ARM runner. GitHub-hosted ARM runners (e.g., `ubuntu-24.04-arm`) GA'd in 2024 and would build natively.
+- **Why deferred:** Reliability over speed for the first migration. ARM runner availability depends on plan / repo settings and was not pre-verified during PR-B planning; QEMU works on any runner. Portfolio-scale deploy frequency makes the build-time delta operationally invisible.
+- **When to revisit (any one of):**
+  - CI runtime per portal deploy crosses ~15 minutes and slows the merge-to-deploy feedback loop materially.
+  - A second Lambda image-build workflow lands targeting arm64 (currently just portal); cumulative QEMU cost across multiple workflows becomes meaningful.
+  - GitHub plan / repo settings confirmed to support ARM runners with cost equivalent to amd64 (current public-repo arm runners have minute-quota differences worth verifying).
+- **Action:** Swap `runs-on: ubuntu-latest` → `runs-on: ubuntu-24.04-arm` (or current GA arm label); drop the `Set up QEMU` step (native arm needs no emulation); keep `Set up Docker Buildx` (still useful for `docker/build-push-action`); remove the `--platform linux/arm64` arg from the build action since the runner's native platform suffices. Verify with the existing `Verify image architecture` step (already arch-asserts).
+- **Where:** `.github/workflows/app-deploy.yml`.
+
+#### Path filter granularity for shared-types changes
+
+- **What:** `.github/workflows/app-deploy.yml`'s path filter includes `packages/shared-types/**`, which redeploys the portal Lambda on any shared-types change — even when the change doesn't affect types the portal imports. Over-deploy chosen over under-deploy: under-deploy bugs (stale bundled types) are more expensive to debug than the ~5-min CI cost of an unnecessary build.
+- **Why deferred:** Portfolio-scale deploy frequency; the over-deploy cost is ~5 min CI per unaffected shared-types change, which is negligible. Distinguishing portal-affecting changes from backend-only changes cleanly is non-trivial — would need either fine-grained path filters per imported file, or a build-time check that diffs the type surface.
+- **When to revisit:** When shared-types change frequency becomes operationally annoying (multiple unnecessary portal deploys per week), or when portal-affecting changes become cleanly distinguishable from backend-only (e.g., types split into per-consumer subdirectories like `packages/shared-types/src/portal/*` vs `.../api/*`).
+- **Action:** Refine the path filter to scope only to portal-imported subdirectories. May require a `packages/shared-types/src/portal/` reorganization first.
+- **Where:** `.github/workflows/app-deploy.yml`, possibly `packages/shared-types/src/`.
+
 ### IAM / permission boundary
 
 #### Tighten `cognito-idp:*` and remaining account-wide writes on `ironforge-ci-apply`
