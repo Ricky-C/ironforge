@@ -68,6 +68,14 @@ Each entry has:
 - **Action:** Replace `frame-ancestors 'none'` with a full directive set: at minimum `default-src 'self'; script-src 'self' [Cognito hosted UI domain]; connect-src 'self' [API Gateway origin]; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`. Verify against the actual Next.js build output — `'unsafe-inline'` may be needed for styled-components or runtime CSS-in-JS depending on what the bundle ships. Test in report-only mode (`Content-Security-Policy-Report-Only` header via a separate response headers policy) for at least one deploy cycle before enforcing, so violations are observed before they break the page.
 - **Where:** `infra/modules/cloudfront-frontend/main.tf` (`aws_cloudfront_response_headers_policy.portal` resource, `content_security_policy` block).
 
+#### Cache policy revisit at subphase 2.5 (auth integration)
+
+- **What:** CloudFront's `default_cache_behavior.cache_policy_id` on the portal distribution is set to `Managed-CachingOptimized` (`658327ea-f89d-4fab-a63d-7e88639e58f6`) post-PR-B cutover. That policy strips cookies and most query strings from the cache key — correct for the unauthenticated portal + Next.js public surface (every visitor sees the same HTML), but wrong when subphase 2.5 introduces Cognito Hosted UI session cookies that gate per-user rendering: all visitors would share a cached response keyed without their cookies.
+- **Why deferred:** PR-B's cutover happens before auth lands. Picking the eventual cache policy now would require either committing to a less-cacheable default (slower cold-path for everyone) or designing the cache-behavior split before the auth flow is concrete. Better to expand once the auth surface stabilizes.
+- **When to revisit:** Subphase 2.5 (auth) work begins, OR any per-user response shape lands before that (Cognito Hosted UI redirect token handling, server-side personalized rendering, etc.).
+- **Action:** Likely split cache behaviors on the distribution: public routes (e.g., `/`, `/_next/static/*`) keep `Managed-CachingOptimized`; auth-required routes (e.g., `/services/*`, `/wizard`) use `Managed-CachingDisabled` (`4135ea2d-6df8-44a3-9df3-4b5a84be39ad`) or a custom cache policy that includes `Cookie` in the cache key for auth-aware caching with reasonable TTL.
+- **Where:** `infra/modules/cloudfront-frontend/main.tf` (`aws_cloudfront_distribution.portal.default_cache_behavior` block; PR-B commit `9559a45` added the inline comment noting this revisit). Reference: ADR-010, ADR-011.
+
 #### Per-service ACM cert as opt-in template input
 
 - **What:** Provisioned services share a single wildcard ACM cert (`*.ironforge.rickycaballero.com`, pre-issued in shared composition, us-east-1) attached to every CloudFront distribution. Per-service certs (one ACM cert per provisioned subdomain, DNS-validated at provision time) are not supported.
@@ -93,6 +101,25 @@ Each entry has:
 - **When to revisit:** When merges become frequent (Phase 2+ when wizard iterations land regularly) and clicking approve twice becomes routine friction, or when the "blast radius differs per composition" framing becomes a portfolio talking point worth implementing concretely. Also revisit if a third composition (e.g., `staging`) is added and gating uniformity becomes burdensome.
 - **Action:** Create a new GitHub Environment `dev-apply` with no required reviewer and a short wait timer (1–2 min for cancel window). Update `ironforge-ci-apply`'s trust policy to accept `sub` matching either `repo:Ricky-C/ironforge:environment:production` *or* `repo:Ricky-C/ironforge:environment:dev-apply` (use a `StringEquals` array, not a `StringLike` pattern — exact match preserves the security posture). Change `apply-dev` to declare `environment: dev-apply`. Update `infra/OIDC_BOOTSTRAP.md` Step 4 to document both sub claims and the rationale.
 - **Where:** `.github/workflows/infra-apply.yml`, `infra/OIDC_BOOTSTRAP.md`.
+
+#### ARM-native CI runners for Lambda image builds
+
+- **What:** `.github/workflows/app-deploy.yml` builds the portal Lambda image as `linux/arm64` via `docker/setup-qemu-action` + buildx on the amd64 `ubuntu-latest` runner. QEMU emulation adds ~3-5× to the Next.js build step versus a native ARM runner. GitHub-hosted ARM runners (e.g., `ubuntu-24.04-arm`) GA'd in 2024 and would build natively.
+- **Why deferred:** Reliability over speed for the first migration. ARM runner availability depends on plan / repo settings and was not pre-verified during PR-B planning; QEMU works on any runner. Portfolio-scale deploy frequency makes the build-time delta operationally invisible.
+- **When to revisit (any one of):**
+  - CI runtime per portal deploy crosses ~15 minutes and slows the merge-to-deploy feedback loop materially.
+  - A second Lambda image-build workflow lands targeting arm64 (currently just portal); cumulative QEMU cost across multiple workflows becomes meaningful.
+  - GitHub plan / repo settings confirmed to support ARM runners with cost equivalent to amd64 (current public-repo arm runners have minute-quota differences worth verifying).
+- **Action:** Swap `runs-on: ubuntu-latest` → `runs-on: ubuntu-24.04-arm` (or current GA arm label); drop the `Set up QEMU` step (native arm needs no emulation); keep `Set up Docker Buildx` (still useful for `docker/build-push-action`); remove the `--platform linux/arm64` arg from the build action since the runner's native platform suffices. Verify with the existing `Verify image architecture` step (already arch-asserts).
+- **Where:** `.github/workflows/app-deploy.yml`.
+
+#### Path filter granularity for shared-types changes
+
+- **What:** `.github/workflows/app-deploy.yml`'s path filter includes `packages/shared-types/**`, which redeploys the portal Lambda on any shared-types change — even when the change doesn't affect types the portal imports. Over-deploy chosen over under-deploy: under-deploy bugs (stale bundled types) are more expensive to debug than the ~5-min CI cost of an unnecessary build.
+- **Why deferred:** Portfolio-scale deploy frequency; the over-deploy cost is ~5 min CI per unaffected shared-types change, which is negligible. Distinguishing portal-affecting changes from backend-only changes cleanly is non-trivial — would need either fine-grained path filters per imported file, or a build-time check that diffs the type surface.
+- **When to revisit:** When shared-types change frequency becomes operationally annoying (multiple unnecessary portal deploys per week), or when portal-affecting changes become cleanly distinguishable from backend-only (e.g., types split into per-consumer subdirectories like `packages/shared-types/src/portal/*` vs `.../api/*`).
+- **Action:** Refine the path filter to scope only to portal-imported subdirectories. May require a `packages/shared-types/src/portal/` reorganization first.
+- **Where:** `.github/workflows/app-deploy.yml`, possibly `packages/shared-types/src/`.
 
 ### IAM / permission boundary
 

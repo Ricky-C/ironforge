@@ -1,14 +1,19 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Static HTML export to out/. CloudFront serves these files directly from
-  // the S3 origin bucket; no SSR runtime is involved.
-  output: "export",
+  // Standalone mode for Lambda Web Adapter deployment per ADR-011.
+  // Builds a self-contained server bundle at .next/standalone/server.js
+  // that LWA invokes inside the container Lambda (see apps/web/Dockerfile).
+  output: "standalone",
 
-  // Image optimization API requires a server. Static export means we use
-  // unoptimized images; build-time optimization happens elsewhere if needed.
-  images: {
-    unoptimized: true,
-  },
+  // Monorepo root for output file tracing. Without this, Next.js's
+  // standalone bundle scans only from apps/web/, missing workspace
+  // dependencies in packages/* and producing an incomplete server bundle.
+  outputFileTracingRoot: path.join(__dirname, "..", ".."),
 };
 
 export default nextConfig;

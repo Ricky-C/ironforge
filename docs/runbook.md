@@ -1186,6 +1186,107 @@ aws cognito-idp admin-delete-user --user-pool-id us-east-1_vnvU5BYwy --username 
 
 ---
 
+## 13. Portal LWA migration rollback (PR-B / ADR-011)
+
+### Symptom
+
+After PR-B merge + cutover, the portal at `ironforge.rickycaballero.com` serves broken content: 5xx, blank HTML, Lambda timeouts in CloudWatch logs, or first-load latency exceeds 3-second median per the verification-gate measurement procedure (see ADR-011 § When to reconsider).
+
+### Diagnosis
+
+```bash
+# Lambda health
+aws lambda get-function --function-name ironforge-portal \
+  --query 'Configuration.{State:State,LastUpdateStatus:LastUpdateStatus,ImageUri:Code.ImageUri}'
+```
+
+```bash
+# CloudFront direct response (bypassing the alias to rule out DNS / cache issues)
+DIST_DOMAIN=$(aws cloudfront list-distributions \
+  --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'ironforge.rickycaballero.com')].DomainName | [0]" \
+  --output text)
+curl -I "https://${DIST_DOMAIN}/"
+```
+
+```bash
+# Direct Function URL test (with SigV4 signing)
+FUNCTION_URL=$(aws lambda get-function-url-config --function-name ironforge-portal --query FunctionUrl --output text)
+awscurl --service lambda --region us-east-1 "${FUNCTION_URL}"
+```
+
+```bash
+# Recent Lambda errors
+aws logs tail /aws/lambda/ironforge-portal --since 30m --filter-pattern "ERROR"
+```
+
+### Recovery — two paths
+
+#### R1. Revert via PR (clean; preferred when blast radius allows the merge cycle)
+
+Use when the issue is in PR-B's application code, terraform configuration, or CloudFront wiring; revert is the durable fix.
+
+```bash
+git log --grep "portal-lwa-migration-2-cutover" --oneline -5
+```
+
+Open a revert PR with `gh pr create` against `main`. After merge:
+
+- `app-deploy.yml` runs (path filter unchanged); without the new Dockerfile / next.config the previous static-export deploy resumes.
+- `infra-apply.yml` runs; CloudFront default cache behavior swaps back to `s3-portal` origin; Lambda + Function URL + SSM parameter destroyed by terraform.
+- Manual CloudFront invalidation (edge caches retain Lambda-served content past the origin swap until TTL):
+
+```bash
+DIST_ID=$(aws cloudfront list-distributions \
+  --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'ironforge.rickycaballero.com')].Id | [0]" \
+  --output text)
+aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
+```
+
+S3 origin and bucket remain alive in the distribution through PR-B (per the rollback-safety design — PR-C is what destroys the S3 bucket); revert restores them as the default cache behavior.
+
+#### R2. Manual immediate rollback (faster — code follows)
+
+Use when edge cache + DNS propagation + revert-merge time exceeds the incident's tolerance (~5 min from detection to mitigation).
+
+```bash
+DIST_ID=$(aws cloudfront list-distributions \
+  --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'ironforge.rickycaballero.com')].Id | [0]" \
+  --output text)
+
+aws cloudfront get-distribution-config --id "${DIST_ID}" > /tmp/dist-config.json
+ETAG=$(jq -r '.ETag' /tmp/dist-config.json)
+jq '.DistributionConfig | .DefaultCacheBehavior.TargetOriginId = "s3-portal"' /tmp/dist-config.json > /tmp/dist-config-rollback.json
+
+aws cloudfront update-distribution \
+  --id "${DIST_ID}" \
+  --distribution-config file:///tmp/dist-config-rollback.json \
+  --if-match "${ETAG}"
+
+aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
+```
+
+After R2: open a follow-up PR reverting the terraform code so it reflects the actual deployed state. Without it, the next `infra-apply.yml` run will re-flip the default cache behavior to the `lambda-portal` origin per the committed terraform (terraform refresh would reveal drift; apply would correct it back to broken).
+
+### Post-cutover invalidation (non-rollback case)
+
+After PR-B's merge + cutover where verification PASSES but cache TTL still holds pre-cutover S3-served HTML, run a one-time invalidation:
+
+```bash
+DIST_ID=$(aws cloudfront list-distributions \
+  --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'ironforge.rickycaballero.com')].Id | [0]" \
+  --output text)
+aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
+```
+
+`app-deploy.yml`'s steady-state CloudFront invalidation runs only when Lambda gets updated; the cutover-merge run skips it (Lambda is being created in the same merge by `infra-apply.yml`, so the conditional branch in `app-deploy.yml` doesn't fire). Manual invalidation here is the gap-filler for that initial cutover only.
+
+### Prevention
+
+- The verification gate in ADR-011 § When to reconsider must pass post-merge BEFORE PR-C destroys the S3 bucket. PR-C is the point of no return for R1 — once the bucket is gone, recovery requires re-provisioning + rebuild + re-sync.
+- PR-B keeps the S3 bucket alive (and the `s3-portal` origin defined) for exactly this rollback affordance. Don't fold PR-C's bucket destruction into PR-B as an "atomic" cutover.
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.

@@ -18,6 +18,17 @@ on:
       # manually dispatched.
       - "templates/**"
       - ".github/workflows/infra-apply.yml"
+  # workflow_run sequences this workflow AFTER app-deploy.yml completes
+  # on main. ADR-011 PR-B's Y2 design (SSM image-URI handoff) requires
+  # app-deploy.yml to write SSM with the real image URI BEFORE
+  # terraform reads the data source on plan; this trigger enforces
+  # that ordering on first-merge of any portal Lambda change. The
+  # apply-shared job's `if:` filters workflow_run runs to successful
+  # app-deploy completions only.
+  workflow_run:
+    workflows: ["app-deploy"]
+    types: [completed]
+    branches: [main]
   # Manual trigger for cases where state needs to re-converge against
   # current source-of-truth values without an HCL change. Required when
   # `data.aws_ssm_parameter.*` values change out-of-band — manual
@@ -47,6 +58,12 @@ jobs:
   apply-shared:
     name: Apply shared composition
     runs-on: ubuntu-latest
+    # workflow_run-triggered runs only proceed if the upstream app-deploy
+    # workflow succeeded. Push and workflow_dispatch triggers always
+    # proceed (the conditional short-circuits to true for non-workflow_run
+    # event names). Without this, a failed app-deploy would cascade an
+    # unwanted apply attempt with potentially stale SSM state.
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name != 'workflow_run' }}
     # GitHub Environment "production" provides the manual-approval gate and
     # the 5-minute wait timer (configured in repo settings, not here).
     environment: production
@@ -76,6 +93,36 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Mirror portal placeholder image (idempotent)
+        # ADR-011 § Pre-implementation Gap 1 (b): ensures
+        # public.ecr.aws/lambda/nodejs:22 is mirrored to our private ECR as
+        # `:placeholder` for recovery scenarios. Unreachable in normal
+        # operation under workflow_run sequencing (app-deploy.yml writes
+        # SSM with the real image URI before this workflow's terraform
+        # creates Lambda). If you ever see Lambda invoking the placeholder,
+        # something has gone wrong — app-deploy.yml didn't run, SSM
+        # deleted manually, etc. Useful signal.
+        #
+        # Idempotent: skip if `:placeholder` tag already exists in ECR.
+        # Per-run cost ~5s when the tag exists; ~30s on first-ever mirror.
+        run: |
+          ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          ECR_REPO="ironforge-portal"
+
+          if aws ecr describe-images \
+              --repository-name "$ECR_REPO" \
+              --image-ids imageTag=placeholder >/dev/null 2>&1; then
+            echo "Placeholder exists in ECR; skipping mirror."
+          else
+            echo "Mirroring public.ecr.aws/lambda/nodejs:22 to $ECR_REGISTRY/$ECR_REPO:placeholder"
+            docker pull public.ecr.aws/lambda/nodejs:22
+            docker tag public.ecr.aws/lambda/nodejs:22 "$ECR_REGISTRY/$ECR_REPO:placeholder"
+            aws ecr get-login-password --region "${{ env.AWS_REGION }}" | \
+              docker login --username AWS --password-stdin "$ECR_REGISTRY"
+            docker push "$ECR_REGISTRY/$ECR_REPO:placeholder"
+            echo "Placeholder mirrored."
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4

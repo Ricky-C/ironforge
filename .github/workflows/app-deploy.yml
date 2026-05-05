@@ -4,20 +4,23 @@ on:
   push:
     branches: [main]
     paths:
-      - "apps/web/**"
-      - ".github/workflows/app-deploy.yml"
+      - 'apps/web/**'
+      - 'packages/shared-types/**'  # Bundled into portal Lambda image; redeploy on changes
+      - '.github/workflows/app-deploy.yml'
+  workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
 env:
-  NODE_VERSION: "22"
-  PNPM_VERSION: "10.33.2"
   AWS_REGION: us-east-1
+  ECR_REPOSITORY: ironforge-portal
+  LAMBDA_FUNCTION_NAME: ironforge-portal
+  SSM_IMAGE_URI_PARAMETER: /ironforge/portal/image-uri
 
-# Serialize deploys. Don't cancel an in-progress sync if a new push lands —
-# half-synced state is worse than waiting.
+# Serialize deploys. Don't cancel an in-progress deploy if a new push lands —
+# half-deployed state is worse than waiting.
 concurrency:
   group: app-deploy
   cancel-in-progress: false
@@ -26,34 +29,29 @@ jobs:
   deploy:
     name: Build and deploy portal
     runs-on: ubuntu-latest
-    # Reuses the same production environment as infra-apply: manual approval
-    # + 5-min wait timer. Splitting into a lighter "app-deploy" environment
-    # with a narrower OIDC role is tracked in docs/tech-debt.md § "Separate
-    # OIDC role for app deploys" for when deploy frequency justifies it.
+    # Reuses the production environment (manual approval + 5-min wait timer)
+    # the same way infra-apply.yml does. Splitting into a lighter "app-deploy"
+    # environment with a narrower OIDC role is tracked in docs/tech-debt.md
+    # § "Separate OIDC role for app deploys" for when deploy frequency
+    # justifies it.
     environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+      - name: Set up QEMU
+        # Cross-arch emulation so docker buildx can produce arm64 images on
+        # the amd64 runner. Lambda is configured architectures = ["arm64"]
+        # in commit 3 (matches terraform-lambda-image pattern + arm64 cost
+        # advantage). Forward-debt: switch to ubuntu-24.04-arm runner once
+        # the repo's plan / runner labels are verified — see
+        # docs/tech-debt.md § "ARM-native CI runners for Lambda image builds".
+        uses: docker/setup-qemu-action@v3
         with:
-          version: ${{ env.PNPM_VERSION }}
+          platforms: linux/arm64
 
-      # cache: pnpm tells setup-node to cache the pnpm store directory
-      # between runs. Cold installs of Next/React/Tailwind would otherwise
-      # cost ~30+ seconds per deploy; cached installs are typically <5s.
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Next.js portal
-        run: pnpm --filter @ironforge/web build
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Configure AWS credentials (OIDC apply role)
         uses: aws-actions/configure-aws-credentials@v6
@@ -61,41 +59,98 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # IMPORTANT: --delete makes this workflow the single source of truth for
-      # the portal bucket's contents. Files written out-of-band (e.g., manual
-      # `aws s3 cp`) WILL be removed on the next sync. If you need to serve
-      # files that aren't in apps/web/out/, either commit them under that
-      # directory or move them to a different bucket. The bucket policy + OAC
-      # setup means there's no other supported write path anyway.
-      - name: Sync portal output to S3
-        env:
-          BUCKET: ironforge-portal-${{ secrets.AWS_ACCOUNT_ID }}
+      - name: ECR login + compute registry URL
         run: |
-          aws s3 sync apps/web/out/ "s3://${BUCKET}/" \
-            --delete \
-            --no-progress
+          ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" | \
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          {
+            echo "ECR_REGISTRY=$ECR_REGISTRY"
+            echo "ECR_IMAGE=${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}"
+          } >> "$GITHUB_ENV"
 
-      # Look up distribution ID by alias rather than store it as a secret.
-      # The apply role's cloudfront:* on * covers list + invalidate.
-      # Invalidation is fire-and-forget — typical propagation is 5–15 min.
-      # Blocking the workflow on `aws cloudfront wait invalidation-completed`
-      # isn't worth the latency.
-      - name: Invalidate CloudFront cache
+      - name: Build and push portal image (arm64)
+        # Double-tagged: :latest gives a rolling pointer to head; :<sha> is
+        # immutable for rollback debugging. Lambda's image_uri uses the
+        # manifest digest (captured below) for deploy reproducibility.
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+      - name: Verify image architecture
+        # Catches buildx-arch misconfiguration at build time. If the image
+        # is amd64 instead of arm64, Lambda fails invocation with a cryptic
+        # arch-mismatch error; surface here so the deploy fails fast.
         run: |
-          DISTRIBUTION_ID=$(aws cloudfront list-distributions \
-            --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'ironforge.rickycaballero.com')].Id | [0]" \
-            --output text)
-
-          if [ -z "$DISTRIBUTION_ID" ] || [ "$DISTRIBUTION_ID" = "None" ]; then
-            echo "Could not find CloudFront distribution for ironforge.rickycaballero.com" >&2
+          ARCH=$(docker buildx imagetools inspect "${ECR_IMAGE}:${{ github.sha }}" --raw | \
+            jq -r '.manifests[0].platform.architecture // .architecture // "unknown"')
+          if [ "$ARCH" != "arm64" ]; then
+            echo "ERROR: Built image architecture is '$ARCH'; expected 'arm64'." >&2
+            echo "Lambda is configured architectures = [\"arm64\"]; mismatched image will fail invocation." >&2
             exit 1
           fi
+          echo "Image architecture verified: arm64"
 
-          echo "Found distribution: $DISTRIBUTION_ID"
+      - name: Compose image URI with digest
+        run: |
+          DIGEST="${{ steps.build.outputs.digest }}"
+          IMAGE_URI_WITH_DIGEST="${ECR_IMAGE}@${DIGEST}"
+          echo "IMAGE_URI_WITH_DIGEST=${IMAGE_URI_WITH_DIGEST}" >> "$GITHUB_ENV"
+          echo "Pushed: ${IMAGE_URI_WITH_DIGEST}"
 
-          INVALIDATION_ID=$(aws cloudfront create-invalidation \
-            --distribution-id "$DISTRIBUTION_ID" \
-            --paths "/*" \
-            --query 'Invalidation.Id' --output text)
+      - name: Update SSM image URI parameter
+        # Source of truth for what image the portal Lambda runs. terraform
+        # reads this via data "aws_ssm_parameter" on each plan; this step
+        # writes on each deploy. --overwrite handles both first-write
+        # (creates parameter) and update (replaces value) per ADR-011's
+        # SSM-handoff design (Y2 in the gap-2 decision).
+        run: |
+          aws ssm put-parameter \
+            --name "${{ env.SSM_IMAGE_URI_PARAMETER }}" \
+            --value "${IMAGE_URI_WITH_DIGEST}" \
+            --type String \
+            --overwrite
+          echo "SSM ${{ env.SSM_IMAGE_URI_PARAMETER }} updated to ${IMAGE_URI_WITH_DIGEST}"
 
-          echo "Created invalidation: $INVALIDATION_ID"
+      - name: Update Lambda + invalidate CloudFront (if Lambda exists)
+        # First-merge case: PR-B commit 3's terraform creates the Lambda
+        # AFTER this workflow runs (via workflow_run trigger on
+        # infra-apply.yml). On that run, Lambda doesn't exist yet — skip
+        # the update; commit 3's terraform reads the SSM parameter just
+        # written and creates Lambda with the real image_uri.
+        # Steady-state: Lambda exists; this step does the update +
+        # invalidate.
+        run: |
+          if aws lambda get-function --function-name "${{ env.LAMBDA_FUNCTION_NAME }}" >/dev/null 2>&1; then
+            aws lambda update-function-code \
+              --function-name "${{ env.LAMBDA_FUNCTION_NAME }}" \
+              --image-uri "${IMAGE_URI_WITH_DIGEST}"
+            aws lambda wait function-updated \
+              --function-name "${{ env.LAMBDA_FUNCTION_NAME }}"
+            echo "Lambda updated to ${IMAGE_URI_WITH_DIGEST}."
+
+            DISTRIBUTION_ID=$(aws cloudfront list-distributions \
+              --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'ironforge.rickycaballero.com')].Id | [0]" \
+              --output text)
+
+            if [ -n "$DISTRIBUTION_ID" ] && [ "$DISTRIBUTION_ID" != "None" ]; then
+              INVALIDATION_ID=$(aws cloudfront create-invalidation \
+                --distribution-id "$DISTRIBUTION_ID" \
+                --paths "/*" \
+                --query 'Invalidation.Id' --output text)
+              echo "Created CloudFront invalidation: $INVALIDATION_ID"
+            else
+              echo "CloudFront distribution not found for ironforge.rickycaballero.com; skipping invalidation."
+            fi
+          else
+            echo "Lambda '${{ env.LAMBDA_FUNCTION_NAME }}' doesn't exist yet."
+            echo "First-merge case: commit 3's terraform creates the Lambda from the SSM-tracked image URI just pushed."
+            echo "Subsequent runs of this workflow update Lambda + invalidate CloudFront via this step."
+          fi
