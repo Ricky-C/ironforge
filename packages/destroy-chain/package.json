@@ -17,8 +17,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-lambda": "^3.1039.0",
-    "@aws-sdk/client-s3": "^3.1039.0",
+    "@aws-sdk/client-lambda": "^3.1042.0",
+    "@aws-sdk/client-s3": "^3.1042.0",
     "@ironforge/shared-utils": "workspace:*"
   },
   "devDependencies": {

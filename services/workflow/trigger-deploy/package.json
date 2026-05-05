@@ -17,7 +17,7 @@
     "zod": "^4.4.1"
   },
   "devDependencies": {
-    "@aws-sdk/lib-dynamodb": "^3.1039.0",
+    "@aws-sdk/lib-dynamodb": "^3.1042.0",
     "@types/libsodium-wrappers": "^0.7.14",
     "@types/node": "^25.6.0",
     "aws-sdk-client-mock": "^4.1.0",
