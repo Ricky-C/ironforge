@@ -91,6 +91,18 @@ module "portal_frontend" {
   hosted_zone_id  = module.dns.hosted_zone_id
 }
 
+# Portal Lambda substrate (ADR-011): ECR + IAM execution role + log
+# group. PR-A creates the substrate; PR-B adds the Lambda function +
+# Function URL consuming this module's outputs and switches the
+# cloudfront-frontend origin from S3 to the Function URL via OAC; PR-C
+# destroys the legacy `ironforge-portal-<account-id>` S3 bucket after
+# stable Lambda serving.
+module "portal_lambda" {
+  source = "../../modules/portal-lambda"
+
+  permissions_boundary_arn = module.lambda_baseline.boundary_policy_arn
+}
+
 module "cloudtrail" {
   source = "../../modules/cloudtrail"
 }
