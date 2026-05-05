@@ -1,11 +1,13 @@
 # Multi-stage build for the Ironforge portal Lambda image
-# (ADR-011: Lambda Web Adapter + container-image deployment).
+# (ADR-011: Lambda Web Adapter + container-image deployment;
+# see ADR-011 amendment 2026-05-05 for the runtime base image
+# correction below).
 #
 # Builder stage: Node.js 22 + pnpm. Installs workspace dependencies,
 # builds the Next.js standalone bundle at apps/web/.next/standalone/.
 #
-# Runtime stage: AWS Lambda Node.js 22 base + LWA extension. LWA
-# forwards Lambda HTTP events to the standalone server's PORT.
+# Runtime stage: plain Debian Node 22 + LWA extension. LWA forwards
+# Lambda HTTP invocation events to the standalone server's PORT.
 
 # ============================================================================
 # Builder
@@ -49,31 +51,26 @@ RUN pnpm --filter @ironforge/web build
 # Runtime
 # ============================================================================
 
-FROM public.ecr.aws/lambda/nodejs:22
+# Plain Debian Node base, NOT public.ecr.aws/lambda/nodejs:22 — see
+# ADR-011 amendment 2026-05-05 (PR-107). The Lambda Node.js base image's
+# /lambda-entrypoint.sh enforces $# -eq 1 (exactly one handler-spec arg)
+# before /var/runtime/bootstrap is reached, so AWS_LAMBDA_EXEC_WRAPPER
+# never takes effect with multi-arg CMD. The deeper issue is pattern-fit:
+# a web-server Lambda doesn't use the handler model and has no need for
+# the Lambda runtime client. Plain Node is the LWA-blessed default for
+# container-image LWA Lambdas (https://aws.github.io/aws-lambda-web-adapter/);
+# only the LWA extension at /opt/extensions/ needs to be installed for
+# Lambda's runtime to load it during init.
+#
+# ECR public mirror (not Docker Hub directly) to avoid anonymous-pull
+# rate limits in CI and to stay AWS-native for image distribution.
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim
 
-# AWS Lambda Web Adapter — installed in TWO modes for the Lambda
-# Node.js base image:
-#
-#   1. EXTENSION at /opt/extensions/ — Lambda runtime auto-loads
-#      extensions on init. The extension intercepts Lambda invocation
-#      events and proxies them as HTTP to the local Next.js server on
-#      PORT.
-#
-#   2. WRAPPER at /opt/bootstrap (referenced by AWS_LAMBDA_EXEC_WRAPPER
-#      below) — replaces the standard Lambda Node.js runtime client.
-#      Without this, the runtime tries to interpret CMD as a Lambda
-#      handler spec (`<module>.<handler>`), tries to import module
-#      'server' from CMD ["server.js"], fails with
-#      Runtime.ImportModuleError. The wrapper bypasses handler loading
-#      and runs CMD as a shell command (node server.js).
-#
-# The Lambda base image's /lambda-entrypoint.sh -> /var/runtime/bootstrap
-# checks AWS_LAMBDA_EXEC_WRAPPER; if set, exec's the wrapper with the
-# original args. LWA's wrapper interprets args as the command to run.
-# Both files are the same binary in the LWA image; copying twice for
-# semantic clarity (extension role vs wrapper role).
+# AWS Lambda Web Adapter — extension only. Lambda's init phase loads
+# binaries from /opt/extensions/ regardless of base image. The extension
+# intercepts Lambda invocation events and proxies them as HTTP to the
+# local Next.js server on PORT.
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/bootstrap
 
 # Standalone bundle from builder. With outputFileTracingRoot pointing
 # at the monorepo root, .next/standalone/ contains the workspace
@@ -91,19 +88,15 @@ COPY --from=builder /repo/apps/web/public /var/task/apps/web/public
 WORKDIR /var/task/apps/web
 
 # LWA configuration:
-#  - AWS_LAMBDA_EXEC_WRAPPER: points at the LWA wrapper binary. Lambda
-#    runtime exec's this instead of loading a handler. The wrapper
-#    runs CMD as a shell command, starting the Next.js server.
 #  - PORT: where the Next.js server listens. Standalone's default is
 #    3000; LWA's default is 8080 — set explicitly so they agree.
 #  - AWS_LWA_READINESS_CHECK_PATH: app/api/health/route.ts returns 200.
 #    LWA waits for this before forwarding production requests; prevents
 #    502s during cold start while Next.js initializes.
-ENV AWS_LAMBDA_EXEC_WRAPPER=/opt/bootstrap
 ENV PORT=8080
 ENV AWS_LWA_READINESS_CHECK_PATH=/api/health
 
-# CMD as JSON-array exec form (no shell). With AWS_LAMBDA_EXEC_WRAPPER
-# set, this isn't interpreted as a Lambda handler spec — LWA's wrapper
-# exec's `node server.js` directly.
+# Plain Node base image: no /lambda-entrypoint.sh; CMD runs as the
+# container's command directly. LWA's extension forwards Lambda
+# invocation events as HTTP to the Next.js server.
 CMD ["node", "server.js"]
