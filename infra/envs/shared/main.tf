@@ -260,23 +260,36 @@ resource "aws_lambda_function_url" "portal" {
   # invoke this URL via SigV4 (signed by the OAC in cloudfront-frontend).
 }
 
-# Lambda permission for CloudFront -> Function URL invocation (ADR-011 PR-B
-# commit 5). Security chain:
+# Lambda permissions for CloudFront -> Function URL invocation (ADR-011 PR-B
+# commit 5; second permission added 2026-05-05 PR-108 after live verification
+# revealed AWS docs require BOTH actions for OAC + Function URL).
+#
+# Security chain:
 #
 #   1. CloudFront receives a request, signs it via SigV4 using the Lambda
 #      OAC (cloudfront-frontend module's aws_cloudfront_origin_access_control
 #      .portal_lambda).
-#   2. Lambda Function URL receives the signed request and validates against
-#      AWS_IAM auth: principal is cloudfront.amazonaws.com, source_arn is
-#      this specific distribution's ARN.
-#   3. Both checks pass -> Lambda invocation proceeds.
+#   2. Lambda Function URL gateway receives the signed request and validates
+#      lambda:InvokeFunctionUrl against AWS_IAM auth: principal must be
+#      cloudfront.amazonaws.com, source_arn must match this distribution.
+#   3. Function URL gateway hands off to the underlying Lambda invocation,
+#      which separately requires lambda:InvokeFunction (the standard Lambda
+#      invoke action) for the same principal + source_arn. Without this
+#      second grant the chain fails at step 3 with AccessDeniedException
+#      from the Function URL even though step 2 passes.
+#   4. Both checks pass -> Lambda is invoked, LWA proxies the HTTP request
+#      to the Next.js standalone server.
 #
 # Direct unsigned hits to the Function URL fail at step 2 (no SigV4
 # signature), preserving the WAF-on-CloudFront guarantee from CLAUDE.md
-# § Security Guardrails. function_url_auth_type = "AWS_IAM" is the bridge
-# argument that ties this permission to the Function URL's auth model
-# (verified present in AWS provider 5.70+ schema during PR-B commit 5
-# pre-flight).
+# § Security Guardrails. The two-permission pattern matches the AWS docs
+# example: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-lambda.html
+#
+# function_url_auth_type = "AWS_IAM" on the InvokeFunctionUrl permission
+# scopes that grant to Function URL invocations specifically (defense in
+# depth). It is omitted from the InvokeFunction permission since that
+# action is not Function-URL-specific and the lambda:FunctionUrlAuthType
+# context key is not populated for direct InvokeFunction evaluation.
 resource "aws_lambda_permission" "cloudfront_invoke_portal" {
   statement_id           = "AllowCloudFrontPortalInvoke"
   action                 = "lambda:InvokeFunctionUrl"
@@ -284,4 +297,12 @@ resource "aws_lambda_permission" "cloudfront_invoke_portal" {
   function_url_auth_type = "AWS_IAM"
   principal              = "cloudfront.amazonaws.com"
   source_arn             = module.portal_frontend.distribution_arn
+}
+
+resource "aws_lambda_permission" "cloudfront_invoke_portal_function" {
+  statement_id  = "AllowCloudFrontPortalInvokeFunction"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.portal.function_name
+  principal     = "cloudfront.amazonaws.com"
+  source_arn    = module.portal_frontend.distribution_arn
 }
