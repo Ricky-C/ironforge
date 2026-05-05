@@ -100,31 +100,38 @@ jobs:
         # is amd64 instead of arm64, Lambda fails invocation with a cryptic
         # arch-mismatch error; surface here so the deploy fails fast.
         #
-        # The jq path on `--raw` worked for buildx's default OCI manifest
-        # list (provenance enabled) — `.manifests[0].platform.architecture`
-        # walks the manifest-list shape. With provenance: false (PR #103,
-        # required for Lambda compatibility), buildx outputs a single-arch
-        # Docker V2 manifest where `.architecture` lives in the CONFIG blob,
-        # not at the manifest root. `--raw` returns just the manifest, so
-        # the jq path falls through to "unknown" and verification fails
-        # spuriously even when the image IS arm64.
+        # Iteration history (preserved as context for the next reader):
+        #   PR-B: --raw | jq '.manifests[0].platform.architecture // .architecture'
+        #     Worked against buildx's default OCI manifest list (provenance
+        #     enabled). Broke under PR #103's provenance: false because
+        #     single-arch Docker V2 manifests don't expose architecture at
+        #     manifest root (it's in the config blob, separate fetch).
+        #   PR #104: --format '{{.image.architecture}}' (lowercase)
+        #     Wrong: Go templates use Go's exported field names (capitalized),
+        #     not JSON-tag lowercase. Format expression errored silently
+        #     ("can't evaluate field image"); stdout empty; ARCH=unknown.
+        #   This: --format '{{.Image.Architecture}}' (capitalized)
+        #     Verified locally against the live ECR image: returns "arm64".
+        #     Capitalized matches buildx's tplInput Go struct fields.
         #
-        # `--format '{{.image.architecture}}'` uses buildx's parsed
-        # representation, which fetches both manifest and config and
-        # surfaces architecture (lowercase, per the buildx tplInput shape)
-        # for single-arch images. For multi-arch (shouldn't happen under
-        # provenance: false but defensive), `.image` is keyed by platform
-        # and the format expression returns empty -> ARCH=unknown ->
-        # verification fails (correct behavior; we don't want to
-        # accidentally produce multi-arch).
+        # Diagnostic output on failure: dumps inspect stderr + raw manifest
+        # preview so a subsequent iteration doesn't have to re-derive what
+        # failed. The cost is a few extra lines of log on the unhappy path.
         run: |
           set +e
-          ARCH=$(docker buildx imagetools inspect "${ECR_IMAGE}:${{ github.sha }}" --format '{{.image.architecture}}' 2>/dev/null)
+          ARCH=$(docker buildx imagetools inspect "${ECR_IMAGE}:${{ github.sha }}" --format '{{.Image.Architecture}}' 2>/tmp/inspect-err)
+          INSPECT_RC=$?
           set -e
           [ -z "$ARCH" ] && ARCH="unknown"
           if [ "$ARCH" != "arm64" ]; then
             echo "ERROR: Built image architecture is '$ARCH'; expected 'arm64'." >&2
             echo "Lambda is configured architectures = [\"arm64\"]; mismatched image will fail invocation." >&2
+            echo "--- inspect exit code: $INSPECT_RC ---" >&2
+            echo "--- inspect stderr ---" >&2
+            cat /tmp/inspect-err >&2 || true
+            echo "--- raw manifest preview (first 500 chars) ---" >&2
+            docker buildx imagetools inspect "${ECR_IMAGE}:${{ github.sha }}" --raw 2>/dev/null | head -c 500 >&2 || true
+            echo "" >&2
             exit 1
           fi
           echo "Image architecture verified: arm64"
