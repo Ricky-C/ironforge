@@ -169,3 +169,26 @@ The numbered tasks below describe the migration's content; the PR allocation is 
 - **`feedback_oidc_resource_enumeration.md`** + **`feedback_oidc_doc_drift.md`** — apply role expansion discipline.
 - **`infra/modules/cloudfront-frontend/`** — current portal infrastructure to migrate.
 - **`.github/workflows/app-deploy.yml`** — current portal deploy workflow to rewrite.
+
+## Amendments
+
+### 2026-05-05 (PR-107) — Base image correction: switch from `public.ecr.aws/lambda/nodejs:22` to `public.ecr.aws/docker/library/node:22-bookworm-slim`; runtime patterns shouldn't share a base image just because they share container delivery
+
+**What was discovered.** PR-B's runtime configuration crashed every Lambda invocation at init, surfacing first as `Runtime.ImportModuleError: Cannot find module 'server'` (CMD interpreted as `<module>.<handler>` handler spec) and — after PR-106's `AWS_LAMBDA_EXEC_WRAPPER` fix — as `Runtime.ExitError: entrypoint requires the handler name to be the first argument`, exit 142. CloudWatch traced the failure to the Lambda Node.js base image's `/lambda-entrypoint.sh`, which enforces `[ $# -ne 1 ]` (exactly one handler-spec arg) before invoking `/var/runtime/bootstrap`. Because that arg-count check runs first, `AWS_LAMBDA_EXEC_WRAPPER` (which is consumed inside `/var/runtime/bootstrap`) never takes effect with our two-arg `CMD ["node", "server.js"]`. The wrapper-mode pattern works for ZIP packages (handler is a single arg like `run.sh`) and for plain Node base images (no entrypoint script). It does not work as drafted on the AWS Lambda Node.js base image.
+
+LWA's documentation site states the constraint directly: *"This works with any base image except AWS managed base images. To use AWS managed base images, override the `ENTRYPOINT`."* Every Dockerfile-bearing example in `awslabs/aws-lambda-web-adapter` (Next.js, fasthtml, sveltekit, rust-axum, etc.) uses a plain Debian or Alpine Node base, never the Lambda Node.js base.
+
+**What was wrong with the original framing.** ADR-011 § "Container pattern reuse from ADR-009" justified the Lambda Node.js base image as "same plumbing" with the run-terraform Lambda. That collapsed two distinct runtime patterns into one decision:
+
+- **run-terraform** is a true handler-based Lambda. A Go binary is invoked per Step Functions task with a JSON event; the Lambda runtime client manages the invocation lifecycle. The Lambda base image ships exactly that runtime client. Pattern fit: tight.
+- **portal** is a long-running web server proxied by LWA. There is no handler model, no per-invocation lifecycle for application code, no runtime client interaction. The Lambda base image's `/lambda-entrypoint.sh` + `/var/runtime/bootstrap` chain is hostile, not helpful, to this pattern.
+
+The two Lambdas share **container-image delivery** (ECR repo + image-mode Lambda + image-tag SSM handoff). They do not share a **runtime model**. Pattern-matching on delivery and missing the runtime distinction was the source of the bug.
+
+**Decision change.** Switch the portal runtime base image to `public.ecr.aws/docker/library/node:22-bookworm-slim`. Drop `AWS_LAMBDA_EXEC_WRAPPER`, the `/opt/bootstrap` LWA copy, and the wrapper-mode comment block. Retain the LWA extension at `/opt/extensions/lambda-adapter` — Lambda's init loads `/opt/extensions/*` regardless of base image, so the extension still intercepts invocation events and proxies them as HTTP to the standalone server on PORT. ECR public mirror chosen over Docker Hub directly to avoid anonymous-pull rate limits in CI and to stay AWS-native for image distribution.
+
+**What this preserves.** Every other ADR-011 decision survives untouched: LWA + container-image delivery model, Lambda Function URL invocation, CloudFront origin pattern, OAC `origin_type = "lambda"`, full-Lambda static-asset serving, ECR repo (`ironforge-portal`) + IAM execution role + log group from PR-A's substrate, SSM `/ironforge/portal/image-uri` handoff, app-deploy.yml flow, the cold-start verification gate, and PR-C's S3 destroy plan. The change is scoped to `apps/web/Dockerfile`'s runtime stage; no infrastructure module changes, no CI workflow changes, no application code changes.
+
+**Lesson.** Two Lambdas sharing one delivery mechanism (container images via ECR) does not mean they should share a runtime substrate. ADR-011's original "container pattern reuse from ADR-009" framing was right at the delivery layer and wrong at the runtime layer. Future ADRs that propose reusing a pattern from a sibling ADR should distinguish between "delivery / packaging" reuse and "runtime / execution model" reuse, since the answers can diverge.
+
+**Tracked.** `feedback_lambda_container_image_pitfalls.md` already captures the three iterative discoveries (provenance, Go template casing, LWA wrapper-mode); the runtime-pattern misclassification — distinct from those mechanical fixes — gets its own memory entry to surface for future ADR / pattern-reuse decisions.
