@@ -73,6 +73,16 @@ jobs:
         # Double-tagged: :latest gives a rolling pointer to head; :<sha> is
         # immutable for rollback debugging. Lambda's image_uri uses the
         # manifest digest (captured below) for deploy reproducibility.
+        #
+        # provenance: false disables docker/build-push-action's default SLSA
+        # provenance attestation. Without this, buildx produces an OCI image
+        # manifest list with attestation manifests that AWS Lambda's image-
+        # pull validator rejects with InvalidParameterValueException ("image
+        # manifest, config or layer media type ... is not supported").
+        # Discovered on PR-B merge (commit 9559a45 + cutover sequence) when
+        # update-function-code failed against the first OCI-attested image
+        # push. Provenance is recoverable via separate signing if needed
+        # later — Lambda compatibility is non-negotiable.
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -80,6 +90,7 @@ jobs:
           file: apps/web/Dockerfile
           platforms: linux/arm64
           push: true
+          provenance: false
           tags: |
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
