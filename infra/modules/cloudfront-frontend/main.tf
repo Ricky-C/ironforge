@@ -167,6 +167,28 @@ resource "aws_cloudfront_origin_access_control" "portal" {
   signing_protocol                  = "sigv4"
 }
 
+# OAC for the portal Lambda Function URL (ADR-011 PR-B commit 5). CloudFront
+# signs origin requests via SigV4; the Function URL is AUTH_AWS_IAM-protected;
+# aws_lambda_permission (in shared/main.tf) grants CloudFront's service
+# principal to invoke when signed by this OAC. Direct unsigned hits to the
+# Function URL fail at IAM auth — preserves the WAF-on-CloudFront guarantee.
+resource "aws_cloudfront_origin_access_control" "portal_lambda" {
+  provider = aws.us_east_1
+
+  name                              = "ironforge-portal-lambda-oac"
+  description                       = "OAC for the Ironforge portal Lambda Function URL origin."
+  origin_access_control_origin_type = "lambda"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+locals {
+  # Strip the https:// prefix and trailing slash to get the bare hostname
+  # CloudFront's origin domain_name expects. Validation on the variable
+  # ensures the input matches the Lambda Function URL shape.
+  lambda_function_url_hostname = trimsuffix(trimprefix(var.lambda_function_url, "https://"), "/")
+}
+
 # ============================================================================
 # WAF Web ACL — managed rule groups + IP-based rate limiting
 # ============================================================================
@@ -361,43 +383,53 @@ resource "aws_cloudfront_distribution" "portal" {
 
   aliases = [var.domain_name]
 
+  # S3 origin (ADR-011 PR-B commit 5): retained for rollback safety through
+  # PR-B. PR-C destroys the bucket + removes this origin block after the
+  # post-cutover stability window passes. The bucket policy still references
+  # this distribution's ARN — keeping the origin defined preserves that
+  # forward-reference unchanged.
   origin {
     domain_name              = aws_s3_bucket.portal.bucket_regional_domain_name
     origin_id                = "s3-portal"
     origin_access_control_id = aws_cloudfront_origin_access_control.portal.id
   }
 
+  # Lambda Function URL origin (ADR-011 PR-B commit 5): the new default
+  # cache behavior origin. CloudFront signs requests via OAC; Lambda
+  # validates the SigV4 signature against AWS_IAM auth + the
+  # aws_lambda_permission (shared/main.tf) granting cloudfront.amazonaws.com
+  # to invoke this distribution's source_arn.
+  origin {
+    domain_name              = local.lambda_function_url_hostname
+    origin_id                = "lambda-portal"
+    origin_access_control_id = aws_cloudfront_origin_access_control.portal_lambda.id
+
+    # Lambda Function URLs are HTTPS-only on the standard 443 port.
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
   default_cache_behavior {
     allowed_methods  = ["GET", "HEAD"]
     cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "s3-portal"
+    target_origin_id = "lambda-portal"
 
     viewer_protocol_policy = "redirect-to-https"
     compress               = true
 
     # AWS-managed cache policy "Managed-CachingOptimized" — cache GET/HEAD
     # without query strings or cookies. ID is stable across all AWS accounts.
+    # Cache strategy revisits at subphase 2.5 when Cognito Hosted UI cookies
+    # become load-bearing for Lambda's per-user rendering; until then, the
+    # placeholder/portal HTML is identical across visitors and aggressive
+    # caching is correct.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
 
     response_headers_policy_id = aws_cloudfront_response_headers_policy.portal.id
-  }
-
-  # SPA fallback: serve /index.html with a 200 status when S3 returns 403/404.
-  # This lets client-side routing handle deep links that don't map to a
-  # physical export file. response_code=200 (not the upstream status) ensures
-  # the browser treats it as a successful page load, not a cached error.
-  custom_error_response {
-    error_code            = 403
-    response_code         = 200
-    response_page_path    = "/index.html"
-    error_caching_min_ttl = 60
-  }
-
-  custom_error_response {
-    error_code            = 404
-    response_code         = 200
-    response_page_path    = "/index.html"
-    error_caching_min_ttl = 60
   }
 
   restrictions {

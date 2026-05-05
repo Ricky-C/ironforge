@@ -86,9 +86,10 @@ module "portal_frontend" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  domain_name     = "ironforge.rickycaballero.com"
-  certificate_arn = module.dns.certificate_arn
-  hosted_zone_id  = module.dns.hosted_zone_id
+  domain_name         = "ironforge.rickycaballero.com"
+  certificate_arn     = module.dns.certificate_arn
+  hosted_zone_id      = module.dns.hosted_zone_id
+  lambda_function_url = aws_lambda_function_url.portal.function_url
 }
 
 # Portal Lambda substrate (ADR-011): ECR + IAM execution role + log
@@ -255,7 +256,32 @@ resource "aws_lambda_function_url" "portal" {
   function_name      = aws_lambda_function.portal.function_name
   authorization_type = "AWS_IAM"
 
-  # PR-B commit 5 adds aws_lambda_permission allowing CloudFront's service
-  # principal to invoke this URL via SigV4 (signed by OAC). Until then,
-  # direct unsigned hits fail at IAM auth.
+  # aws_lambda_permission below grants CloudFront's service principal to
+  # invoke this URL via SigV4 (signed by the OAC in cloudfront-frontend).
+}
+
+# Lambda permission for CloudFront -> Function URL invocation (ADR-011 PR-B
+# commit 5). Security chain:
+#
+#   1. CloudFront receives a request, signs it via SigV4 using the Lambda
+#      OAC (cloudfront-frontend module's aws_cloudfront_origin_access_control
+#      .portal_lambda).
+#   2. Lambda Function URL receives the signed request and validates against
+#      AWS_IAM auth: principal is cloudfront.amazonaws.com, source_arn is
+#      this specific distribution's ARN.
+#   3. Both checks pass -> Lambda invocation proceeds.
+#
+# Direct unsigned hits to the Function URL fail at step 2 (no SigV4
+# signature), preserving the WAF-on-CloudFront guarantee from CLAUDE.md
+# § Security Guardrails. function_url_auth_type = "AWS_IAM" is the bridge
+# argument that ties this permission to the Function URL's auth model
+# (verified present in AWS provider 5.70+ schema during PR-B commit 5
+# pre-flight).
+resource "aws_lambda_permission" "cloudfront_invoke_portal" {
+  statement_id           = "AllowCloudFrontPortalInvoke"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.portal.function_name
+  function_url_auth_type = "AWS_IAM"
+  principal              = "cloudfront.amazonaws.com"
+  source_arn             = module.portal_frontend.distribution_arn
 }
