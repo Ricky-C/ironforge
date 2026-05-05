@@ -68,6 +68,14 @@ Each entry has:
 - **Action:** Replace `frame-ancestors 'none'` with a full directive set: at minimum `default-src 'self'; script-src 'self' [Cognito hosted UI domain]; connect-src 'self' [API Gateway origin]; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`. Verify against the actual Next.js build output — `'unsafe-inline'` may be needed for styled-components or runtime CSS-in-JS depending on what the bundle ships. Test in report-only mode (`Content-Security-Policy-Report-Only` header via a separate response headers policy) for at least one deploy cycle before enforcing, so violations are observed before they break the page.
 - **Where:** `infra/modules/cloudfront-frontend/main.tf` (`aws_cloudfront_response_headers_policy.portal` resource, `content_security_policy` block).
 
+#### Cache policy revisit at subphase 2.5 (auth integration)
+
+- **What:** CloudFront's `default_cache_behavior.cache_policy_id` on the portal distribution is set to `Managed-CachingOptimized` (`658327ea-f89d-4fab-a63d-7e88639e58f6`) post-PR-B cutover. That policy strips cookies and most query strings from the cache key — correct for the unauthenticated portal + Next.js public surface (every visitor sees the same HTML), but wrong when subphase 2.5 introduces Cognito Hosted UI session cookies that gate per-user rendering: all visitors would share a cached response keyed without their cookies.
+- **Why deferred:** PR-B's cutover happens before auth lands. Picking the eventual cache policy now would require either committing to a less-cacheable default (slower cold-path for everyone) or designing the cache-behavior split before the auth flow is concrete. Better to expand once the auth surface stabilizes.
+- **When to revisit:** Subphase 2.5 (auth) work begins, OR any per-user response shape lands before that (Cognito Hosted UI redirect token handling, server-side personalized rendering, etc.).
+- **Action:** Likely split cache behaviors on the distribution: public routes (e.g., `/`, `/_next/static/*`) keep `Managed-CachingOptimized`; auth-required routes (e.g., `/services/*`, `/wizard`) use `Managed-CachingDisabled` (`4135ea2d-6df8-44a3-9df3-4b5a84be39ad`) or a custom cache policy that includes `Cookie` in the cache key for auth-aware caching with reasonable TTL.
+- **Where:** `infra/modules/cloudfront-frontend/main.tf` (`aws_cloudfront_distribution.portal.default_cache_behavior` block; PR-B commit `9559a45` added the inline comment noting this revisit). Reference: ADR-010, ADR-011.
+
 #### Per-service ACM cert as opt-in template input
 
 - **What:** Provisioned services share a single wildcard ACM cert (`*.ironforge.rickycaballero.com`, pre-issued in shared composition, us-east-1) attached to every CloudFront distribution. Per-service certs (one ACM cert per provisioned subdomain, DNS-validated at provision time) are not supported.

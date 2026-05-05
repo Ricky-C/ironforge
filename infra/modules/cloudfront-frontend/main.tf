@@ -374,12 +374,19 @@ resource "aws_cloudfront_response_headers_policy" "portal" {
 resource "aws_cloudfront_distribution" "portal" {
   provider = aws.us_east_1
 
-  enabled             = true
-  is_ipv6_enabled     = true
-  comment             = "Ironforge portal — ${var.domain_name}"
-  price_class         = "PriceClass_100"
+  enabled         = true
+  is_ipv6_enabled = true
+  comment         = "Ironforge portal — ${var.domain_name}"
+  price_class     = "PriceClass_100"
+
+  # default_root_object retained intentionally — harmless under SSR (Lambda
+  # handles "/" regardless of root-object mapping), but preserves rollback
+  # symmetry if S3 origin is restored as the default cache behavior (R1 path
+  # in docs/runbook.md § 13). Remove only if S3 origin is permanently
+  # removed (PR-C scope).
   default_root_object = "index.html"
-  web_acl_id          = aws_wafv2_web_acl.portal.arn
+
+  web_acl_id = aws_wafv2_web_acl.portal.arn
 
   aliases = [var.domain_name]
 
