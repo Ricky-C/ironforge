@@ -161,3 +161,101 @@ module "github_app_secret" {
     "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${name}-execution"
   ]
 }
+
+# ============================================================================
+# Portal Lambda function + Function URL (ADR-011 PR-B commit 3)
+# ============================================================================
+#
+# Lambda function consumes the SSM-tracked image URI (Y2 design from ADR-011
+# gap-2). .github/workflows/app-deploy.yml writes the real image digest URI
+# to /ironforge/portal/image-uri on each deploy via put-parameter --overwrite
+# AND directly updates Lambda via aws lambda update-function-code; the data
+# source below keeps terraform's view of image_uri in sync. Steady-state
+# applies are no-op because state, config (data source value), and actual
+# Lambda image_uri all match.
+#
+# PR-B commit 5 adds the OAC + aws_lambda_permission wiring for CloudFront
+# -> Function URL via SigV4 signing. Until then, the Function URL is
+# AUTH_AWS_IAM-protected; direct unsigned hits fail at the IAM auth check
+# (the desired posture for the verification gate — operator awscurl with
+# SigV4 succeeds; unsigned curl fails).
+
+# Import block handles first-apply when app-deploy.yml has already created
+# the SSM parameter (workflow_run sequencing means app-deploy runs first).
+# After first successful apply, this block becomes a no-op and can be
+# removed in a follow-up commit. Leaving it in is harmless.
+import {
+  to = aws_ssm_parameter.portal_image_uri
+  id = "/ironforge/portal/image-uri"
+}
+
+resource "aws_ssm_parameter" "portal_image_uri" {
+  name = "/ironforge/portal/image-uri"
+  type = "String"
+
+  # Initial value used only on first-ever apply when the SSM parameter
+  # doesn't already exist. The import block above handles the typical
+  # case (app-deploy.yml created it via put-parameter); the lifecycle
+  # ignore below ensures terraform doesn't revert app-deploy.yml's
+  # subsequent value updates.
+  value = "${module.portal_lambda.ecr_repository_url}:placeholder"
+
+  description = "Current portal Lambda image URI. Written by .github/workflows/app-deploy.yml on each deploy via put-parameter --overwrite; read by data.aws_ssm_parameter.portal_image_uri to set the Lambda's image_uri attribute."
+
+  lifecycle {
+    # value is managed out-of-band by app-deploy.yml's put-parameter
+    # --overwrite. terraform creates with the placeholder URI above
+    # but doesn't track subsequent updates.
+    ignore_changes = [value]
+  }
+}
+
+data "aws_ssm_parameter" "portal_image_uri" {
+  name = aws_ssm_parameter.portal_image_uri.name
+}
+
+resource "aws_lambda_function" "portal" {
+  function_name = module.portal_lambda.lambda_function_name
+  role          = module.portal_lambda.lambda_role_arn
+  package_type  = "Image"
+  image_uri     = data.aws_ssm_parameter.portal_image_uri.value
+
+  # 1024 MB matches LWA + Next.js cold-start working set per ADR-011 § Q2.
+  # Data-driven bump to 2048 if the first-load-latency gate fails on memory
+  # pressure rather than image-pull cold start.
+  memory_size = 1024
+
+  # 30s is sufficient for portal page rendering at portfolio scale; API
+  # client timeouts cap at the proxy boundary (in-Lambda fetch from the
+  # Ironforge API).
+  timeout = 30
+
+  # arm64 matches the Dockerfile build (PR-B commit 2 uses buildx + QEMU
+  # to produce arm64 images on amd64 runners). Lambda rejects image_uri
+  # references with arch mismatch.
+  architectures = ["arm64"]
+
+  environment {
+    variables = {
+      # AWS Lambda Web Adapter readiness check — LWA waits for /api/health
+      # to return 200 before forwarding production requests.
+      AWS_LWA_READINESS_CHECK_PATH = "/api/health"
+      # Standalone server's HTTP port. LWA's default is 8080; matched here
+      # to the Dockerfile's PORT env so they agree.
+      PORT = "8080"
+    }
+  }
+
+  tags = {
+    "ironforge-component" = "portal-lambda"
+  }
+}
+
+resource "aws_lambda_function_url" "portal" {
+  function_name      = aws_lambda_function.portal.function_name
+  authorization_type = "AWS_IAM"
+
+  # PR-B commit 5 adds aws_lambda_permission allowing CloudFront's service
+  # principal to invoke this URL via SigV4 (signed by OAC). Until then,
+  # direct unsigned hits fail at IAM auth.
+}
