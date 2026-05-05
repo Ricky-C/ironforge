@@ -379,12 +379,23 @@ resource "aws_cloudfront_distribution" "portal" {
   comment         = "Ironforge portal — ${var.domain_name}"
   price_class     = "PriceClass_100"
 
-  # default_root_object retained intentionally — harmless under SSR (Lambda
-  # handles "/" regardless of root-object mapping), but preserves rollback
-  # symmetry if S3 origin is restored as the default cache behavior (R1 path
-  # in docs/runbook.md § 13). Remove only if S3 origin is permanently
-  # removed (PR-C scope).
-  default_root_object = "index.html"
+  # default_root_object MUST be unset for the Lambda Function URL origin.
+  # CloudFront applies default_root_object as a path REWRITE at the edge
+  # before the origin sees the request: "GET /" becomes "GET /index.html"
+  # for the cache behavior's target origin, regardless of origin type.
+  # With the S3 origin (Phase 0) /index.html WAS the static prerender so
+  # the rewrite was correct. With the Lambda Function URL origin, /index.html
+  # is a literal path with no Next.js route — Lambda receives /index.html,
+  # Next.js routes it to /_not-found, and the user sees a 404 at the portal
+  # root. PR-B's "harmless under SSR" comment was empirically wrong; PR-109
+  # corrects it after the live regression on /. Discovery captured in
+  # feedback_cloudfront_default_root_object_origin_type_dependent.md.
+  #
+  # Rollback to the S3 origin (R1 in docs/runbook.md § 13) requires
+  # repopulating the bucket first (it is empty since PR-B) at which point
+  # this attribute is re-added in the same PR — so removing it now does not
+  # erode rollback safety.
+  default_root_object = ""
 
   web_acl_id = aws_wafv2_web_acl.portal.arn
 
