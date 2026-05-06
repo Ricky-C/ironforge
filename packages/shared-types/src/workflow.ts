@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { ServiceNameSchema } from "./service.js";
+import { ServiceNameSchema } from "./service";
 
 // Input payload for a Step Functions execution. Carries the
 // workflow-invariant snapshot — fields that are immutable across the run
