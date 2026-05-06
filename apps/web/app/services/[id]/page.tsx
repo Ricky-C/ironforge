@@ -23,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ApiClientError, apiClient } from "@/lib/api-client";
+import { StatusBadge } from "@/components/status-badge";
 import type { Service } from "@ironforge/shared-types";
 
 type ServiceDetailPageProps = {
@@ -221,28 +222,3 @@ function DeprovisionAction({ service }: { service: Service }): React.ReactNode {
   );
 }
 
-function StatusBadge({
-  status,
-}: {
-  status: Service["status"];
-}): React.ReactNode {
-  const colorMap: Record<Service["status"], string> = {
-    pending:
-      "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-    provisioning:
-      "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-    deprovisioning:
-      "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-    live: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-    failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-    archived:
-      "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-  };
-  return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-xs font-medium ${colorMap[status]}`}
-    >
-      {status}
-    </span>
-  );
-}
