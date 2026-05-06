@@ -1,6 +1,8 @@
 import {
   ApiResponseSchema,
+  DeprovisionServiceResponseSchema,
   ServiceSchema,
+  type DeprovisionServiceResponse,
   type Service,
 } from "@ironforge/shared-types";
 
@@ -76,4 +78,18 @@ const request = async <T>(
 export const apiClient = {
   getService: (id: string): Promise<Service> =>
     request<Service>(`/api/services/${id}`, { method: "GET" }, ServiceSchema),
+
+  // DELETE /api/services/:id — kicks off deprovisioning (or returns the
+  // existing in-flight Job if status is already deprovisioning). Returns
+  // the full {service, job} composite so callers can link to job-status
+  // polling (subphase 2.4) without an extra fetch. Errors flow through
+  // the standard ApiClientError path: SERVICE_IN_FLIGHT (409 — caller
+  // is expected to wait), NOT_FOUND (404 — archived or never existed),
+  // INTERNAL (500) all surface with code/message/status.
+  deprovisionService: (id: string): Promise<DeprovisionServiceResponse> =>
+    request<DeprovisionServiceResponse>(
+      `/api/services/${id}`,
+      { method: "DELETE" },
+      DeprovisionServiceResponseSchema,
+    ),
 };
