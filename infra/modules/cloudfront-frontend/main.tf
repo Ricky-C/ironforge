@@ -1,171 +1,22 @@
-# Portal frontend: S3 bucket + CloudFront distribution + WAF + Route53 records.
+# Portal frontend: CloudFront distribution + WAF + Route53 records.
 # Single shared instance for ironforge.rickycaballero.com — there is no
 # per-env portal (dev runs locally on localhost; prod is the only env that
-# needs S3+CloudFront serving).
+# needs CloudFront serving).
 #
-# Bucket starts empty after apply. The app-deploy CI workflow (Commit 13)
-# uploads the Next.js static export. CloudFront returns errors until then.
-
-data "aws_caller_identity" "current" {}
+# Origin is the portal Lambda's Function URL (ADR-011 / PR-B). The S3 origin
+# substrate that backed the Phase 0 portal was destroyed in PR-C after the
+# Lambda substrate's cold-start gate + functional checks confirmed it as
+# the sole production substrate.
 
 locals {
-  bucket_name = "ironforge-portal-${data.aws_caller_identity.current.account_id}"
-
   component_tags = {
     "ironforge-component" = "portal-frontend"
   }
 }
 
 # ============================================================================
-# S3 origin bucket
+# CloudFront Origin Access Control — Lambda Function URL origin
 # ============================================================================
-
-resource "aws_s3_bucket" "portal" {
-  provider = aws.us_east_1
-
-  bucket        = local.bucket_name
-  force_destroy = false
-
-  tags = merge(local.component_tags, {
-    Name = local.bucket_name
-  })
-}
-
-resource "aws_s3_bucket_versioning" "portal" {
-  provider = aws.us_east_1
-
-  bucket = aws_s3_bucket.portal.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-# AWS-managed encryption per ADR-003 (Next.js static assets are non-sensitive).
-resource "aws_s3_bucket_server_side_encryption_configuration" "portal" {
-  provider = aws.us_east_1
-
-  bucket = aws_s3_bucket.portal.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "portal" {
-  provider = aws.us_east_1
-
-  bucket = aws_s3_bucket.portal.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "portal" {
-  provider = aws.us_east_1
-
-  bucket = aws_s3_bucket.portal.id
-
-  rule {
-    id     = "abort-incomplete-multipart"
-    status = "Enabled"
-    filter {}
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
-    }
-  }
-
-  rule {
-    id     = "expire-noncurrent-versions"
-    status = "Enabled"
-    filter {}
-    noncurrent_version_expiration {
-      noncurrent_days = 90
-    }
-  }
-
-  depends_on = [aws_s3_bucket_versioning.portal]
-}
-
-# Bucket policy is applied AFTER the distribution exists so the OAC condition
-# can reference the distribution ARN. See depends_on at the bottom.
-data "aws_iam_policy_document" "portal_bucket" {
-  # Allow the CloudFront service to GetObject when the request's source ARN
-  # matches THIS specific distribution. aws:SourceArn (full distribution ARN,
-  # not just SourceAccount) is the secure pattern — prevents another
-  # distribution in this account from reading the bucket.
-  statement {
-    sid    = "AllowCloudFrontOAC"
-    effect = "Allow"
-
-    principals {
-      type        = "Service"
-      identifiers = ["cloudfront.amazonaws.com"]
-    }
-
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.portal.arn}/*"]
-
-    condition {
-      test     = "StringEquals"
-      variable = "AWS:SourceArn"
-      values   = [aws_cloudfront_distribution.portal.arn]
-    }
-  }
-
-  # TLS-only deny.
-  statement {
-    sid     = "DenyInsecureTransport"
-    effect  = "Deny"
-    actions = ["s3:*"]
-
-    resources = [
-      aws_s3_bucket.portal.arn,
-      "${aws_s3_bucket.portal.arn}/*",
-    ]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    condition {
-      test     = "Bool"
-      variable = "aws:SecureTransport"
-      values   = ["false"]
-    }
-  }
-}
-
-resource "aws_s3_bucket_policy" "portal" {
-  provider = aws.us_east_1
-
-  bucket = aws_s3_bucket.portal.id
-  policy = data.aws_iam_policy_document.portal_bucket.json
-
-  depends_on = [
-    aws_s3_bucket_public_access_block.portal,
-    aws_cloudfront_distribution.portal,
-  ]
-}
-
-# ============================================================================
-# CloudFront Origin Access Control
-# ============================================================================
-
-resource "aws_cloudfront_origin_access_control" "portal" {
-  provider = aws.us_east_1
-
-  name                              = "ironforge-portal-oac"
-  description                       = "OAC for the Ironforge portal S3 origin."
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
-}
 
 # OAC for the portal Lambda Function URL (ADR-011 PR-B commit 5). CloudFront
 # signs origin requests via SigV4; the Function URL is AUTH_AWS_IAM-protected;
@@ -383,40 +234,23 @@ resource "aws_cloudfront_distribution" "portal" {
   # CloudFront applies default_root_object as a path REWRITE at the edge
   # before the origin sees the request: "GET /" becomes "GET /index.html"
   # for the cache behavior's target origin, regardless of origin type.
-  # With the S3 origin (Phase 0) /index.html WAS the static prerender so
-  # the rewrite was correct. With the Lambda Function URL origin, /index.html
-  # is a literal path with no Next.js route — Lambda receives /index.html,
-  # Next.js routes it to /_not-found, and the user sees a 404 at the portal
-  # root. PR-B's "harmless under SSR" comment was empirically wrong; PR-109
-  # corrects it after the live regression on /. Discovery captured in
-  # feedback_cloudfront_default_root_object_origin_type_dependent.md.
-  #
-  # Rollback to the S3 origin (R1 in docs/runbook.md § 13) requires
-  # repopulating the bucket first (it is empty since PR-B) at which point
-  # this attribute is re-added in the same PR — so removing it now does not
-  # erode rollback safety.
+  # With the S3 origin (Phase 0, destroyed in PR-C) /index.html WAS the
+  # static prerender so the rewrite was correct. With the Lambda Function
+  # URL origin /index.html is a literal path with no Next.js route — Lambda
+  # receives /index.html, Next.js routes it to /_not-found, and the user
+  # sees a 404 at the portal root. PR-B's "harmless under SSR" comment was
+  # empirically wrong; PR-109 corrected it after the live regression on /.
+  # Discovery captured in feedback_cloudfront_default_root_object_origin_type_dependent.md.
   default_root_object = ""
 
   web_acl_id = aws_wafv2_web_acl.portal.arn
 
   aliases = [var.domain_name]
 
-  # S3 origin (ADR-011 PR-B commit 5): retained for rollback safety through
-  # PR-B. PR-C destroys the bucket + removes this origin block after the
-  # post-cutover stability window passes. The bucket policy still references
-  # this distribution's ARN — keeping the origin defined preserves that
-  # forward-reference unchanged.
-  origin {
-    domain_name              = aws_s3_bucket.portal.bucket_regional_domain_name
-    origin_id                = "s3-portal"
-    origin_access_control_id = aws_cloudfront_origin_access_control.portal.id
-  }
-
-  # Lambda Function URL origin (ADR-011 PR-B commit 5): the new default
-  # cache behavior origin. CloudFront signs requests via OAC; Lambda
-  # validates the SigV4 signature against AWS_IAM auth + the
-  # aws_lambda_permission (shared/main.tf) granting cloudfront.amazonaws.com
-  # to invoke this distribution's source_arn.
+  # Lambda Function URL origin (ADR-011 PR-B commit 5): the sole origin
+  # post-PR-C. CloudFront signs requests via OAC; Lambda validates the SigV4
+  # signature against AWS_IAM auth + the aws_lambda_permission (shared/main.tf)
+  # granting cloudfront.amazonaws.com to invoke this distribution's source_arn.
   origin {
     domain_name              = local.lambda_function_url_hostname
     origin_id                = "lambda-portal"
