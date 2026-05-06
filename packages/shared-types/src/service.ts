@@ -189,13 +189,18 @@ export const CreateServiceRequestSchema = z.object({
 });
 export type CreateServiceRequest = z.infer<typeof CreateServiceRequestSchema>;
 
-// 201 Created response shape: both the new Service and the Job that
-// kicks off provisioning. Lets clients link to job-status polling
-// without an extra fetch.
-export type CreateServiceResponse = {
-  service: Service;
-  job: import("./job").Job;
-};
+// 201 Created response shape for POST /api/services: both the new
+// Service and the Job that kicks off provisioning. Lets clients link
+// to job-status polling without an extra fetch.
+//
+// Schema (not just a TS type) so the api-client validates the
+// envelope at the boundary, matching DeprovisionServiceResponseSchema
+// + ServiceListResponseSchema patterns added in PR-E + PR-F.
+export const CreateServiceResponseSchema = z.object({
+  service: ServiceSchema,
+  job: JobSchema,
+});
+export type CreateServiceResponse = z.infer<typeof CreateServiceResponseSchema>;
 
 // 202 Accepted response shape for DELETE /api/services/:id (kickoff
 // or idempotent re-DELETE during in-flight deprovisioning). Mirrors
