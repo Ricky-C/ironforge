@@ -1324,6 +1324,148 @@ aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
 
 ---
 
+## 14. Recovery: terraform destroy fails on non-empty versioned S3 bucket
+
+### Symptom
+
+`terraform apply` fails with `BucketNotEmpty: The bucket you tried to delete is not empty. You must delete all versions in the bucket.` on a bucket that the diff is removing from configuration.
+
+### Diagnosis
+
+```bash
+AWS_PROFILE=ironforge-admin aws s3api list-object-versions --bucket <bucket-name> --query '{Versions: length(Versions || `[]`), DeleteMarkers: length(DeleteMarkers || `[]`)}' --output json
+```
+
+If `Versions > 0` or `DeleteMarkers > 0`, the bucket has versioned content terraform can't delete via `DeleteBucket` directly. See `docs/tech-debt.md` § "`force_destroy` on `aws_s3_bucket` must be in state at destroy time" for the underlying mechanism — terraform's iterative-version-delete logic only runs when `force_destroy = true` is in STATE, and a resource being removed from config has no apply pass to sync that attribute.
+
+Sanity check what's in the bucket before deletion (cheap insurance — eyeball that filenames look like the expected content, not anything unexpected):
+
+```bash
+AWS_PROFILE=ironforge-admin aws s3api list-object-versions --bucket <bucket-name> --max-items 10 --query 'Versions[].[Key,LastModified,Size]' --output table
+```
+
+If anything looks unexpected (recent timestamps you can't explain, unfamiliar paths), pause and investigate before deleting.
+
+### Recovery
+
+**Step 1 — delete all object versions** (single batch up to 1000; if the bucket has more, repeat until `Versions == 0`):
+
+```bash
+AWS_PROFILE=ironforge-admin aws s3api delete-objects --bucket <bucket-name> --delete "$(AWS_PROFILE=ironforge-admin aws s3api list-object-versions --bucket <bucket-name> --output=json --query='{Objects: Versions[].{Key:Key,VersionId:VersionId}}')"
+```
+
+**Step 2 — delete all delete markers** (same batch shape):
+
+```bash
+AWS_PROFILE=ironforge-admin aws s3api delete-objects --bucket <bucket-name> --delete "$(AWS_PROFILE=ironforge-admin aws s3api list-object-versions --bucket <bucket-name> --output=json --query='{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}')"
+```
+
+**Step 3 — verify empty:**
+
+```bash
+AWS_PROFILE=ironforge-admin aws s3api list-object-versions --bucket <bucket-name> --query '{Versions: length(Versions || `[]`), DeleteMarkers: length(DeleteMarkers || `[]`)}' --output json
+```
+
+Both should be `0`.
+
+**Step 4 — re-run the failed apply** (per `feedback_path_filter_retrigger_pattern` — empty commits don't re-trigger path-filtered workflows; `gh run rerun --failed` is the right shape):
+
+```bash
+gh run rerun --failed <failed-run-id>
+```
+
+### Prevention
+
+- Create new tracked buckets with `force_destroy = true` from day 1 unless there's a specific compliance / ObjectLock reason for `false`. Runtime cost is zero (the attribute only matters at destroy time). See `docs/tech-debt.md` § "`force_destroy` on `aws_s3_bucket` must be in state at destroy time" § "Action — implementation candidates" for the full discipline.
+- Pre-flight check before merging a PR that removes a bucket resource block: run the diagnosis query above; if either count is non-zero, plan the cleanup steps before approving the apply (or include them in the PR description).
+- Verified working: PR-C (2026-05-06) — portal bucket had 184 versions + 32 delete markers from Phase 0 deploys; same procedure cleared in 2 batches with 0 errors; rerun apply succeeded.
+
+---
+
+## 15. Recovery: terraform destroy parallelization race on cross-resource dependencies
+
+### Symptom
+
+`terraform apply` fails with an "in use" error on a resource being destroyed (CloudFront `OriginAccessControlInUse`, IAM `EntityRelationshipExists`, RDS `ResourceInUse`, etc.) where the same plan also has an in-place update on a resource currently referencing it. Apply log shows `Refreshing` for the dependent resource but no `Modifying` — the in-place update never executed.
+
+### Diagnosis
+
+The race is described in detail at `docs/tech-debt.md` § "Terraform parallelizes destroys with in-place modifications across the same apply." Key fingerprint: terraform's planner builds the dependency graph from desired state (where the references no longer exist), then parallelizes operations the dependent resource's CURRENT state would have ordered.
+
+Confirm the race shape:
+
+1. Verify the dependent resource still has the reference in live AWS (the in-place update didn't propagate):
+
+   ```bash
+   # Example for CloudFront → OAC race
+   AWS_PROFILE=ironforge-admin aws cloudfront get-distribution --id <distribution-id> --query 'Distribution.DistributionConfig.Origins.Items[].[Id,OriginAccessControlId]'
+   ```
+
+2. Verify the destroy target still exists and is reported as "in use":
+
+   ```bash
+   AWS_PROFILE=ironforge-admin aws cloudfront get-origin-access-control --id <oac-id>
+   ```
+
+3. Check the apply log for `Modifying` on the dependent resource:
+
+   ```bash
+   gh run view <failed-run-id> --log 2>&1 | grep -E "<dependent-resource-name>:|Modifying"
+   ```
+
+   If only `Refreshing` appears (no `Modifying`), the race fired.
+
+### Recovery
+
+Sequence the dependent resource's reference-removal OUTSIDE terraform (breaks the race), then let terraform's refresh sync state and a subsequent apply destroy the now-unreferenced resource.
+
+**Concrete pattern for CloudFront distribution → S3 OAC** (verified PR-C 2026-05-06; adapt the pattern for other resource pairs):
+
+**Step 1 — capture the distribution config + ETag:**
+
+```bash
+AWS_PROFILE=ironforge-admin aws cloudfront get-distribution-config --id <distribution-id> > /tmp/dist-config.json
+ETAG=$(jq -r '.ETag' /tmp/dist-config.json)
+```
+
+**Step 2 — strip the offending origin block (or other reference) and write the new config:**
+
+```bash
+jq '.DistributionConfig | .Origins.Items |= map(select(.Id != "<origin-id-to-remove>")) | .Origins.Quantity = (.Origins.Items | length)' /tmp/dist-config.json > /tmp/dist-config-new.json
+```
+
+Sanity check the new Origins block before applying:
+
+```bash
+jq '.Origins' /tmp/dist-config-new.json
+```
+
+**Step 3 — apply the manual update:**
+
+```bash
+AWS_PROFILE=ironforge-admin aws cloudfront update-distribution --id <distribution-id> --distribution-config file:///tmp/dist-config-new.json --if-match "$ETAG"
+```
+
+**Step 4 — wait for full deployment** (`update-distribution` returns immediately; CloudFront propagation takes ~5-10 min):
+
+```bash
+AWS_PROFILE=ironforge-admin aws cloudfront wait distribution-deployed --id <distribution-id>
+```
+
+**Step 5 — re-run the failed apply** (terraform will refresh, see live state matches the in-place desired state, and only the destroy will remain in the plan):
+
+```bash
+gh run rerun --failed <failed-run-id>
+```
+
+### Prevention
+
+- In plan review: when a plan shows resource removal AND removal of a reference to that resource in the same diff, flag the parallelization race shape. Cross-reference `docs/tech-debt.md` § "Terraform parallelizes destroys..." to decide between (a) accepting the race and recovering via this procedure if it fires, (b) splitting into two-phase apply via separate PRs, or (c) using `-target` phasing locally during apply.
+- Specifically with CloudFront: distribution origin block + OAC removal in the same plan is a known race shape. Either split into two PRs or pre-commit to manual sequencing.
+- Verified working: PR-C (2026-05-06) — distribution had `s3-portal` origin block referencing OAC `E2XKV1HKFDWP9O`; both removed in same apply; OAC destroy hit `OriginAccessControlInUse` while distribution update never ran. Manual update completed at 03:37:13 UTC; rerun apply destroyed the OAC successfully.
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.
