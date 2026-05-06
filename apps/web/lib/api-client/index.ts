@@ -1,8 +1,11 @@
 import {
   ApiResponseSchema,
+  CreateServiceResponseSchema,
   DeprovisionServiceResponseSchema,
   ServiceListResponseSchema,
   ServiceSchema,
+  type CreateServiceRequest,
+  type CreateServiceResponse,
   type DeprovisionServiceResponse,
   type Service,
   type ServiceListResponse,
@@ -123,5 +126,34 @@ export const apiClient = {
       `/api/services${buildListServicesQuery(params)}`,
       { method: "GET" },
       ServiceListResponseSchema,
+    ),
+
+  // POST /api/services — kicks off provisioning. Returns the new
+  // {service, job} composite. Idempotency-Key prevents double-create
+  // on retry per the project's two-pattern idempotency convention
+  // (HTTP-level here; the workflow-level pattern uses the SFN
+  // execution name). Caller passes a stable key per submit attempt
+  // (typically a crypto.randomUUID generated when the form mounts).
+  // Errors:
+  //   - INVALID_REQUEST (400): body shape failed CreateServiceRequestSchema
+  //   - UNKNOWN_TEMPLATE (400): templateId not in registry
+  //   - INVALID_INPUTS (400): inputs failed per-template schema
+  //   - CONFLICT (409): a service with the same name already exists
+  //   - INTERNAL (500): server error
+  createService: (
+    body: CreateServiceRequest,
+    idempotencyKey: string,
+  ): Promise<CreateServiceResponse> =>
+    request<CreateServiceResponse>(
+      `/api/services`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(body),
+      },
+      CreateServiceResponseSchema,
     ),
 };

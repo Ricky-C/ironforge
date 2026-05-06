@@ -30,14 +30,22 @@ export default function ServiceCatalogPage(): React.ReactNode {
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-6 py-16 sm:py-24">
-        <header>
-          <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
-            Services
-          </h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Static sites provisioned via Ironforge. Click into any service for
-            its detail and deprovision options.
-          </p>
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+              Services
+            </h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Static sites provisioned via Ironforge. Click into any service
+              for its detail and deprovision options.
+            </p>
+          </div>
+          <Link
+            href="/services/new"
+            className="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Create service
+          </Link>
         </header>
 
         <div className="mt-10">

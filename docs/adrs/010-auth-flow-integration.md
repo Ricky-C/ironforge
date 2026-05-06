@@ -153,3 +153,19 @@ One-time setup that happens during subphase 2.5 (auth):
 - **`apps/web/lib/api-client/`** — the typed API client (subphase 2.2) reads the `oidc-client-ts` `UserManager`'s current access token and injects it as Bearer on every request.
 - **`packages/shared-types/`** — the user-claim Zod schema (if added) lives here for type-sharing with the API.
 - **`docs/runbook.md` § Synthetic test user** — the `mint-test-token` SRP-flow dev helper stays in place for backend testing; ADR-010 governs the production portal flow only.
+
+## Amendments
+
+### 2026-05-06 (PR-G) — Subphase 2.3 ships as single-step `CreateServiceForm` at single-template scope; refactors to multi-step wizard when template #2 introduces non-trivial inputs
+
+**What was changed.** ADR-010 § "the auth flow lands across four authenticated surfaces in Phase 2 — service catalog (subphase 2.1), service-detail with DELETE (2.2), multi-step wizard (2.3), and real-time progress polling on the detail page (2.4)" framed 2.3 as a "multi-step wizard." 2.3 ships in PR-G as a **single-step `CreateServiceForm`**. Component naming reflects current scope (`CreateServiceForm`, not `CreateServiceWizard` or `WizardStep1`); future multi-step expansion is a refactor with a clear trigger.
+
+**Why.** Empirical state at PR-G time: `StaticSiteInputsSchema = z.object({}).strict()` per `packages/shared-types/src/templates/static-site.ts`. The static-site template has zero user inputs beyond the service `name` (which lives on the Service entity, not in template inputs). The comment at the source is explicit: "MVP intentionally has zero inputs… substantive future inputs (custom domain mapping, privacy mode) are real platform features added when the platform supports them." A multi-step wizard for static-site would have a dead inputs step ("no additional inputs needed") — user-hostile UX in service of infrastructure for hypothetical future templates.
+
+**The original framing wasn't wrong; it just assumed a future state that didn't materialize.** A multi-step wizard is the correct shape for an IDP supporting multiple templates with varied input shapes. At single-template-with-zero-inputs scope, the multi-step shape is YAGNI per CLAUDE.md § "Anti-Patterns" ("Building a generic plugin system before the second template exists. No. YAGNI. Build for the static-site template. When the second template arrives, refactor."). When template #2 introduces non-trivial inputs, the single-step `CreateServiceForm` refactors into a multi-step wizard at that point — and the original framing in this ADR becomes correct.
+
+**What this preserves.** Every other Phase 2 sequencing decision survives untouched: 2.1 catalog (shipped #116), 2.2 detail + DELETE (shipped #114 + #115), 2.4 polling, 2.5 auth, 2.6 demo. 2.3's user-funnel role (provisioning kickoff entry) is fully delivered by the single-step form — `name + templateId="static-site" + inputs={}` is the complete payload to `POST /api/services`, validated against `CreateServiceRequestSchema` which supports the request shape unchanged.
+
+**Component-naming companion lesson.** Captured at `feedback_naming_reflects_current_scope.md`: name for what the code IS today, not what it MIGHT BECOME. Aspirational naming (`CreateServiceWizard` for a single-step form) makes the code lie about current behavior; honest naming makes future expansion a clean refactor with a clear trigger.
+
+**Tracked.** This amendment documents the framing correction in-place, per `docs/conventions.md § "ADR/tech-debt empirical claims require verification"`. Empirical claims in design docs are checked against reality before committing UI complexity; when reality contradicts framing, the amendment captures the correction.
