@@ -10,6 +10,7 @@ import {
   ServiceArchivedSchema,
   ServiceDeprovisioningSchema,
   ServiceFailedSchema,
+  ServiceListResponseSchema,
   ServiceLiveSchema,
   ServiceNameSchema,
   ServicePendingSchema,
@@ -394,6 +395,52 @@ describe("DeprovisionServiceResponseSchema", () => {
     const result = DeprovisionServiceResponseSchema.safeParse({
       ...validResponse,
       service: { ...validResponse.service, status: "ghost" },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("ServiceListResponseSchema", () => {
+  // Single live service in items; null cursor (last page).
+  const validResponse = {
+    items: [
+      {
+        ...baseFields,
+        status: "live" as const,
+        liveUrl: "https://my-site.ironforge.rickycaballero.com",
+        provisionedAt: VALID_TIMESTAMP,
+      },
+    ],
+    cursor: null,
+  };
+
+  it("parses last page (cursor: null)", () => {
+    const result = ServiceListResponseSchema.safeParse(validResponse);
+    expect(result.success).toBe(true);
+  });
+
+  it("parses non-last page (cursor: opaque string)", () => {
+    const result = ServiceListResponseSchema.safeParse({
+      ...validResponse,
+      cursor: "eyJQSyI6IlNFUlZJQ0UjMjIyMjIyMjIifQ",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("parses empty items list (zero services)", () => {
+    const result = ServiceListResponseSchema.safeParse({ items: [], cursor: null });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects when cursor is missing (must be present, even if null)", () => {
+    const result = ServiceListResponseSchema.safeParse({ items: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects when an item's variant is malformed", () => {
+    const result = ServiceListResponseSchema.safeParse({
+      items: [{ ...baseFields, status: "ghost" }],
+      cursor: null,
     });
     expect(result.success).toBe(false);
   });

@@ -210,3 +210,18 @@ export const DeprovisionServiceResponseSchema = z.object({
   job: JobSchema,
 });
 export type DeprovisionServiceResponse = z.infer<typeof DeprovisionServiceResponseSchema>;
+
+// 200 OK response shape for GET /api/services (cursor-paginated list).
+// `cursor` is the opaque base64url-encoded ServiceListCursor produced
+// by the backend's encodeServiceListCursor; the frontend treats it as
+// an opaque string and passes it back as ?cursor=<value> on the next
+// request. `null` when there are no further pages — TanStack Query's
+// useInfiniteQuery uses this null to short-circuit hasNextPage.
+//
+// Default server-side limit is 20 (range 1-100). Default order is
+// `newest_first`. Frontend can omit both for the typical case.
+export const ServiceListResponseSchema = z.object({
+  items: z.array(ServiceSchema),
+  cursor: z.string().nullable(),
+});
+export type ServiceListResponse = z.infer<typeof ServiceListResponseSchema>;
