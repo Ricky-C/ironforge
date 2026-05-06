@@ -30,12 +30,13 @@ const STATIC_SITE_TYPES = [
 ];
 
 describe("generateRunTerraformPolicy — coverage", () => {
-  it("emits one statement per resource type plus the route53:GetChange star statement", () => {
+  it("emits one statement per resource type plus two always-emit statements (S3BucketObjectsForceDestroy + Route53GetChangeStarRequired)", () => {
     const statements = generateRunTerraformPolicy(STATIC_SITE_TYPES, TEST_CONTEXT);
-    expect(statements).toHaveLength(STATIC_SITE_TYPES.length + 1);
+    expect(statements).toHaveLength(STATIC_SITE_TYPES.length + 2);
 
     const sids = statements.map((s) => s.Sid);
     expect(sids).toContain("Route53GetChangeStarRequired");
+    expect(sids).toContain("S3BucketObjectsForceDestroy");
     expect(sids).toContain("S3BucketCRUD");
     expect(sids).toContain("CloudFrontDistributionManagement");
     expect(sids).toContain("IAMRoleManagement");
@@ -102,6 +103,21 @@ describe("generateRunTerraformPolicy — ARN substitution", () => {
     expect(getChange?.Resource).toBe("*");
     expect(getChange?.Action).toEqual(["route53:GetChange"]);
   });
+
+  it("emits per-prefix object-level Resource for the S3BucketObjectsForceDestroy auxiliary statement", () => {
+    const statements = generateRunTerraformPolicy(["aws_s3_bucket"], TEST_CONTEXT);
+    const forceDestroy = statements.find(
+      (s) => s.Sid === "S3BucketObjectsForceDestroy",
+    );
+    expect(forceDestroy?.Resource).toBe(
+      "arn:aws:s3:::ironforge-svc-test-blog-origin/*",
+    );
+    expect(forceDestroy?.Action).toEqual([
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+      "s3:AbortMultipartUpload",
+    ]);
+  });
 });
 
 describe("generateRunTerraformPolicy — IAM action coverage", () => {
@@ -110,6 +126,12 @@ describe("generateRunTerraformPolicy — IAM action coverage", () => {
     expect(stmt.actions).toContain("s3:CreateBucket");
     expect(stmt.actions).toContain("s3:DeleteBucket");
     expect(stmt.actions).toContain("s3:ListBucket");
+  });
+
+  it("aws_s3_bucket includes ListBucketVersions + ListBucketMultipartUploads (terraform force_destroy enumeration)", () => {
+    const stmt = RESOURCE_TYPE_TO_IAM["aws_s3_bucket"]!;
+    expect(stmt.actions).toContain("s3:ListBucketVersions");
+    expect(stmt.actions).toContain("s3:ListBucketMultipartUploads");
   });
 
   it("aws_iam_role includes PutRolePermissionsBoundary (template attaches the boundary)", () => {

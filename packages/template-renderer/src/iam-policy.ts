@@ -125,6 +125,19 @@ export const RESOURCE_TYPE_TO_IAM: Record<string, ResourceTypeMapping> = {
       "s3:GetBucketTagging",
       "s3:PutBucketTagging",
       "s3:ListBucket",
+      // Bucket-level enumeration for terraform's force_destroy logic:
+      // ListBucketVersions enumerates all versions + delete markers
+      // (versioning is enabled on origin buckets); ListBucketMultipartUploads
+      // enumerates in-flight uploads (no abort-multipart lifecycle rule
+      // on origin buckets, so interrupted aws s3 sync from deploy.yml
+      // can leave orphaned multiparts). Both are bucket-level reads;
+      // companion object-level destroy actions live in the always-emit
+      // S3BucketObjectsForceDestroy statement (see buildS3BucketForceDestroyStatement
+      // below). Discovered PR-H 2026-05-06 when the first deprovision
+      // attempt against a real service surfaced AccessDenied on
+      // s3:ListBucketVersions.
+      "s3:ListBucketVersions",
+      "s3:ListBucketMultipartUploads",
     ],
     arnSpec: {
       kind: "service-resource",
@@ -313,6 +326,40 @@ const ROUTE53_GET_CHANGE_STATEMENT: IamStatement = {
   Resource: "*",
 };
 
+// Object-level destroy actions for terraform's force_destroy logic on
+// `aws_s3_bucket`. force_destroy=true (set on origin buckets per
+// templates/static-site/terraform/main.tf since PR #82) makes terraform
+// empty the bucket before calling DeleteBucket: enumerate versions +
+// delete markers + multiparts at bucket level (covered by ListBucket*
+// actions in the aws_s3_bucket mapping above), then delete-objects /
+// abort-multipart-uploads at object level (covered here).
+//
+// Always emitted alongside the route53:GetChange always-emit. Same
+// rationale: forces the small surface on every generated policy, but
+// scope is per-service via {prefix}-origin/* — if the template creates
+// no buckets, no resources exist at the pattern, statement is a no-op.
+//
+// ARN shape note (parameterized): the JS source-of-truth produces a
+// per-service ARN (e.g., arn:aws:s3:::ironforge-svc-pr-h-smoke-origin/*)
+// for any future per-service IAM derivation. The deployed run-terraform
+// Lambda's HCL mirror in infra/envs/dev/main.tf uses a wildcard
+// (arn:aws:s3:::ironforge-svc-*-origin/*) since one Lambda destroys ALL
+// services. Both are correct for their respective consumers; see
+// `infra/envs/dev/main.tf` § "Mirrors @ironforge/template-renderer's
+// generateRunTerraformPolicy()".
+const buildS3BucketForceDestroyStatement = (
+  context: ScopingContext,
+): IamStatement => ({
+  Sid: "S3BucketObjectsForceDestroy",
+  Effect: "Allow",
+  Action: [
+    "s3:DeleteObject",
+    "s3:DeleteObjectVersion",
+    "s3:AbortMultipartUpload",
+  ],
+  Resource: `arn:aws:s3:::${context.resourcePrefix}-origin/*`,
+});
+
 // ---------------------------------------------------------------------
 // Generator
 // ---------------------------------------------------------------------
@@ -391,8 +438,13 @@ export const generateRunTerraformPolicy = (
     statements.push(buildStatement(mapping, context));
   }
 
-  // Always include route53:GetChange. Static-site needs it for record
-  // creation tracking; cost is negligible.
+  // Always include the S3 force_destroy object-level statement +
+  // route53:GetChange. Both are scoped narrowly (force_destroy to the
+  // per-service prefix; GetChange to *) and the cost of always-emitting
+  // is negligible vs. the cost of conditionally-deriving from the
+  // template manifest's resource list. See the constant comments above
+  // for the rationale per statement.
+  statements.push(buildS3BucketForceDestroyStatement(context));
   statements.push(ROUTE53_GET_CHANGE_STATEMENT);
 
   return statements;
