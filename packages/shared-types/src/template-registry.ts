@@ -3,8 +3,8 @@ import { z } from "zod";
 import {
   StaticSiteInputsSchema,
   StaticSiteOutputsSchema,
-} from "./templates/static-site.js";
-import { type TemplateId } from "./service.js";
+} from "./templates/static-site";
+import { type TemplateId } from "./service";
 
 // Single source of truth for per-template runtime metadata.
 //
