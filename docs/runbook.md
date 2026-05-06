@@ -1219,19 +1219,47 @@ awscurl --service lambda --region us-east-1 "${FUNCTION_URL}"
 aws logs tail /aws/lambda/ironforge-portal --since 30m --filter-pattern "ERROR"
 ```
 
+### Rollback prerequisites
+
+Operators read this BEFORE choosing R1 or R2. Both rollback paths assume the S3 origin is a working substrate; that assumption fails if the bucket has been emptied, destroyed, or its content has drifted from what Lambda now serves.
+
+```bash
+# Bucket exists + has content?
+aws s3 ls s3://ironforge-portal-010438464240/ --summarize | tail -3
+
+# Object timestamps roughly match the Phase 0 deployment that the
+# rollback would restore? Not "before the incident" — pre-PR-B.
+aws s3api list-objects-v2 \
+  --bucket ironforge-portal-010438464240 \
+  --query 'sort_by(Contents, &LastModified)[-5:].[Key,LastModified,Size]' \
+  --output table
+```
+
+Three failure modes that disqualify rollback:
+
+1. **Bucket destroyed.** Post-PR-C, the bucket is gone; R1 / R2 are not options. Recovery is fix-forward only — see `docs/tech-debt.md` and the relevant ADR amendment process.
+2. **Bucket empty.** Since PR-B's `app-deploy.yml` switched from `aws s3 sync` to ECR push, the bucket has not been re-populated. Flipping the CloudFront default cache behavior back to `s3-portal` produces a 403 from S3, not a working portal. R2 must NOT be executed against an empty bucket; R1 must include a step to repopulate the bucket from a checkout that pre-dates PR-B (or from local `pnpm --filter @ironforge/web build` of the static-export branch + `aws s3 sync`).
+3. **Content drift.** The Lambda-served portal evolves independently of any frozen S3 content. After auth integration (subphase 2.5+) or service-detail pages (subphase 2.2+) ship, the S3 content (frozen at Phase 0) becomes a strictly worse user experience than the broken-Lambda state — visitors would see a stale page with no path to the live functionality. Treat this as "rollback target diverged from production"; weigh against fix-forward more aggressively than the bucket-empty case.
+
+If the bucket is destroyed, empty, or its content has drifted: rollback target is broken; escalate to fix-forward path. Different recovery shape (longer iteration; no working substrate to revert to).
+
 ### Recovery — two paths
 
 #### R1. Revert via PR (clean; preferred when blast radius allows the merge cycle)
 
-Use when the issue is in PR-B's application code, terraform configuration, or CloudFront wiring; revert is the durable fix.
+Use when the issue is in PR-B's (or a subsequent recovery PR's) application code, terraform configuration, or CloudFront wiring; revert is the durable fix.
+
+> **Precondition:** `### Rollback prerequisites` above must be satisfied. If the bucket is empty (current state since PR-B), the revert PR must ALSO include a commit that repopulates S3 from a static-export build, OR a manual `aws s3 sync` step run during the revert window.
 
 ```bash
-git log --grep "portal-lwa-migration-2-cutover" --oneline -5
+git log --grep "portal-lwa-migration-2-cutover\|portal-base-image-correction\|portal-oac-invokefunction\|portal-cloudfront-default-root-object" --oneline -10
 ```
+
+The rollback target is pre-PR-B (commit before #102 merge). Reverting only the most recent recovery PR (#107 / #108 / #109) does NOT restore the static-export deploy — it just regresses one of the recovery layers, leaving a different broken state. Identify the full revert range explicitly.
 
 Open a revert PR with `gh pr create` against `main`. After merge:
 
-- `app-deploy.yml` runs (path filter unchanged); without the new Dockerfile / next.config the previous static-export deploy resumes.
+- `app-deploy.yml` runs (path filter unchanged); the resulting deploy depends on which commits were reverted. A full revert to pre-PR-B re-enables the static-export `aws s3 sync` flow but the bucket is empty until the manual `aws s3 sync` precondition step runs.
 - `infra-apply.yml` runs; CloudFront default cache behavior swaps back to `s3-portal` origin; Lambda + Function URL + SSM parameter destroyed by terraform.
 - Manual CloudFront invalidation (edge caches retain Lambda-served content past the origin swap until TTL):
 
@@ -1242,11 +1270,15 @@ DIST_ID=$(aws cloudfront list-distributions \
 aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
 ```
 
-S3 origin and bucket remain alive in the distribution through PR-B (per the rollback-safety design — PR-C is what destroys the S3 bucket); revert restores them as the default cache behavior.
+S3 origin and bucket remain alive in the distribution through PR-B (per the rollback-safety design — PR-C is what destroys the S3 bucket); revert restores them as the default cache behavior, but the bucket-empty precondition still has to be addressed before the rollback produces a working portal.
 
 #### R2. Manual immediate rollback (faster — code follows)
 
 Use when edge cache + DNS propagation + revert-merge time exceeds the incident's tolerance (~5 min from detection to mitigation).
+
+> **Precondition:** `### Rollback prerequisites` above must be satisfied. R2's CloudFront origin flip is fast but produces a 403-from-S3 if the bucket is empty (current state since PR-B). R2 against an empty bucket is a 5-min incident response producing a different-but-equally-broken portal. If the bucket is empty, repopulate FIRST via `aws s3 sync` from a local static-export build, THEN execute R2.
+>
+> The same `default_root_object = "index.html"` rewrite that PR-109 removed for the Lambda Function URL origin must be RESTORED for the S3 origin to serve `/`. Add `--default-root-object index.html` to R2's distribution-config patch (jq filter below already includes this; verify the value matches the committed terraform after PR-109).
 
 ```bash
 DIST_ID=$(aws cloudfront list-distributions \
@@ -1255,7 +1287,10 @@ DIST_ID=$(aws cloudfront list-distributions \
 
 aws cloudfront get-distribution-config --id "${DIST_ID}" > /tmp/dist-config.json
 ETAG=$(jq -r '.ETag' /tmp/dist-config.json)
-jq '.DistributionConfig | .DefaultCacheBehavior.TargetOriginId = "s3-portal"' /tmp/dist-config.json > /tmp/dist-config-rollback.json
+jq '.DistributionConfig
+    | .DefaultCacheBehavior.TargetOriginId = "s3-portal"
+    | .DefaultRootObject = "index.html"' \
+  /tmp/dist-config.json > /tmp/dist-config-rollback.json
 
 aws cloudfront update-distribution \
   --id "${DIST_ID}" \
@@ -1265,7 +1300,7 @@ aws cloudfront update-distribution \
 aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
 ```
 
-After R2: open a follow-up PR reverting the terraform code so it reflects the actual deployed state. Without it, the next `infra-apply.yml` run will re-flip the default cache behavior to the `lambda-portal` origin per the committed terraform (terraform refresh would reveal drift; apply would correct it back to broken).
+After R2: open a follow-up PR reverting the terraform code so it reflects the actual deployed state, INCLUDING re-adding `default_root_object = "index.html"` (PR-109 removed it for the Lambda origin; rollback to S3 needs it back). Without it, the next `infra-apply.yml` run will re-flip the default cache behavior to the `lambda-portal` origin AND clear default_root_object per the committed terraform (terraform refresh would reveal drift; apply would correct it back to broken).
 
 ### Post-cutover invalidation (non-rollback case)
 
@@ -1282,8 +1317,10 @@ aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
 
 ### Prevention
 
-- The verification gate in ADR-011 § When to reconsider must pass post-merge BEFORE PR-C destroys the S3 bucket. PR-C is the point of no return for R1 — once the bucket is gone, recovery requires re-provisioning + rebuild + re-sync.
+- The verification gate in ADR-011 § When to reconsider must pass post-merge BEFORE PR-C destroys the S3 bucket. PR-C is the point of no return for R1 / R2 — once the bucket is gone, recovery requires re-provisioning + rebuild + re-sync, not a flip-the-origin operation.
 - PR-B keeps the S3 bucket alive (and the `s3-portal` origin defined) for exactly this rollback affordance. Don't fold PR-C's bucket destruction into PR-B as an "atomic" cutover.
+- The S3 bucket has been empty since PR-B's deploy (the static-export `aws s3 sync` step was replaced with the ECR push flow). Rollback to the S3 origin requires repopulating the bucket FIRST. Future operators who haven't read `### Rollback prerequisites` would otherwise execute R2 against an empty bucket and trade a broken Lambda for a 403-from-S3.
+- PR-109's discovery (CloudFront `default_root_object = "index.html"` is an edge-level path rewrite, not a backend hint — see `feedback_cloudfront_default_root_object_origin_type_dependent.md`) means rollback to S3 origin must also restore `default_root_object`. R2's distribution-config patch above does this; if a future operator scripts R2 from memory, they may forget. Keep R2's exact jq filter in the runbook, not a paraphrase.
 
 ---
 
