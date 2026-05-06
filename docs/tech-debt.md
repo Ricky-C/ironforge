@@ -76,6 +76,20 @@ Each entry has:
 - **Action:** Likely split cache behaviors on the distribution: public routes (e.g., `/`, `/_next/static/*`) keep `Managed-CachingOptimized`; auth-required routes (e.g., `/services/*`, `/wizard`) use `Managed-CachingDisabled` (`4135ea2d-6df8-44a3-9df3-4b5a84be39ad`) or a custom cache policy that includes `Cookie` in the cache key for auth-aware caching with reasonable TTL.
 - **Where:** `infra/modules/cloudfront-frontend/main.tf` (`aws_cloudfront_distribution.portal.default_cache_behavior` block; PR-B commit `9559a45` added the inline comment noting this revisit). Reference: ADR-010, ADR-011.
 
+#### Cold-start gate procedure has a cache-aware methodology limitation
+
+- **What:** ADR-011 § "When to reconsider" defines the cold-start verification gate as five `curl` measurements against `https://ironforge.rickycaballero.com/` with 10-min idle between each, taking the median. The procedure assumes each measurement triggers a Lambda cold start. CloudFront's edge caching of the prerendered `/` route (cache-control: `s-maxage=31536000` from Next.js's static prerender) defeats this: the first measurement triggers a cold start; measurements 2–5 serve from edge cache without ever reaching Lambda.
+- **Why deferred:** Procedure isn't broken, it has a documented limitation. The gate runs rarely (once per major migration / runtime change). Refactoring it now is over-engineering for a tool used few times a year. Future operators interpret results with the limitation in mind; refactor only when the limitation obstructs.
+- **When to revisit (any one of):**
+  - Future gate run on a dynamic (uncacheable) route — e.g., post-subphase-2.2 service-detail pages or per-user dashboards.
+  - Multi-route gate measurement where cold-start distribution across route shapes matters.
+  - Operator wants statistical confidence in the cold-start distribution itself (not just "did the cold start exceed threshold").
+- **Action:** Pick from the menu when triggered:
+  - Add a CloudFront `/*` invalidation between each measurement (forces every measurement to be a cache miss; cleanest for the prerendered-route case).
+  - Hit the Function URL directly via SigV4 (e.g., `awscurl --service lambda --region us-east-1 "${FUNCTION_URL}"`) to bypass CloudFront entirely.
+  - Mix cached and uncached routes for distribution understanding (e.g., 5 measurements against `/` for cache-hit UX + 5 measurements against an uncacheable route for true cold-start distribution).
+- **Where:** `docs/adrs/011-portal-deployment-target.md` § "When to reconsider"; reference observation date 2026-05-05 (PR-B post-recovery gate run produced 1 cold start at 1.515s + 4 edge-cache hits at 76–115ms; median NR==3 = 0.094s — favorable but doesn't represent 5 cold-start samples).
+
 #### Per-service ACM cert as opt-in template input
 
 - **What:** Provisioned services share a single wildcard ACM cert (`*.ironforge.rickycaballero.com`, pre-issued in shared composition, us-east-1) attached to every CloudFront distribution. Per-service certs (one ACM cert per provisioned subdomain, DNS-validated at provision time) are not supported.
