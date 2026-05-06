@@ -272,3 +272,46 @@ Different resource types support different metadata channels. Choose the most st
 **Meta-note (the ADR/tech-debt empirical-verification convention's first case study).** The convention documented above this entry — "ADR/tech-debt empirical claims require verification" — fired its first useful correction within ~24 hours of being codified. The original PR-D recommendation invoked "consistency with the monorepo's existing Bundler-mode convention" as one justification for dropping `.js` extensions in shared-types. A broader audit (run after the user pushed back on a partial verification) revealed that the actual monorepo convention is `.js` extensions everywhere — shared-types post-fix is the *outlier*, not the *consistency*. The recommendation's structural conclusion (Option A) survived the audit, but the framing was reworked to honest divergence rather than misclaimed uniformity. Concrete evidence the verification convention earns its keep: empirical audits catch claim-shaped errors that conviction alone won't.
 
 **Failure mode if mismechanized.** A future contributor sees `.js` extensions in `shared-utils`/`template-renderer`/`destroy-chain` and adds them to `shared-types` "for consistency" — Next.js build breaks. Alternatively: sees no-extension in `shared-types` and removes `.js` from another package "to match" — no break, just unnecessary churn that departs from upstream TypeScript guidance for that package. The decision tree above prevents both. Without it, the divergence reads as accident rather than intent, and future contributors flatten it in one direction or the other without realizing the constraint.
+
+## IAM permission audits consult both identity policy AND permission boundary
+
+**Pattern.** When adding new IAM actions to any platform Lambda role (`run-terraform`, `create-repo`, `generate-code`, etc., plus the per-service deploy roles), the audit must consult **both** layers:
+
+1. **Identity policy** — the role-attached inline policy (`run_terraform_extra_statements` in `infra/envs/dev/main.tf` for run-terraform; `RESOURCE_TYPE_TO_IAM` in `packages/template-renderer/src/iam-policy.ts` as the JS source-of-truth).
+2. **Permission boundary** — the `IronforgePermissionBoundary` managed policy at `infra/modules/lambda-baseline/main.tf`, attached to all Ironforge Lambda roles.
+
+Effective permissions = **identity ∩ boundary**. Either layer alone is insufficient: an action allowed in identity but not in the boundary is denied at runtime; an action allowed in the boundary but not in identity is also denied. Both must include the action for it to be usable.
+
+**Established in.** PR-H → PR-I (2026-05-06). PR-H added `s3:ListBucketVersions` + 4 force_destroy companion actions to run-terraform's identity policy after PR-G's smoke surfaced `terraform destroy` failing with `AccessDenied: ...no identity-based policy allows...`. PR-H's pre-flight scope-check consulted identity-policy locations (HCL local + JS source-of-truth) but missed the permission boundary. Path-B verification of PR-H surfaced the SAME action denied at the boundary layer with a different error message: `AccessDenied: ...no permissions boundary allows the s3:ListBucketVersions action`. PR-I added the actions to the boundary; verification then succeeded. The two-layer audit is what would have shipped the fix in one PR.
+
+**Applied by.**
+
+- `infra/envs/dev/main.tf` § `local.run_terraform_extra_statements` — run-terraform's identity policy. Hand-maintained mirror of `RESOURCE_TYPE_TO_IAM` per `docs/tech-debt.md § "Drift detection: run-terraform IAM grants vs RESOURCE_TYPE_TO_IAM mapping"`.
+- `packages/template-renderer/src/iam-policy.ts` — JS source-of-truth for run-terraform's identity policy (also canonical for any future per-service IAM derivation).
+- `infra/modules/lambda-baseline/main.tf` § `IronforgePermissionBoundary` — boundary attached to all Ironforge Lambda roles. The cap on identity-policy effectiveness.
+
+**Pre-flight checklist for IAM additions to platform Lambdas:**
+
+1. **Identify the action(s) needed.** From the AccessDenied error message, terraform destroy/apply trace, or AWS service authorization reference.
+2. **Grep the identity-policy locations:**
+   ```bash
+   grep "<target-action>" infra/envs/dev/main.tf packages/template-renderer/src/iam-policy.ts
+   ```
+3. **Grep the boundary location:**
+   ```bash
+   grep "<target-action>" infra/modules/lambda-baseline/main.tf
+   ```
+4. **Add missing in BOTH layers in the same PR.** If sequenced separately (e.g., the identity layer ships first because it's the more visible failure), the second PR's verification will surface the cross-layer gap — that's the failure mode to avoid.
+5. **Apply the per-tenant sid convention** when adding to the boundary (per `docs/conventions.md § "Platform IAM vs. user-tenant IAM"`). The boundary widens to cover the union of all roles' needs; per-role identity policies narrow further. New sids in the boundary follow the `Allow<Resource><Operation>` shape; tenant intent lives in the comment block, not the sid name.
+
+**Rationale.**
+
+1. **The two layers exist for distinct purposes.** The boundary caps maximum permissions for ALL Ironforge-managed roles (defense-in-depth; ADR-006 covers the why). The identity policy is the actually-granted permission for one specific role. Either alone is insufficient: the boundary without identity would grant nothing (no role has a literal identity policy of `*`); identity without boundary would mean any role compromise has unlimited blast-radius. Forcing both layers to allow each action is the design.
+
+2. **Each layer is in a different module/file.** Identity-policy locations are per-Lambda (`run_terraform_extra_statements` for run-terraform; analogous locals for other Lambdas). The boundary is shared (`infra/modules/lambda-baseline/main.tf`). Different files, different review surfaces, different mental cache during pre-flight.
+
+3. **Error messages differentiate the layers.** `no identity-based policy allows` → identity gap. `no permissions boundary allows` → boundary gap. **`AccessDenied` is not enough — read the rest of the message.** The verification step that follows an IAM PR should re-trigger the failing operation and verify the error class is gone, not just that the new policy was deployed.
+
+4. **The two-PR fix shape (PR-H → PR-I) is the failure mode this convention prevents.** Each PR ships independently; verification surfaces the next gap; PR scope balloons across two cycles. The pre-flight checklist consolidates into one PR.
+
+**Failure mode if mismechanized.** Pre-flight consults only one layer (typically identity, since that's where the grep results are richer per role). PR ships, deploys cleanly, but the runtime behavior doesn't change because the boundary still denies. Verification surfaces the gap — sometimes immediately (CI plan job catching the unchanged effective permission) but more often during real operation (the user-facing "deprovision still broken" surface from PR-H's case). Cost: an additional PR cycle per missed layer; in a multi-Lambda multi-action change, the cost compounds. The single-PR pre-flight is consistent with the project's "ship the boring path" disposition; the two-PR cycle is what you get when the audit is layer-incomplete.
