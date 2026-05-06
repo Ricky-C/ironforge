@@ -1,7 +1,7 @@
 "use client";
 
-import { use } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { use, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
 import {
   Card,
@@ -12,6 +12,16 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { ApiClientError, apiClient } from "@/lib/api-client";
 import type { Service } from "@ironforge/shared-types";
 
@@ -79,6 +89,15 @@ function ServiceDetailError({ error }: { error: unknown }): React.ReactNode {
 }
 
 function ServiceDetailCard({ service }: { service: Service }): React.ReactNode {
+  // Deprovision is offered only for terminal-but-restorable statuses.
+  // - live | failed: kicks off a deprovisioning workflow.
+  // - deprovisioning: in-flight; backend is idempotent on re-DELETE but
+  //   the UX value of a button is low — the badge already conveys state.
+  // - pending | provisioning: blocked by backend (409 SERVICE_IN_FLIGHT)
+  //   until terminal state is reached.
+  // - archived: already deprovisioned (404 from backend).
+  const canDeprovision = service.status === "live" || service.status === "failed";
+
   return (
     <Card>
       <CardHeader>
@@ -88,7 +107,7 @@ function ServiceDetailCard({ service }: { service: Service }): React.ReactNode {
         </CardTitle>
         <CardDescription>Template: {service.templateId}</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-6">
         {service.status === "live" ? (
           <a
             href={service.liveUrl}
@@ -104,8 +123,101 @@ function ServiceDetailCard({ service }: { service: Service }): React.ReactNode {
             Live URL unavailable for status: {service.status}
           </p>
         )}
+
+        {canDeprovision ? <DeprovisionAction service={service} /> : null}
       </CardContent>
     </Card>
+  );
+}
+
+function DeprovisionAction({ service }: { service: Service }): React.ReactNode {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: () => apiClient.deprovisionService(service.id),
+    onSuccess: (data) => {
+      // Backend returns the new {service, job} composite. Seed the
+      // ["service", id] cache directly so the page reflects the new
+      // deprovisioning status without an extra fetch. Job goes
+      // unsurfaced here (subphase 2.4 polling will consume it).
+      queryClient.setQueryData(["service", service.id], data.service);
+      setOpen(false);
+    },
+  });
+
+  return (
+    <div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger
+          render={
+            <Button variant="destructive" size="sm">
+              Deprovision
+            </Button>
+          }
+        />
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Deprovision {service.name}?</DialogTitle>
+            <DialogDescription>
+              This will destroy:
+            </DialogDescription>
+          </DialogHeader>
+          <ul className="ml-4 list-disc space-y-1 text-sm text-muted-foreground">
+            <li>The AWS infrastructure (S3 + CloudFront + Route53 + IAM)</li>
+            <li>
+              The GitHub repo (
+              <code className="font-mono text-xs">
+                ironforge-svc/{service.name}
+              </code>
+              )
+            </li>
+            <li>
+              The live URL (
+              <code className="font-mono text-xs">
+                {service.name}.ironforge.rickycaballero.com
+              </code>
+              )
+            </li>
+          </ul>
+          <p className="text-sm font-medium text-foreground">
+            This cannot be undone.
+          </p>
+
+          {mutation.isError ? (
+            <Alert variant="destructive">
+              <AlertTitle>
+                {mutation.error instanceof ApiClientError
+                  ? mutation.error.code
+                  : "Unknown error"}
+              </AlertTitle>
+              <AlertDescription>
+                {mutation.error instanceof ApiClientError
+                  ? mutation.error.message
+                  : String(mutation.error)}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={mutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending}
+            >
+              {mutation.isPending ? "Deprovisioning..." : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
