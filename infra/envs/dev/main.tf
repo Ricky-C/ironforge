@@ -306,8 +306,55 @@ locals {
         "s3:GetBucketTagging",
         "s3:PutBucketTagging",
         "s3:ListBucket",
+        # Bucket-level enumeration for terraform's force_destroy logic.
+        # ListBucketVersions enumerates versions + delete markers
+        # (versioning enabled on origin buckets); ListBucketMultipartUploads
+        # enumerates in-flight uploads (interrupted aws s3 sync from the
+        # tenant deploy.yml can leave orphaned multiparts; no
+        # abort-multipart lifecycle rule on origin buckets covers them).
+        # Companion object-level destroy actions live in
+        # S3BucketObjectsForceDestroy below. Discovered PR-H 2026-05-06
+        # when first real-deprovision attempt surfaced AccessDenied on
+        # s3:ListBucketVersions; mirror in
+        # packages/template-renderer/src/iam-policy.ts §
+        # RESOURCE_TYPE_TO_IAM.aws_s3_bucket per the JS-HCL drift
+        # tech-debt entry.
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads",
       ]
       resources = ["arn:aws:s3:::ironforge-svc-*-origin"]
+    },
+    # Object-level destroy actions for terraform's force_destroy logic.
+    # The aws_s3_bucket resource (origin bucket) has force_destroy=true
+    # in templates/static-site/terraform/main.tf. force_destroy makes
+    # terraform empty the bucket before calling DeleteBucket: enumerate
+    # versions + delete markers + multiparts at bucket level (covered by
+    # ListBucket* actions in S3BucketCRUD above), then call
+    # DeleteObject / DeleteObjectVersion / AbortMultipartUpload at
+    # object level (covered here). Without these, terraform destroy
+    # fails with AccessDenied during the bucket-emptying phase.
+    #
+    # ARN shape note: wildcard ironforge-svc-*-origin/* matches all
+    # services' origin buckets, since one platform Lambda destroys all
+    # services. The JS source-of-truth at iam-policy.ts § always-emit
+    # buildS3BucketForceDestroyStatement uses the per-service prefix
+    # (arn:aws:s3:::{prefix}-origin/*) for any future per-service IAM
+    # derivation; both shapes are correct for their respective consumers.
+    #
+    # Path 1 (this approach): broad action grant on platform Lambda role.
+    # Path 2 alternative (deferred): per-service bucket policies grant
+    # platform role access. Path 2 is architecturally cleaner but
+    # requires per-service infrastructure changes; Path 1 is the
+    # minimal change that fixes the broken deprovision flow. Revisit
+    # Path 2 when multi-tenant or stricter isolation surfaces.
+    {
+      sid = "S3BucketObjectsForceDestroy"
+      actions = [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:AbortMultipartUpload",
+      ]
+      resources = ["arn:aws:s3:::ironforge-svc-*-origin/*"]
     },
     {
       sid = "S3BucketVersioning"
