@@ -176,6 +176,18 @@ data "aws_iam_policy_document" "permission_boundary" {
       "s3:GetBucketPolicy",
       "s3:PutBucketPolicy",
       "s3:DeleteBucketPolicy",
+      # Bucket-level enumeration for terraform's force_destroy logic on
+      # the run-terraform Lambda's destroy path. PR-H added these to the
+      # run-terraform identity policy (S3BucketCRUD sid in run_terraform_extra_statements
+      # + RESOURCE_TYPE_TO_IAM.aws_s3_bucket); PR-I lifts them at the
+      # boundary so the identity grant takes effect (effective permissions
+      # = identity ∩ boundary; PR-H worked at identity but boundary
+      # blocked at runtime — first AccessDenied surfaced as
+      # "no permissions boundary allows the s3:ListBucketVersions action").
+      # Companion object-level destroy actions live in
+      # AllowProvisionedBucketForceDestroy below.
+      "s3:ListBucketVersions",
+      "s3:ListBucketMultipartUploads",
     ]
     resources = [
       "arn:aws:s3:::ironforge-svc-*-origin",
@@ -227,6 +239,39 @@ data "aws_iam_policy_document" "permission_boundary" {
       "s3:PutObject",
       "s3:GetObject",
       "s3:DeleteObject",
+    ]
+    resources = ["arn:aws:s3:::ironforge-svc-*-origin/*"]
+  }
+
+  # Object-level destroy actions for terraform's force_destroy logic
+  # on the run-terraform Lambda's destroy path. Workflow-tenant
+  # concern (per docs/conventions.md § "Platform IAM vs. user-tenant
+  # IAM"): force_destroy is what run-terraform invokes during
+  # deprovision-terraform when emptying a versioned origin bucket
+  # before DeleteBucket. The deploy role tenant doesn't need these
+  # (deploy.yml's aws s3 sync handles current-version object lifecycle
+  # via DeleteObject in AllowProvisionedBucketObjects above; never
+  # touches versions or in-flight multiparts). Distinct sid keeps
+  # the per-tenant intent legible.
+  #
+  # Cross-references PR-H's identity-policy companion (S3BucketObjectsForceDestroy
+  # sid in run_terraform_extra_statements; same action set on the
+  # same ARN pattern). PR-I (this commit) adds at the boundary so
+  # the identity grant takes effect.
+  #
+  # Discovered post-PR-H verification (Path-B SFN-direct retry of the
+  # pr-h-smoke deprovision): terraform destroy hit AccessDenied on
+  # s3:ListBucketVersions citing "no permissions boundary allows" —
+  # boundary-layer denial despite identity-layer permission. The
+  # IAM-audit lesson (consult both layers) is captured at
+  # `docs/conventions.md § "IAM permission audits consult both
+  # identity policy AND permission boundary"`.
+  statement {
+    sid    = "AllowProvisionedBucketForceDestroy"
+    effect = "Allow"
+    actions = [
+      "s3:DeleteObjectVersion",
+      "s3:AbortMultipartUpload",
     ]
     resources = ["arn:aws:s3:::ironforge-svc-*-origin/*"]
   }
