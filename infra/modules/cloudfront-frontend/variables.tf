@@ -14,7 +14,7 @@ variable "hosted_zone_id" {
 }
 
 variable "lambda_function_url" {
-  description = "Lambda Function URL (https://<url-id>.lambda-url.<region>.on.aws/) for the portal Lambda. Must be authorization_type = AWS_IAM so CloudFront's OAC SigV4 signing is what authorizes the invocation. ADR-011 PR-B commit 5: this is the new default cache behavior origin; the existing S3 origin stays defined-but-unused for rollback safety until PR-C destroys it."
+  description = "Lambda Function URL (https://<url-id>.lambda-url.<region>.on.aws/) for the portal Lambda. Must be authorization_type = AWS_IAM so CloudFront's OAC SigV4 signing is what authorizes the invocation. Sole origin for the portal distribution post-PR-C (the S3 origin substrate that backed the Phase 0 portal was destroyed once the Lambda substrate's cold-start gate + functional checks confirmed it as the production substrate)."
   type        = string
 
   validation {

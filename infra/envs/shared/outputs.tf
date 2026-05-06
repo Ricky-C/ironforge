@@ -58,11 +58,6 @@ output "portal_distribution_domain_name" {
   value       = module.portal_frontend.distribution_domain_name
 }
 
-output "portal_bucket_name" {
-  description = "S3 bucket name for the portal origin. The app-deploy CI workflow syncs Next.js export output here."
-  value       = module.portal_frontend.bucket_name
-}
-
 output "permission_boundary_arn" {
   description = "ARN of the IronforgePermissionBoundary. Future Lambda-creating modules in dev/prod compositions reference this via terraform_remote_state to apply the boundary to their roles."
   value       = module.lambda_baseline.boundary_policy_arn
