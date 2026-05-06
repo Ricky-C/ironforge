@@ -122,6 +122,22 @@ export default function Home() {
           </ul>
         </section>
 
+        <section className="mt-12">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 dark:text-zinc-500">
+            See it in action
+          </h2>
+          <p className="mt-2 text-zinc-700 dark:text-zinc-300">
+            Ironforge has provisioned{" "}
+            <Link
+              href="/services"
+              className="font-medium text-zinc-900 underline decoration-zinc-400 underline-offset-4 transition hover:decoration-zinc-700 dark:text-zinc-100 dark:decoration-zinc-600 dark:hover:decoration-zinc-300"
+            >
+              services
+            </Link>{" "}
+            using the architecture described above.
+          </p>
+        </section>
+
         <section className="mt-12 border-t border-zinc-200 pt-8 dark:border-zinc-800">
           <a
             href="https://github.com/Ricky-C/ironforge"

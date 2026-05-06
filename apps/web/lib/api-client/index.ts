@@ -1,9 +1,11 @@
 import {
   ApiResponseSchema,
   DeprovisionServiceResponseSchema,
+  ServiceListResponseSchema,
   ServiceSchema,
   type DeprovisionServiceResponse,
   type Service,
+  type ServiceListResponse,
 } from "@ironforge/shared-types";
 
 // Where API calls go:
@@ -75,6 +77,25 @@ const request = async <T>(
   return parsed.data.data as T;
 };
 
+// Optional query params for listServices; cursor + limit map to the
+// backend's GET /api/services?cursor=&limit=. cursor is the opaque
+// base64url-encoded string returned in the previous response (or null
+// for the first page). limit defaults server-side to 20 (range 1-100);
+// frontend can omit. Designed to compose with TanStack Query's
+// useInfiniteQuery — pass `cursor` directly from `pageParam`.
+export type ListServicesParams = {
+  cursor?: string | null;
+  limit?: number;
+};
+
+const buildListServicesQuery = (params: ListServicesParams): string => {
+  const search = new URLSearchParams();
+  if (params.cursor) search.set("cursor", params.cursor);
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+};
+
 export const apiClient = {
   getService: (id: string): Promise<Service> =>
     request<Service>(`/api/services/${id}`, { method: "GET" }, ServiceSchema),
@@ -91,5 +112,16 @@ export const apiClient = {
       `/api/services/${id}`,
       { method: "DELETE" },
       DeprovisionServiceResponseSchema,
+    ),
+
+  // GET /api/services — owner-scoped, cursor-paginated list. Default
+  // order newest_first, limit 20. Returns { items, cursor }; cursor is
+  // null on the last page (use that to short-circuit useInfiniteQuery's
+  // hasNextPage). Errors flow through ApiClientError as usual.
+  listServices: (params: ListServicesParams = {}): Promise<ServiceListResponse> =>
+    request<ServiceListResponse>(
+      `/api/services${buildListServicesQuery(params)}`,
+      { method: "GET" },
+      ServiceListResponseSchema,
     ),
 };
