@@ -14,6 +14,12 @@ const nextConfig = {
   // standalone bundle scans only from apps/web/, missing workspace
   // dependencies in packages/* and producing an incomplete server bundle.
   outputFileTracingRoot: path.join(__dirname, "..", ".."),
+
+  // Workspace TypeScript packages (@ironforge/shared-types) export source
+  // directly via package.json `exports` rather than a built dist/. Next
+  // needs to transpile them on the fly; otherwise its resolver can't
+  // follow the `./api.js` → `./api.ts` rewriting that ESM TS uses.
+  transpilePackages: ["@ironforge/shared-types"],
 };
 
 export default nextConfig;

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CheckCircle2, Clock, ExternalLink } from "lucide-react";
 
 type PhaseStatus = "completed" | "in-progress" | "not-started";
@@ -17,13 +18,13 @@ const phases: Phase[] = [
   },
   {
     title: "Phase 1 — End-to-end provisioning",
-    status: "in-progress",
+    status: "completed",
     summary:
-      "Step Functions workflow and Lambda task functions. Real provisioning end-to-end via API call.",
+      "Step Functions workflow and Lambda task functions. Provisioning + deprovisioning verified end-to-end against the live portfolio-demo service.",
   },
   {
     title: "Phase 2 — Wizard UI and service catalog",
-    status: "not-started",
+    status: "in-progress",
     summary:
       "Multi-step wizard, real-time progress polling, catalog and service-detail views.",
   },
@@ -61,10 +62,21 @@ export default function Home() {
             Status
           </h2>
           <p className="mt-2 text-zinc-700 dark:text-zinc-300">
-            Phase 0 (foundations) is complete. This page is served by the
-            same CloudFront + S3 stack the rest of the project will use.
-            Phase 1 — the API, Step Functions workflow, and static-site
-            template — is the next milestone.
+            Phases 0 and 1 are shipped. The live{" "}
+            <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-sm dark:bg-zinc-800">
+              portfolio-demo
+            </code>{" "}
+            service was provisioned end-to-end through the API. Phase 2
+            (portal UI) is in flight; the first authenticated detail-page
+            view is wired below.
+          </p>
+          <p className="mt-3">
+            <Link
+              href="/services/2e4c7e46-2d6f-4243-bcb2-1b73942ed511"
+              className="inline-flex items-center gap-2 text-sm font-medium text-zinc-700 transition hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
+            >
+              View portfolio-demo (live) →
+            </Link>
           </p>
         </section>
 
