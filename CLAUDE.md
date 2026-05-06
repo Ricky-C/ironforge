@@ -250,7 +250,7 @@ apps/web/
 └── styles/
 Server vs. client components: Default to server components. Mark "use client" only when needed (interactivity, hooks, browser APIs).
 Data fetching: TanStack Query for client-side. Server components fetch directly. Don't mix patterns.
-Forms: React Hook Form + Zod resolver. Share schemas with backend via packages/shared-types.
+Forms: React Hook Form + Zod schemas (shared with backend via packages/shared-types). Current implementation uses react-hook-form's native `validate` callback wrapping `schema.safeParse` rather than `@hookform/resolvers/zod` due to a packaging bug that breaks `@hookform/resolvers` under pnpm's strict node_modules layout (the resolver imports `zod/v4/core` without declaring `zod` as a peer dep). See `docs/tech-debt.md § "@hookform/resolvers/zod incompatible with pnpm strict node_modules layout"` for the workaround pattern + revisit triggers; mirror PR-G's `validateName` shape in `apps/web/app/services/new/page.tsx` for future forms until upstream fix lands.
 Styling: Tailwind utility classes. No CSS modules. No inline styles. Use cn() utility for conditional classes.
 State management: TanStack Query for server state. React state for local UI state. No Redux, no Zustand, no Jotai unless specifically needed (it shouldn't be).
 Loading and error states: Every data-fetching component has explicit loading, error, and empty states. No flashing of empty content.

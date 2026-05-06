@@ -6,6 +6,7 @@ import {
   buildServiceKeys,
   buildServicePK,
   CreateServiceRequestSchema,
+  CreateServiceResponseSchema,
   DeprovisionServiceResponseSchema,
   ServiceArchivedSchema,
   ServiceDeprovisioningSchema,
@@ -441,6 +442,45 @@ describe("ServiceListResponseSchema", () => {
     const result = ServiceListResponseSchema.safeParse({
       items: [{ ...baseFields, status: "ghost" }],
       cursor: null,
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("CreateServiceResponseSchema", () => {
+  // Right-after-creation state: Service has just been written with
+  // status "pending"; Job is in initial "queued" state. The kickoff
+  // workflow will transition both forward as Step Functions executes.
+  const validResponse = {
+    service: {
+      ...baseFields,
+      status: "pending" as const,
+    },
+    job: {
+      id: VALID_JOB_ID,
+      serviceId: VALID_ID,
+      ownerId: VALID_SUB,
+      createdAt: VALID_TIMESTAMP,
+      updatedAt: VALID_TIMESTAMP,
+      status: "queued" as const,
+    },
+  };
+
+  it("parses 201 success body (service + job composite)", () => {
+    const result = CreateServiceResponseSchema.safeParse(validResponse);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects when job is missing", () => {
+    const { job: _omit, ...withoutJob } = validResponse;
+    const result = CreateServiceResponseSchema.safeParse(withoutJob);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects when service variant is malformed", () => {
+    const result = CreateServiceResponseSchema.safeParse({
+      ...validResponse,
+      service: { ...validResponse.service, status: "ghost" },
     });
     expect(result.success).toBe(false);
   });

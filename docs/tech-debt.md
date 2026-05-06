@@ -497,6 +497,43 @@ The AWS-internal threshold-detection path (Phase 4) is documented as outside the
 - **Action:** Add `vitest` + `@vitejs/plugin-react` + `@testing-library/react` + `happy-dom` (lighter than `jsdom`; standard for Next.js portal tests). Write `apps/web/vitest.config.ts` with React plugin + `happy-dom` environment + path alias matching `tsconfig.json`'s `@/*`. Add `"test": "vitest run"` to `apps/web/package.json` scripts. Write a smoke test (`lib/api-client/index.test.ts`) covering 202 success + 409 error paths via mock `fetch`. Estimated total: ~1-2 hours including verification on existing api-client methods.
 - **Where:** `apps/web/vitest.config.ts` (new); `apps/web/package.json` (test script); `apps/web/lib/api-client/index.test.ts` (smoke test, first portal test to land); `apps/web/components/__tests__/` or co-located `*.test.tsx` (component tests when triggered).
 
+### Frontend / forms
+
+#### `@hookform/resolvers/zod` incompatible with pnpm strict node_modules layout
+
+- **Symptom:** Next.js build (Turbopack and Webpack) fails with `Module not found: Can't resolve 'zod/v4/core'` when `@hookform/resolvers/zod` is imported from a portal page. Apparent in PR-G (subphase 2.3 create form) when the canonical `react-hook-form + zodResolver` pattern was wired per CLAUDE.md guidance.
+- **Cause:** `@hookform/resolvers@5.2.2`'s `zod` sub-path imports `zod/v4/core` to support Zod v4's standard schema interface, but the package's `peerDependencies` declares only `react-hook-form`, not `zod`. Under pnpm's strict node_modules layout, that means `zod` is NOT symlinked into `@hookform/resolvers`'s resolution context — Node's module-resolution walk-up doesn't reach the consumer's `zod` because pnpm's directory shape keeps the resolver isolated. The resolver's runtime works in npm's hoisted layout (where `zod` ends up at root and is reachable from any package); under pnpm's strict isolation it doesn't.
+- **Workaround applied (PR-G):** drop `@hookform/resolvers`; use `react-hook-form`'s native `validate` callback wrapping the shared Zod schema's `safeParse`:
+
+  ```tsx
+  import { ServiceNameSchema } from "@ironforge/shared-types";
+  import { useForm } from "react-hook-form";
+
+  const validateName = (value: string): true | string => {
+    const result = ServiceNameSchema.safeParse(value);
+    return result.success || (result.error.issues[0]?.message ?? "invalid");
+  };
+
+  // ... inside the component:
+  <input {...form.register("name", { validate: validateName })} />
+  ```
+
+  Pattern intent preserved (Zod-schema-driven validation; schemas shared between portal and backend via `@ironforge/shared-types`); specific `zodResolver` package dropped. Field-level errors land in `formState.errors.<field>.message` via the same `formState` shape `zodResolver` produces.
+
+- **Why this is the right disposition (not "fix the resolver"):**
+  - Upstream fix (`@hookform/resolvers` declaring `zod` as a peer dep) is outside our control; can't merge a PR there in this session's timescale.
+  - `pnpm.overrides` to inject `zod` into the resolver's context is fragile (overrides can affect other workspace packages unpredictably; also masks the bug rather than addressing it).
+  - The native `validate` pattern is genuinely smaller — one less version to track, one less indirection layer between schema and form. Future maintenance benefit.
+
+- **Triggers for revisit:**
+  - **Upstream `@hookform/resolvers` fixes the peer-dep declaration.** Watch the package's GitHub issues / releases — when a release lands that declares `zod` as a peer dep, the canonical resolver pattern works again under pnpm strict.
+  - **Project moves off pnpm strict layout.** If the workspace ever adopts `node-linker=hoisted` or migrates to a different package manager, the resolver works as documented. Unlikely; mentioned for completeness.
+  - **Form complexity exceeds manual `validate` handling.** Async validation, cross-field validation, complex error mapping — at some point the resolver's per-schema-error mapping is worth the dep. Currently single-field forms; not load-bearing.
+
+- **Pattern for future forms (until upstream fix lands):** mirror PR-G's manual `validate` approach. Define the form's Zod schema in `@ironforge/shared-types` (or compose existing schemas there); wrap `safeParse` in a `validate` callback per field; pass to `register("field", { validate })`. CLAUDE.md § "Frontend Conventions" reflects this implementation reality (updated PR-G).
+
+- **Where:** `apps/web/app/services/new/page.tsx` (PR-G's `validateName` is the canonical example); `apps/web/package.json` (note absence of `@hookform/resolvers`); `CLAUDE.md` § "Frontend Conventions" (reflects current pattern, not original-intent pattern); upstream tracking issue: monitor `@hookform/resolvers` releases for peer-dep fix.
+
 ### Diagnostics breadcrumbs
 
 These aren't deferred work — they're institutional knowledge captured at the point the lesson was learned, so future-Ricky troubleshooting a similar failure benefits from the breadcrumb. Adapted from the standard entry shape: Symptom / Cause / How to diagnose.
