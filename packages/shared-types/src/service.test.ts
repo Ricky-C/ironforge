@@ -6,6 +6,7 @@ import {
   buildServiceKeys,
   buildServicePK,
   CreateServiceRequestSchema,
+  DeprovisionServiceResponseSchema,
   ServiceArchivedSchema,
   ServiceDeprovisioningSchema,
   ServiceFailedSchema,
@@ -352,5 +353,48 @@ describe("CreateServiceRequestSchema", () => {
   it("rejects when inputs is missing", () => {
     const { inputs: _omit, ...withoutInputs } = validRequest;
     expect(CreateServiceRequestSchema.safeParse(withoutInputs).success).toBe(false);
+  });
+});
+
+describe("DeprovisionServiceResponseSchema", () => {
+  // Mid-DELETE state: Service has flipped to deprovisioning, Job is the
+  // running deprovisioning workflow execution. Caller may use job to
+  // link to status polling without an extra fetch.
+  const validResponse = {
+    service: {
+      ...baseFields,
+      status: "deprovisioning" as const,
+      jobId: VALID_JOB_ID,
+    },
+    job: {
+      id: VALID_JOB_ID,
+      serviceId: VALID_ID,
+      ownerId: VALID_SUB,
+      createdAt: VALID_TIMESTAMP,
+      updatedAt: VALID_TIMESTAMP,
+      status: "running" as const,
+      startedAt: VALID_TIMESTAMP,
+      executionArn: "arn:aws:states:us-east-1:123456789012:execution:test:test",
+      currentStep: "deprovision-terraform",
+    },
+  };
+
+  it("parses 202 success body (service + job composite)", () => {
+    const result = DeprovisionServiceResponseSchema.safeParse(validResponse);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects when job is missing", () => {
+    const { job: _omit, ...withoutJob } = validResponse;
+    const result = DeprovisionServiceResponseSchema.safeParse(withoutJob);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects when service variant is malformed", () => {
+    const result = DeprovisionServiceResponseSchema.safeParse({
+      ...validResponse,
+      service: { ...validResponse.service, status: "ghost" },
+    });
+    expect(result.success).toBe(false);
   });
 });

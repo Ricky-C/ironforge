@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { JobSchema } from "./job";
+
 // Service.name is the subdomain (e.g. <name>.ironforge.rickycaballero.com)
 // and is baked into ACM cert SANs, Route53 records, the GitHub repo name,
 // and CI/CD configs. It is IMMUTABLE post-creation. Renames go through
@@ -192,5 +194,19 @@ export type CreateServiceRequest = z.infer<typeof CreateServiceRequestSchema>;
 // without an extra fetch.
 export type CreateServiceResponse = {
   service: Service;
-  job: import("./job.js").Job;
+  job: import("./job").Job;
 };
+
+// 202 Accepted response shape for DELETE /api/services/:id (kickoff
+// or idempotent re-DELETE during in-flight deprovisioning). Mirrors
+// CreateServiceResponse — both the Service (now in `deprovisioning`
+// state) and the Job that's running the deprovisioning workflow, so
+// the caller can link to job-status polling without an extra fetch.
+//
+// Schema (not just a TS type) so the api-client validates the
+// envelope at the boundary, matching the existing GET /:id pattern.
+export const DeprovisionServiceResponseSchema = z.object({
+  service: ServiceSchema,
+  job: JobSchema,
+});
+export type DeprovisionServiceResponse = z.infer<typeof DeprovisionServiceResponseSchema>;
