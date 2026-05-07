@@ -934,4 +934,11 @@ module "api_gateway" {
 
   lambda_invoke_arn    = module.api_lambda.function_invoke_arn
   lambda_function_name = module.api_lambda.function_name
+
+  # Browser-direct API Gateway calls land in subphase 2.5 (ADR-010
+  # oidc-client-ts). The dev portal runs at localhost:3000; passing
+  # the SPA origin opts this env into CORS without touching the
+  # module default (empty list = no CORS). When prod's api-gateway
+  # composition lands, mirror with the prod portal origin.
+  cors_allowed_origins = ["http://localhost:3000"]
 }

@@ -59,12 +59,12 @@ module "cognito" {
 
   clients = {
     dev = {
-      callback_urls = ["http://localhost:3000/api/auth/callback/cognito"]
-      logout_urls   = ["http://localhost:3000"]
+      callback_urls = ["http://localhost:3000/auth/callback"]
+      logout_urls   = ["http://localhost:3000/"]
     }
     prod = {
-      callback_urls = ["https://ironforge.rickycaballero.com/api/auth/callback/cognito"]
-      logout_urls   = ["https://ironforge.rickycaballero.com"]
+      callback_urls = ["https://ironforge.rickycaballero.com/auth/callback"]
+      logout_urls   = ["https://ironforge.rickycaballero.com/"]
     }
   }
 }

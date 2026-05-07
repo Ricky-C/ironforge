@@ -54,12 +54,33 @@ resource "aws_apigatewayv2_api" "this" {
   protocol_type = "HTTP"
   description   = "Ironforge ${var.environment} API. JWT-authorized; integrates with Lambda. See docs/data-model.md for the access-pattern catalog."
 
-  # CORS intentionally not configured. The architecture is BFF: Next.js
-  # server (apps/web route handlers) calls this API; the browser never
-  # hits API Gateway directly. Configuring CORS for non-existent
-  # cross-origin callers invites silent expansion. Add CORS in a future
-  # PR if a client-side fetch becomes a real requirement, with an
-  # explicit allowed-origin list.
+  # CORS opt-in via var.cors_allowed_origins. Empty list (the default)
+  # emits no cors_configuration block — preserves the historical
+  # BFF-only posture. Subphase 2.5's portal (oidc-client-ts) calls this
+  # API directly from the browser; per-env compositions opt in by
+  # passing the SPA origin.
+  #
+  # Methods / headers / credentials are derived from what THIS API
+  # serves (CRUD on /api/services with Bearer auth + Idempotency-Key on
+  # POST). Hardcoded here, not per-env, because they're API-surface
+  # facts, not deployment policy. Updating them as new endpoints land
+  # is a deliberate audit moment.
+  dynamic "cors_configuration" {
+    for_each = length(var.cors_allowed_origins) > 0 ? [1] : []
+    content {
+      allow_origins  = var.cors_allowed_origins
+      allow_methods  = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+      allow_headers  = ["Authorization", "Content-Type", "Idempotency-Key"]
+      expose_headers = []
+      # No cookie / credentialed auth — Bearer in Authorization only.
+      # Keeps the CORS surface tight (allow_credentials=true would
+      # require named origins anyway, but explicit is better).
+      allow_credentials = false
+      # 600s preflight cache; reduces OPTIONS chatter without making
+      # CORS-policy changes feel slow to surface in dev.
+      max_age = 600
+    }
+  }
 
   tags = local.component_tags
 }
