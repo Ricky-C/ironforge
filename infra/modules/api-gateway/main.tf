@@ -128,6 +128,26 @@ resource "aws_apigatewayv2_route" "default" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_jwt.id
 }
 
+# Public demo routes for subphase 2.6. API Gateway HTTP API route
+# specificity puts `ANY /api/demo/{proxy+}` ahead of `$default`, so
+# requests under /api/demo/* match THIS route (with NONE auth) instead
+# of the JWT-authorized $default. Lambda receives them with no
+# authorizer claims; the in-Lambda middleware skips auth for paths
+# starting with `/api/demo/` (trailing slash — see handler.ts).
+#
+# Critical design property: a stale Bearer token in localStorage from
+# a prior authenticated session does NOT cause 401 on demo paths,
+# because route-level NONE wins over the gateway authorizer. A
+# regression here (e.g., authorizer applied universally) would break
+# demo for users with authenticated history. PR's verification plan
+# includes an explicit curl with an invalid Bearer to catch this.
+resource "aws_apigatewayv2_route" "demo_public" {
+  api_id             = aws_apigatewayv2_api.this.id
+  route_key          = "ANY /api/demo/{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "NONE"
+}
+
 # Permission for API Gateway to invoke the Lambda. Source ARN scoped to
 # this specific API + any stage + any route key.
 resource "aws_lambda_permission" "apigw_invoke" {

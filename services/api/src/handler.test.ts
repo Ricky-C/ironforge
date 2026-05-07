@@ -707,6 +707,157 @@ describe("GET /api/services/:id/jobs/:jobId/steps — validation + auth", () => 
 });
 
 // ===========================================================================
+// /api/demo/* — subphase 2.6 unauthenticated demo surface
+//
+// Scope: envelope-shape spot checks + DELETE on static-* → 404 (defense
+// in depth; frontend will also gate the button in PR-B). Auth-bypass at
+// the gateway level is verified post-apply via curl per PR description
+// (route-level NONE-vs-gateway-authorizer is gateway behavior, not
+// Lambda behavior — testing it via Hono mocks would test library code,
+// not the integration we care about).
+// ===========================================================================
+
+const callDemoPath = (path: string, init: RequestInit = {}) =>
+  createApp().request(path, init, {
+    // Demo routes hit Lambda without authorizer claims — gateway-level
+    // route NONE doesn't populate event.requestContext.authorizer.
+    // Mirror that here by passing only requestContext (no .authorizer).
+    event: { requestContext: { requestId: "demo-test" } },
+  } as AuthEnv["Bindings"]);
+
+describe("GET /api/demo/health", () => {
+  it("returns 200 envelope shape (no auth required)", async () => {
+    const res = await callDemoPath("/api/demo/health");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: true; data: { status: string } };
+    expect(body.ok).toBe(true);
+    expect(body.data.status).toBe("ok");
+  });
+});
+
+describe("GET /api/demo/services", () => {
+  it("returns 200 with 3 catalog entries (live + provisioning + failed)", async () => {
+    const res = await callDemoPath("/api/demo/services");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: true;
+      data: { items: Array<{ status: string }>; cursor: string | null };
+    };
+    expect(body.data.items).toHaveLength(3);
+    const statuses = body.data.items.map((s) => s.status).sort();
+    expect(statuses).toEqual(["failed", "live", "provisioning"]);
+    expect(body.data.cursor).toBeNull();
+  });
+});
+
+describe("GET /api/demo/services/:id", () => {
+  it("returns 200 for a known static demo id", async () => {
+    const res = await callDemoPath(
+      "/api/demo/services/11111111-1111-4111-8111-111111111111",
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: true; data: { status: string } };
+    expect(body.data.status).toBe("live");
+  });
+
+  it("returns 404 for an unrecognized id", async () => {
+    const res = await callDemoPath(
+      "/api/demo/services/99999999-9999-4999-8999-999999999999",
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/demo/services", () => {
+  it("returns 201 with service+job composite (envelope shape)", async () => {
+    const res = await callDemoPath("/api/demo/services", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "demo-test",
+        templateId: "static-site",
+        inputs: {},
+      }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      ok: true;
+      data: {
+        service: { id: string; name: string; status: string };
+        job: { id: string; status: string };
+      };
+    };
+    expect(body.data.service.name).toBe("demo-test");
+    // Service starts in pending or provisioning depending on the
+    // sub-millisecond elapsed time between generateEphemeralServiceId
+    // and getDemoService inside the handler. Either is valid for a
+    // freshly-created ephemeral.
+    expect(["pending", "provisioning"]).toContain(body.data.service.status);
+    expect(body.data.job.id).toBeTruthy();
+  });
+});
+
+describe("DELETE /api/demo/services/:id — defense in depth on static catalog", () => {
+  // Static catalog services are not deprovisionable. Backend enforces
+  // here so a stale frontend or scripted client can't remove demo
+  // catalog entries by guessing IDs. Frontend (PR-B) also gates the
+  // button.
+  it("returns 404 on the live static service", async () => {
+    const res = await callDemoPath(
+      "/api/demo/services/11111111-1111-4111-8111-111111111111",
+      { method: "DELETE" },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 on the provisioning static service", async () => {
+    const res = await callDemoPath(
+      "/api/demo/services/22222222-2222-4222-8222-222222222222",
+      { method: "DELETE" },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 on the failed static service", async () => {
+    const res = await callDemoPath(
+      "/api/demo/services/33333333-3333-4333-8333-333333333333",
+      { method: "DELETE" },
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/demo/services/:id/job + /steps", () => {
+  const LIVE_STATIC_ID = "11111111-1111-4111-8111-111111111111";
+  const LIVE_STATIC_JOB_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+  it("/job returns 200 with the live static service's succeeded Job", async () => {
+    const res = await callDemoPath(`/api/demo/services/${LIVE_STATIC_ID}/job`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: true;
+      data: { job: { status: string } };
+    };
+    expect(body.data.job.status).toBe("succeeded");
+  });
+
+  it("/jobs/:jobId/steps returns 200 with all 8 succeeded steps for the live static service", async () => {
+    const res = await callDemoPath(
+      `/api/demo/services/${LIVE_STATIC_ID}/jobs/${LIVE_STATIC_JOB_ID}/steps`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: true;
+      data: { items: Array<{ status: string }> };
+    };
+    expect(body.data.items).toHaveLength(8);
+    for (const step of body.data.items) {
+      expect(step.status).toBe("succeeded");
+    }
+  });
+});
+
+// ===========================================================================
 // Unknown /api/* routes (preserved from PR-B.2)
 // ===========================================================================
 
