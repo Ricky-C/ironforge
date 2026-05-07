@@ -23,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ApiClientError, apiClient } from "@/lib/api-client";
+import { JobProgress } from "@/components/job-progress";
 import { StatusBadge } from "@/components/status-badge";
 import type { Service } from "@ironforge/shared-types";
 
@@ -124,6 +125,8 @@ function ServiceDetailCard({ service }: { service: Service }): React.ReactNode {
             Live URL unavailable for status: {service.status}
           </p>
         )}
+
+        <JobProgress serviceId={service.id} />
 
         {canDeprovision ? <DeprovisionAction service={service} /> : null}
       </CardContent>
