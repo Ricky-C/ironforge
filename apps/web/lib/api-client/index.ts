@@ -15,15 +15,17 @@ import {
   type ServiceListResponse,
 } from "@ironforge/shared-types";
 
-// Where API calls go:
-// - Dev: /api/dev/proxy/[...path] forwards server-side with Bearer token.
-// - Prod (subphase 2.5): direct fetch to the API with the access token
-//   from oidc-client-ts UserManager. Replaces the dev proxy.
+// Direct fetch to API Gateway with the access token from oidc-client-ts
+// UserManager. PR-A landed CORS for the dev SPA origin; PR-B (this) drops
+// the dev BFF in favor of browser-direct calls.
 //
-// The transport branch lives here so callers (components, hooks) stay
-// stable across the 2.5 swap.
+// The base URL is build-time config: NEXT_PUBLIC_API_BASE_URL. Build-arg
+// threading per the PR description (.github/workflows/app-deploy.yml).
+// Local dev reads from apps/web/.env.local.
 
-const PROXY_BASE = "/api/dev/proxy";
+import { getUserManager } from "@/lib/auth/user-manager";
+
+const API_BASE_URL = process.env["NEXT_PUBLIC_API_BASE_URL"];
 
 export class ApiClientError extends Error {
   readonly code: string;
@@ -50,8 +52,28 @@ const request = async <T>(
   init: RequestInit,
   dataSchema: Parameters<typeof ApiResponseSchema>[0],
 ): Promise<T> => {
-  const url = `${PROXY_BASE}${path}`;
-  const response = await fetch(url, init);
+  if (!API_BASE_URL) {
+    throw new ApiClientError({
+      code: "API_BASE_URL_UNSET",
+      message:
+        "NEXT_PUBLIC_API_BASE_URL not set at build time. Configure as a Docker --build-arg in CI and in apps/web/.env.local for local dev.",
+      status: 0,
+    });
+  }
+
+  const user = await getUserManager().getUser();
+  if (user === null || user.expired) {
+    throw new ApiClientError({
+      code: "UNAUTHENTICATED",
+      message: "no signed-in user; sign in via the header to continue",
+      status: 401,
+    });
+  }
+
+  const url = `${API_BASE_URL}${path}`;
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${user.access_token}`);
+  const response = await fetch(url, { ...init, headers });
 
   let json: unknown;
   try {

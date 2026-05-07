@@ -13,10 +13,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ApiClientError, apiClient } from "@/lib/api-client";
+import { ProtectedRoute } from "@/components/protected-route";
 import { StatusBadge } from "@/components/status-badge";
 import type { Service } from "@ironforge/shared-types";
 
 export default function ServiceCatalogPage(): React.ReactNode {
+  return (
+    <ProtectedRoute>
+      <ServiceCatalogContent />
+    </ProtectedRoute>
+  );
+}
+
+function ServiceCatalogContent(): React.ReactNode {
   const query = useInfiniteQuery({
     queryKey: ["services"],
     queryFn: ({ pageParam }) =>
