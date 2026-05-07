@@ -1,9 +1,10 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { handle } from "hono/aws-lambda";
 
 import type { AppEnv } from "./env.js";
 import { cognitoAuth } from "./middleware/auth.js";
 import { loggerMiddleware } from "./middleware/logger.js";
+import { demoRoutes } from "./routes/demo.js";
 import { servicesRoutes } from "./routes/services.js";
 
 // Factored out for testability — tests construct a fresh app and use
@@ -17,20 +18,39 @@ export const createApp = (): Hono<AppEnv> => {
   // correlation against the API Gateway access log.
   app.use("*", loggerMiddleware);
 
-  // Cognito auth middleware applies to /api/*. The API Gateway HTTP
-  // API JWT authorizer has already verified signature, iss, audience
-  // (client_id), and exp before this Lambda is invoked. This
-  // middleware enforces the one remaining check the authorizer cannot
-  // — token_use === "access" — and shapes the verified claims onto
-  // the Hono context. See infra/modules/cognito/main.tf SECURITY
-  // NOTE for the verification split.
+  // Cognito auth middleware applies to /api/* EXCEPT /api/demo/*.
   //
-  // Applied at the wildcard so unauthenticated requests to unknown
-  // paths return 401, not 404 — paths are not leaked via the
-  // 404/401 boundary.
-  app.use("/api/*", cognitoAuth);
+  // The API Gateway HTTP API JWT authorizer has already verified
+  // signature, iss, audience (client_id), and exp before this Lambda
+  // is invoked for /api/* — except for /api/demo/{proxy+} where the
+  // gateway-level route specifies authorization_type=NONE (subphase
+  // 2.6 demo surface). The middleware below enforces the one
+  // remaining check the authorizer cannot — token_use === "access" —
+  // and shapes the verified claims onto the Hono context. See
+  // infra/modules/cognito/main.tf SECURITY NOTE for the verification
+  // split.
+  //
+  // Applied at the /api/* wildcard so unauthenticated requests to
+  // unknown auth-required paths still return 401 (not 404) — paths
+  // are not leaked via the 401/404 boundary. The demo skip uses a
+  // trailing slash (`/api/demo/`) so a hypothetical future path like
+  // `/api/demonstrate` doesn't accidentally bypass auth.
+  // The cast is structural: cognitoAuth declares MiddlewareHandler
+  // <AuthEnv>, but AppEnv extends AuthEnv. At runtime the Context the
+  // middleware receives has all of AuthEnv's bindings/variables; the
+  // additional AppEnv ones (lambdaContext, logger) are simply unused
+  // there. Hono's generic doesn't model env covariance, so we narrow
+  // cognitoAuth's declared type at the call site.
+  const cognitoAuthAppEnv = cognitoAuth as unknown as MiddlewareHandler<AppEnv>;
+  app.use("/api/*", async (c, next) => {
+    if (c.req.path.startsWith("/api/demo/")) {
+      return next();
+    }
+    return cognitoAuthAppEnv(c, next);
+  });
 
   app.route("/api/services", servicesRoutes);
+  app.route("/api/demo", demoRoutes);
 
   return app;
 };
