@@ -14,9 +14,18 @@ import { useAuth } from "@/lib/auth/auth-provider";
 // → user is back at the home page, signed out.
 
 export function AuthHeader(): React.ReactNode {
-  const { user, isLoading, signIn, signOut } = useAuth();
+  const { user, isLoading, isAvailable, signIn, signOut } = useAuth();
 
   if (isLoading) {
+    return null;
+  }
+
+  // Auth machinery offline (Cognito NEXT_PUBLIC_* build-args missing).
+  // Demo paths still work; rendering no Sign-in button avoids handing
+  // the visitor a control that errors on click. Production paths in
+  // this state are misconfigured — operator surfaces the issue via
+  // the console warning AuthProvider logs.
+  if (!isAvailable) {
     return null;
   }
 
