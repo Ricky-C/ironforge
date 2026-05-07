@@ -3,11 +3,25 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";
-import type { Job, JobStep } from "@ironforge/shared-types";
+import type {
+  Job,
+  JobStep,
+  ServiceJobResponse,
+  ServiceJobStepListResponse,
+} from "@ironforge/shared-types";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiClientError, apiClient } from "@/lib/api-client";
+import { ApiClientError } from "@/lib/api-client";
+
+// Narrow client interface — JobProgress only needs the two polling
+// methods. Both the production apiClient and the demo apiClient
+// satisfy this shape; the demo path passes its client via prop and
+// the component renders the same UI regardless of source.
+export type JobProgressClient = {
+  getServiceJob: (id: string) => Promise<ServiceJobResponse>;
+  listJobSteps: (id: string, jobId: string) => Promise<ServiceJobStepListResponse>;
+};
 
 // Real-time progress polling for a Service's most-recent Job.
 // Backed by the polling endpoints landed in PR #121 (subphase 2.4-A.2):
@@ -46,7 +60,13 @@ const sortByStartedAt = (steps: JobStep[]): JobStep[] =>
     a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0,
   );
 
-export function JobProgress({ serviceId }: { serviceId: string }): React.ReactNode {
+export function JobProgress({
+  serviceId,
+  apiClient,
+}: {
+  serviceId: string;
+  apiClient: JobProgressClient;
+}): React.ReactNode {
   const queryClient = useQueryClient();
 
   const jobQuery = useQuery({
