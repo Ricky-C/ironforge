@@ -1,0 +1,261 @@
+"use client";
+
+import { use, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink } from "lucide-react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { ApiClientError } from "@/lib/api-client";
+import { JobProgress, type JobProgressClient } from "@/components/job-progress";
+import { StatusBadge } from "@/components/status-badge";
+import type {
+  DeprovisionServiceResponse,
+  Service,
+} from "@ironforge/shared-types";
+
+// Shared service-detail rendering. Used by both /services/[id]
+// (authenticated production) and /demo/services/[id] (unauthenticated
+// demo). Differences flow through props:
+//   - apiClient: production or demo variant; same method shape
+//   - canDeprovision: default rejects in-flight / archived; demo can
+//     additionally reject static-catalog IDs (defense in depth alongside
+//     backend's 404 on those)
+//   - displayNameOverride: demo wrapper supplies the visitor-typed name
+//     from sessionStorage when the backend's synthetic ephemeral name
+//     would otherwise show
+
+export type ServiceDetailClient = JobProgressClient & {
+  getService: (id: string) => Promise<Service>;
+  deprovisionService: (id: string) => Promise<DeprovisionServiceResponse>;
+};
+
+export function ServiceDetailContent({
+  params,
+  apiClient,
+  canDeprovision,
+  displayNameOverride,
+}: {
+  params: Promise<{ id: string }>;
+  apiClient: ServiceDetailClient;
+  canDeprovision?: (service: Service) => boolean;
+  displayNameOverride?: string | undefined;
+}): React.ReactNode {
+  const { id } = use(params);
+
+  const query = useQuery({
+    queryKey: ["service", id],
+    queryFn: () => apiClient.getService(id),
+  });
+
+  return (
+    <main className="min-h-screen">
+      <div className="mx-auto max-w-2xl px-6 py-16 sm:py-24">
+        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+          Service detail
+        </h1>
+        <p className="mt-2 font-mono text-sm text-muted-foreground">{id}</p>
+
+        <div className="mt-10">
+          {query.isPending ? (
+            <ServiceDetailSkeleton />
+          ) : query.isError ? (
+            <ServiceDetailError error={query.error} />
+          ) : (
+            <ServiceDetailCard
+              service={query.data}
+              apiClient={apiClient}
+              canDeprovision={canDeprovision ?? defaultCanDeprovision}
+              displayNameOverride={displayNameOverride}
+            />
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+const defaultCanDeprovision = (service: Service): boolean =>
+  service.status === "live" || service.status === "failed";
+
+function ServiceDetailSkeleton(): React.ReactNode {
+  return (
+    <Card>
+      <CardHeader>
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="mt-2 h-4 w-56" />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Skeleton className="h-5 w-full" />
+        <Skeleton className="h-5 w-3/4" />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ServiceDetailError({ error }: { error: unknown }): React.ReactNode {
+  const isApiError = error instanceof ApiClientError;
+  return (
+    <Alert variant="destructive">
+      <AlertTitle>{isApiError ? error.code : "Unknown error"}</AlertTitle>
+      <AlertDescription>{isApiError ? error.message : String(error)}</AlertDescription>
+    </Alert>
+  );
+}
+
+function ServiceDetailCard({
+  service,
+  apiClient,
+  canDeprovision,
+  displayNameOverride,
+}: {
+  service: Service;
+  apiClient: ServiceDetailClient;
+  canDeprovision: (service: Service) => boolean;
+  displayNameOverride: string | undefined;
+}): React.ReactNode {
+  const displayName = displayNameOverride ?? service.name;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex flex-wrap items-center gap-3">
+          <span>{displayName}</span>
+          <StatusBadge status={service.status} />
+        </CardTitle>
+        <CardDescription>Template: {service.templateId}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {service.status === "live" ? (
+          <a
+            href={service.liveUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
+          >
+            {service.liveUrl}
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Live URL unavailable for status: {service.status}
+          </p>
+        )}
+
+        <JobProgress serviceId={service.id} apiClient={apiClient} />
+
+        {canDeprovision(service) ? (
+          <DeprovisionAction
+            service={service}
+            displayName={displayName}
+            apiClient={apiClient}
+          />
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DeprovisionAction({
+  service,
+  displayName,
+  apiClient,
+}: {
+  service: Service;
+  displayName: string;
+  apiClient: ServiceDetailClient;
+}): React.ReactNode {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: () => apiClient.deprovisionService(service.id),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["service", service.id], data.service);
+      setOpen(false);
+    },
+  });
+
+  return (
+    <div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger
+          render={
+            <Button variant="destructive" size="sm">
+              Deprovision
+            </Button>
+          }
+        />
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Deprovision {displayName}?</DialogTitle>
+            <DialogDescription>This will destroy:</DialogDescription>
+          </DialogHeader>
+          <ul className="ml-4 list-disc space-y-1 text-sm text-muted-foreground">
+            <li>The AWS infrastructure (S3 + CloudFront + Route53 + IAM)</li>
+            <li>
+              The GitHub repo (
+              <code className="font-mono text-xs">ironforge-svc/{displayName}</code>)
+            </li>
+            <li>
+              The live URL (
+              <code className="font-mono text-xs">
+                {displayName}.ironforge.rickycaballero.com
+              </code>
+              )
+            </li>
+          </ul>
+          <p className="text-sm font-medium text-foreground">This cannot be undone.</p>
+
+          {mutation.isError ? (
+            <Alert variant="destructive">
+              <AlertTitle>
+                {mutation.error instanceof ApiClientError
+                  ? mutation.error.code
+                  : "Unknown error"}
+              </AlertTitle>
+              <AlertDescription>
+                {mutation.error instanceof ApiClientError
+                  ? mutation.error.message
+                  : String(mutation.error)}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={mutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending}
+            >
+              {mutation.isPending ? "Deprovisioning..." : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
