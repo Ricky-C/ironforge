@@ -169,3 +169,32 @@ One-time setup that happens during subphase 2.5 (auth):
 **Component-naming companion lesson.** Captured at `feedback_naming_reflects_current_scope.md`: name for what the code IS today, not what it MIGHT BECOME. Aspirational naming (`CreateServiceWizard` for a single-step form) makes the code lie about current behavior; honest naming makes future expansion a clean refactor with a clear trigger.
 
 **Tracked.** This amendment documents the framing correction in-place, per `docs/conventions.md § "ADR/tech-debt empirical claims require verification"`. Empirical claims in design docs are checked against reality before committing UI complexity; when reality contradicts framing, the amendment captures the correction.
+
+### 2026-05-07 (PR-B) — Three refinements landed during 2.5 implementation
+
+**1. Redirect URIs computed from `window.location.origin`, not env-baked.**
+
+ADR-010 § Pre-implementation listed the callback / logout URLs explicitly per env. PR #123 (PR-A infra prep) set them in the Cognito allowlist accordingly. PR-B's UserManager config takes the cleaner shape:
+
+```ts
+redirect_uri: `${window.location.origin}/auth/callback`,
+post_logout_redirect_uri: `${window.location.origin}/`,
+```
+
+Same JS bundle works at `localhost:3000` and the prod domain — no rebuild required for env-shape parity. Reduces the build-arg surface from four env vars to three (authority, client_id, API base URL). The trailing-slash on `post_logout_redirect_uri` matches PR-A's allowlist exactly per the contract documented in PR #123.
+
+**2. Hosted UI theming deferred to subphase 2.6 (demo polish), not done between PR-A and PR-B.**
+
+ADR-010 § Pre-implementation step #2 ("Theme Hosted UI via Cognito console") was originally framed as a between-PR-A-and-PR-B step (and `docs/runbook.md § 16` documents the procedure for that timing). Empirically: theming's audience is real users polishing demo experience; PR-B verification works functionally with unstyled Hosted UI. Deferring to 2.6 (demo-mode polish) batches it with the other portfolio-polish work where the audience and aesthetic effort align. PR-A's runbook section stays in place; the procedure is documented for whenever it's exercised. No ADR-010 commitment is broken — the manual step still happens before any external demo audience.
+
+**3. NEXT_PUBLIC_* env vars threaded via Docker `--build-arg`, sourced from repo `vars`.**
+
+The portal builds in CI via a multi-stage Docker build; `next build` reads `NEXT_PUBLIC_*` from `process.env` at build time and inlines the values into the client JS bundle. Three options were considered:
+
+- (a) `--build-arg` in CI workflow, declared as `ARG` in Dockerfile, re-exported as `ENV` before `next build` — chosen
+- (b) CI generates `apps/web/.env.production` (gitignored) before the docker build
+- (c) Hardcode dev values in the Dockerfile as `ARG` defaults; defer env-split
+
+Option (a) keeps the Dockerfile env-agnostic (no committed env-specific defaults) and keeps the CI workflow as the single source of truth for per-env config. Repo `vars` (not `secrets`) hold the values: the Cognito client_id, OIDC authority URL, and API Gateway URL are all non-sensitive (public Cognito client_ids designed for browser use; API Gateway URL discoverable from any deployed asset). `secrets` would be misleading.
+
+**Tracked:** ADR-010's original "Pre-implementation tasks" list captures the ideal sequence; this amendment captures the empirical choices made during PR-B implementation. Future-you running 2.5 against another env: build-args are the integration point, not env-baked redirects.

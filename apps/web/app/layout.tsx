@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
+import { AuthHeader } from "@/components/auth-header";
 import { cn } from "@/lib/utils";
 import { Providers } from "./providers";
 
@@ -24,7 +25,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={cn("font-sans antialiased", geist.variable)}>
       <body>
-        <Providers>{children}</Providers>
+        <Providers>
+          <AuthHeader />
+          {children}
+        </Providers>
       </body>
     </html>
   );

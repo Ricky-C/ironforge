@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { ApiClientError, apiClient } from "@/lib/api-client";
 import { JobProgress } from "@/components/job-progress";
+import { ProtectedRoute } from "@/components/protected-route";
 import { StatusBadge } from "@/components/status-badge";
 import type { Service } from "@ironforge/shared-types";
 
@@ -31,9 +32,17 @@ type ServiceDetailPageProps = {
   params: Promise<{ id: string }>;
 };
 
-export default function ServiceDetailPage({
-  params,
-}: ServiceDetailPageProps): React.ReactNode {
+export default function ServiceDetailPage(
+  props: ServiceDetailPageProps,
+): React.ReactNode {
+  return (
+    <ProtectedRoute>
+      <ServiceDetailContent {...props} />
+    </ProtectedRoute>
+  );
+}
+
+function ServiceDetailContent({ params }: ServiceDetailPageProps): React.ReactNode {
   const { id } = use(params);
 
   const query = useQuery({

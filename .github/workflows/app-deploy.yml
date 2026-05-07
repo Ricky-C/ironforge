@@ -94,6 +94,15 @@ jobs:
           tags: |
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          # NEXT_PUBLIC_* vars are non-sensitive (public Cognito client_id,
+          # public API URL, public OIDC authority) — stored as repo
+          # variables (vars), not secrets. Sourced from terraform outputs
+          # of the dev composition; rotate via repo settings if the API
+          # ID rotates or the Cognito client_id changes.
+          build-args: |
+            NEXT_PUBLIC_COGNITO_AUTHORITY=${{ vars.NEXT_PUBLIC_COGNITO_AUTHORITY }}
+            NEXT_PUBLIC_COGNITO_CLIENT_ID=${{ vars.NEXT_PUBLIC_COGNITO_CLIENT_ID }}
+            NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
 
       - name: Verify image architecture
         # Catches buildx-arch misconfiguration at build time. If the image

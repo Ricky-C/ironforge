@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ApiClientError, apiClient } from "@/lib/api-client";
+import { ProtectedRoute } from "@/components/protected-route";
 
 // Form values: only `name` is user-collected at single-template scope.
 // `templateId` is hard-coded to "static-site" at submit (the only
@@ -42,6 +43,14 @@ const validateName = (value: string): true | string => {
 };
 
 export default function CreateServicePage(): React.ReactNode {
+  return (
+    <ProtectedRoute>
+      <CreateServiceContent />
+    </ProtectedRoute>
+  );
+}
+
+function CreateServiceContent(): React.ReactNode {
   const router = useRouter();
   const queryClient = useQueryClient();
 

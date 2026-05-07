@@ -42,6 +42,21 @@ RUN pnpm install --frozen-lockfile --filter "@ironforge/web..."
 COPY apps/web apps/web
 COPY packages/shared-types packages/shared-types
 
+# NEXT_PUBLIC_* env vars are inlined into the client JS bundle at
+# build time. Build-args here let CI pass per-env values; the docker
+# build receives them and re-exports as ENV so `next build` picks
+# them up via process.env. Defaults are intentionally absent — a
+# build without them produces a bundle that throws clear errors at
+# runtime (api-client + UserManager both check + throw with helpful
+# message), which is preferable to silently building a non-functional
+# bundle.
+ARG NEXT_PUBLIC_COGNITO_AUTHORITY
+ARG NEXT_PUBLIC_COGNITO_CLIENT_ID
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_COGNITO_AUTHORITY=$NEXT_PUBLIC_COGNITO_AUTHORITY
+ENV NEXT_PUBLIC_COGNITO_CLIENT_ID=$NEXT_PUBLIC_COGNITO_CLIENT_ID
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+
 # Build the Next.js standalone bundle. With outputFileTracingRoot
 # pointing at the monorepo root (next.config.mjs), the standalone
 # tree contains the workspace layout under apps/web/.
