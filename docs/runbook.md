@@ -1466,6 +1466,80 @@ gh run rerun --failed <failed-run-id>
 
 ---
 
+## 16. Cognito Hosted UI theming (subphase 2.5 prerequisite)
+
+### When to run this
+
+Between PR-A (subphase 2.5 infra prep — Cognito callback URL migration + API Gateway CORS) and PR-B (portal `oidc-client-ts` integration). Applies to the shared user pool (`ironforge`), so it's a one-time procedure across both dev and prod app clients — Hosted UI customization is at the user-pool-domain level, not the per-client level.
+
+A new env (e.g., a future `staging`) added to the `clients = { ... }` map in `infra/envs/shared/main.tf` inherits the existing theming automatically — no re-run.
+
+### Why this isn't terraform
+
+`aws_cognito_user_pool_ui_customization` exists as a terraform resource but takes a base64-encoded CSS blob and an `image_file` attribute as a base64 byte array. Driving non-trivial CSS + a logo image through tfvars is awkward (Git-as-binary-store; CSS-as-string-literal); the Cognito console's WYSIWYG editor is the better authoring surface. Result: theming lives outside terraform, captured here so future contributors can reproduce it.
+
+If the manual surface ever bites (drift between envs, theme regressed by a console operator, etc.), revisit moving to the terraform resource — it's mechanical at that point.
+
+### What to set
+
+Specifics are aesthetic — the procedure below captures *where* to set them, not the exact color hex (revisit those when the brand evolves).
+
+1. **Logo** — small (≤ 350×350px, ≤ 100KB) Ironforge wordmark or icon. Placeholder text-as-logo is acceptable for portfolio scope.
+2. **Primary button color** — see Color guidance below.
+3. **Background color** — neutral; matches portal's `bg-background`. Hosted UI is light-only; pick the light-mode equivalent (white or near-white).
+4. **Page background image** — leave default unless brand requires more.
+
+**Color guidance:** the portal currently uses Tailwind/shadcn neutral defaults (primary is `oklch(0.205 0 0)`, near-black grayscale). Emerald-600 (`#059669`) is used illustratively below as a defensible default — pleasant, not jarring, matches StatusBadge "live" color. Update if portal brand colors get defined later; CSS overrides are the only place that needs to change.
+
+### How
+
+1. Navigate to AWS Console → Cognito → User Pools → `ironforge`.
+2. **App integration** tab → scroll to **Hosted UI customization** → click **Edit**.
+3. Upload logo; set CSS overrides via the in-page editor (preview pane shows updates live).
+4. Save. Hosted UI URL: `https://ironforge-010438464240.auth.us-east-1.amazoncognito.com/login?client_id=<client-id>&response_type=code&scope=openid+email+profile&redirect_uri=<callback-url>`.
+
+### Verification
+
+Open the Hosted UI URL above in an incognito window with one of the dev app client's callback URLs (e.g., `http://localhost:3000/auth/callback`). The login page should reflect the customizations. Then repeat with the prod app client's `client_id` — Hosted UI customization is at the user-pool-domain level per Cognito docs, so both clients should reflect the same customizations. Empirical check protects against AWS documentation being incomplete on customization scope. No need to complete sign-in — the visual check is the gate.
+
+### CSS overrides — minimum viable
+
+Cognito Hosted UI's CSS editor supports a curated set of selectors; the full list lives at the AWS docs page (search "Customizing built-in sign-in and sign-up webpages"). Hex values below are illustrative (see Color guidance above); the selectors themselves are stable.
+
+```css
+.banner-customizable {
+  background: #ffffff;
+  padding: 24px 0;
+}
+
+.label-customizable {
+  font-weight: 500;
+}
+
+.submitButton-customizable {
+  background-color: #059669;
+}
+
+.submitButton-customizable:hover {
+  background-color: #047857;
+}
+
+.inputField-customizable:focus {
+  border-color: #059669;
+}
+```
+
+### Rollback
+
+If CSS overrides break Hosted UI rendering:
+
+1. Console revert: Cognito console → User pools → `ironforge` → App integration → Hosted UI customization → Edit → Clear CSS / remove logo → Save
+2. Verify revert: incognito Hosted UI URL for both dev + prod client_ids
+3. Propagation: ~30 sec; if >60 sec try cache clear / different incognito
+4. Re-apply later: fix underlying issue, re-upload via console
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.

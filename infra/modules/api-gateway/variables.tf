@@ -71,3 +71,9 @@ variable "throttling_rate_limit" {
     error_message = "throttling_rate_limit must be > 0; setting to 0 blocks all stage traffic on HTTP API v2."
   }
 }
+
+variable "cors_allowed_origins" {
+  description = "Browser origins permitted to call this API directly. Empty list (the default) leaves CORS unconfigured — preserving the original BFF posture for envs / setups where the browser never hits API Gateway. When the portal swaps from a same-origin BFF proxy to direct API Gateway calls (subphase 2.5 — ADR-010 oidc-client-ts), the per-env composition opts in by passing the SPA origin (no path, no trailing slash; e.g., `[\"http://localhost:3000\"]` or `[\"https://ironforge.rickycaballero.com\"]`). Methods / headers / credentials are derived from the API surface in main.tf, not exposed as variables — they are fixed by what this API serves, not per-env policy."
+  type        = list(string)
+  default     = []
+}
