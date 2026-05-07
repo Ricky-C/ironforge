@@ -2,12 +2,16 @@ import {
   ApiResponseSchema,
   CreateServiceResponseSchema,
   DeprovisionServiceResponseSchema,
+  ServiceJobResponseSchema,
+  ServiceJobStepListResponseSchema,
   ServiceListResponseSchema,
   ServiceSchema,
   type CreateServiceRequest,
   type CreateServiceResponse,
   type DeprovisionServiceResponse,
   type Service,
+  type ServiceJobResponse,
+  type ServiceJobStepListResponse,
   type ServiceListResponse,
 } from "@ironforge/shared-types";
 
@@ -155,5 +159,36 @@ export const apiClient = {
         body: JSON.stringify(body),
       },
       CreateServiceResponseSchema,
+    ),
+
+  // GET /api/services/:id/job — most recently-created Job for the
+  // service. `data.job` is null when the Service has no Jobs yet
+  // (transitional pending → first-kickoff window). Polled by the
+  // detail page's JobProgress component on a 2s cadence while the
+  // Job is non-terminal; the polling consumer detects terminal
+  // status by `data.job?.status` ∈ {succeeded, failed, cancelled}
+  // and stops polling.
+  getServiceJob: (id: string): Promise<ServiceJobResponse> =>
+    request<ServiceJobResponse>(
+      `/api/services/${id}/job`,
+      { method: "GET" },
+      ServiceJobResponseSchema,
+    ),
+
+  // GET /api/services/:id/jobs/:jobId/steps — JobStep[] for the
+  // given Job. Items come back in DynamoDB SK-alphabetic order
+  // (STEP#<name>); presentation sort by `startedAt` happens
+  // client-side because workflow ordering is the meaningful one
+  // for users. Returns `{ items: [] }` cleanly when no steps have
+  // been written yet (workflow kickoff window, deprovisioning's
+  // long deprovision-terraform stage).
+  listJobSteps: (
+    id: string,
+    jobId: string,
+  ): Promise<ServiceJobStepListResponse> =>
+    request<ServiceJobStepListResponse>(
+      `/api/services/${id}/jobs/${jobId}/steps`,
+      { method: "GET" },
+      ServiceJobStepListResponseSchema,
     ),
 };
