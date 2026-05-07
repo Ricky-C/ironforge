@@ -124,7 +124,7 @@ describe("deprovisionService — kickoff from live", () => {
       ok: true;
       data: {
         service: { status: string; jobId: string; currentJobId: string };
-        job: { status: string; executionArn: string; currentStep: string };
+        job: { status: string; executionArn: string };
       };
     };
     const body = result.body as ResponseBody;
@@ -132,7 +132,6 @@ describe("deprovisionService — kickoff from live", () => {
     expect(body.data.service.status).toBe("deprovisioning");
     expect(body.data.service.jobId).toBe(body.data.service.currentJobId);
     expect(body.data.job.status).toBe("running");
-    expect(body.data.job.currentStep).toBe("deprovision-terraform");
     expect(body.data.job.executionArn).toContain(":execution:");
   });
 
@@ -287,7 +286,6 @@ describe("deprovisionService — idempotent re-DELETE during deprovisioning", ()
         updatedAt: TIMESTAMP,
         startedAt: TIMESTAMP,
         executionArn: `${DEPROVISION_ARN.replace(":stateMachine:", ":execution:")}:${IN_FLIGHT_JOB_ID}`,
-        currentStep: "deprovision-terraform",
         status: "running",
       },
     }));

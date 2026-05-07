@@ -43,14 +43,14 @@ export const JobQueuedSchema = JobBaseSchema.extend({
 });
 
 // `executionArn` lets operators pivot from a Job row to the underlying
-// Step Functions execution in one click. `currentStep` denormalizes
-// "where is this?" so operators don't have to scan JobStep entries to
-// answer that hot question.
+// Step Functions execution in one click. "Where is this job?" is
+// computed on read from JobStep entries (PK=JOB#<id>, SK begins_with
+// STEP#) — single source of truth, no denormalized `currentStep` to
+// keep in sync. See docs/tech-debt.md history for the design choice.
 export const JobRunningSchema = JobBaseSchema.extend({
   status: z.literal("running"),
   startedAt: IsoTimestampSchema,
   executionArn: z.string().min(1),
-  currentStep: z.string().min(1),
 });
 
 export const JobSucceededSchema = JobBaseSchema.extend({

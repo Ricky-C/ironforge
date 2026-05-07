@@ -13,6 +13,7 @@ const VALID_SUB = "11111111-1111-4111-8111-111111111111";
 const OTHER_SUB = "99999999-9999-4999-8999-999999999999";
 const SERVICE_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_SERVICE_ID = "33333333-3333-4333-8333-333333333333";
+const JOB_ID = "44444444-4444-4444-8444-444444444444";
 const TIMESTAMP = "2026-04-30T15:20:34.567Z";
 
 const sampleService = (overrides: Record<string, unknown> = {}) => ({
@@ -510,6 +511,198 @@ describe("DELETE /api/services/:id — 409 SERVICE_IN_FLIGHT", () => {
     };
     expect(body.error.code).toBe("SERVICE_IN_FLIGHT");
     expect(body.error.currentState).toBe("provisioning");
+  });
+});
+
+// ===========================================================================
+// GET /api/services/:id/job — most-recent Job (subphase 2.4-A.2)
+// ===========================================================================
+
+const sampleJobItem = (overrides: Record<string, unknown> = {}) => ({
+  PK: `JOB#${JOB_ID}`,
+  SK: "META",
+  GSI1PK: `SERVICE#${SERVICE_ID}`,
+  GSI1SK: `JOB#${TIMESTAMP}#${JOB_ID}`,
+  id: JOB_ID,
+  serviceId: SERVICE_ID,
+  ownerId: VALID_SUB,
+  createdAt: TIMESTAMP,
+  updatedAt: TIMESTAMP,
+  status: "running" as const,
+  startedAt: TIMESTAMP,
+  executionArn:
+    "arn:aws:states:us-east-1:000000000000:execution:ironforge-test-provisioning:" +
+    JOB_ID,
+  ...overrides,
+});
+
+describe("GET /api/services/:id/job — happy path", () => {
+  it("returns 200 with the most-recent Job for the service", async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: sampleItem({
+        status: "provisioning",
+        jobId: JOB_ID,
+        currentJobId: JOB_ID,
+      }),
+    });
+    ddbMock.on(QueryCommand).resolves({ Items: [sampleJobItem()] });
+
+    const res = await callPath(
+      `/api/services/${SERVICE_ID}/job`,
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: true; data: { job: { id: string } | null } };
+    expect(body.ok).toBe(true);
+    expect(body.data.job?.id).toBe(JOB_ID);
+  });
+
+  it("returns 200 with job: null when the service has no Jobs", async () => {
+    ddbMock.on(GetCommand).resolves({ Item: sampleItem() });
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+
+    const res = await callPath(
+      `/api/services/${SERVICE_ID}/job`,
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: true; data: { job: null } };
+    expect(body.data.job).toBeNull();
+  });
+});
+
+describe("GET /api/services/:id/job — validation + auth", () => {
+  it("rejects non-UUID id with 400 INVALID_REQUEST", async () => {
+    const res = await callPath("/api/services/not-a-uuid/job", accessTokenClaims());
+    expect(res.status).toBe(400);
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    const app = createApp();
+    const res = await app.request(
+      `/api/services/${SERVICE_ID}/job`,
+      {},
+      { event: { requestContext: { requestId: "x" } } } as AuthEnv["Bindings"],
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when the service is not owned by the caller", async () => {
+    ddbMock
+      .on(GetCommand)
+      .resolves({ Item: sampleItem({ ownerId: OTHER_SUB }) });
+
+    const res = await callPath(
+      `/api/services/${SERVICE_ID}/job`,
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+// ===========================================================================
+// GET /api/services/:id/jobs/:jobId/steps — JobStep list (subphase 2.4-A.2)
+// ===========================================================================
+
+const sampleStepItem = (
+  stepName: string,
+  overrides: Record<string, unknown> = {},
+) => ({
+  PK: `JOB#${JOB_ID}`,
+  SK: `STEP#${stepName}`,
+  jobId: JOB_ID,
+  stepName,
+  attempts: 1,
+  updatedAt: TIMESTAMP,
+  status: "succeeded" as const,
+  startedAt: TIMESTAMP,
+  completedAt: TIMESTAMP,
+  output: {},
+  ...overrides,
+});
+
+describe("GET /api/services/:id/jobs/:jobId/steps — happy path", () => {
+  it("returns 200 with step entries for the job", async () => {
+    ddbMock
+      .on(GetCommand, { Key: { PK: `SERVICE#${SERVICE_ID}`, SK: "META" } })
+      .resolves({
+        Item: sampleItem({
+          status: "provisioning",
+          jobId: JOB_ID,
+          currentJobId: JOB_ID,
+        }),
+      });
+    ddbMock
+      .on(GetCommand, { Key: { PK: `JOB#${JOB_ID}`, SK: "META" } })
+      .resolves({ Item: sampleJobItem() });
+    ddbMock.on(QueryCommand).resolves({
+      Items: [sampleStepItem("validate-inputs"), sampleStepItem("create-repo")],
+    });
+
+    const res = await callPath(
+      `/api/services/${SERVICE_ID}/jobs/${JOB_ID}/steps`,
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: true;
+      data: { items: Array<{ stepName: string }> };
+    };
+    expect(body.data.items.map((s) => s.stepName)).toEqual([
+      "validate-inputs",
+      "create-repo",
+    ]);
+  });
+});
+
+describe("GET /api/services/:id/jobs/:jobId/steps — validation + auth", () => {
+  it("rejects non-UUID service id with 400", async () => {
+    const res = await callPath(
+      `/api/services/not-a-uuid/jobs/${JOB_ID}/steps`,
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects non-UUID jobId with 400", async () => {
+    const res = await callPath(
+      `/api/services/${SERVICE_ID}/jobs/not-a-uuid/steps`,
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    const app = createApp();
+    const res = await app.request(
+      `/api/services/${SERVICE_ID}/jobs/${JOB_ID}/steps`,
+      {},
+      { event: { requestContext: { requestId: "x" } } } as AuthEnv["Bindings"],
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when the job belongs to a different service", async () => {
+    ddbMock
+      .on(GetCommand, { Key: { PK: `SERVICE#${SERVICE_ID}`, SK: "META" } })
+      .resolves({
+        Item: sampleItem({
+          status: "provisioning",
+          jobId: JOB_ID,
+          currentJobId: JOB_ID,
+        }),
+      });
+    ddbMock
+      .on(GetCommand, { Key: { PK: `JOB#${JOB_ID}`, SK: "META" } })
+      .resolves({ Item: sampleJobItem({ serviceId: OTHER_SERVICE_ID }) });
+
+    const res = await callPath(
+      `/api/services/${SERVICE_ID}/jobs/${JOB_ID}/steps`,
+      accessTokenClaims(),
+    );
+    expect(res.status).toBe(404);
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
   });
 });
 

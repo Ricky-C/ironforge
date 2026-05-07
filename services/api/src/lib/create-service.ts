@@ -334,7 +334,7 @@ const executeCreation = async (params: {
       TableName: tableName,
       Key: { PK: buildJobPK(jobId), SK: JOB_SK_META },
       UpdateExpression:
-        "SET #status = :running, startedAt = :now, executionArn = :arn, currentStep = :first, updatedAt = :now",
+        "SET #status = :running, startedAt = :now, executionArn = :arn, updatedAt = :now",
       ConditionExpression: "#status = :queued",
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
@@ -342,9 +342,6 @@ const executeCreation = async (params: {
         ":queued": "queued",
         ":now": now,
         ":arn": executionArn,
-        // Set to validate-inputs since that's the first state in the
-        // state machine. Keeps Job.currentStep accurate from t0.
-        ":first": "validate-inputs",
       },
     }),
   );
@@ -364,7 +361,6 @@ const executeCreation = async (params: {
     status: "running",
     startedAt: now,
     executionArn,
-    currentStep: "validate-inputs",
     updatedAt: now,
   };
 

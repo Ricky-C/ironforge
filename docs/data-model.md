@@ -125,7 +125,7 @@ check varies — those are what the table tracks.
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `POST /api/services` — create                          | createIfNotExists: `status=pending`, `currentJobId=null`, owner-scoped fields          | —                                                                                                    | Service: `attribute_not_exists(PK)`.                                                              |
 | `POST /api/services` — kickoff (after StartExecution)  | transitionStatus `pending → provisioning`, set `currentJobId=jobId`                    | createIfNotExists `status=queued`, then update to `status=running`, `executionArn`, `startedAt`      | Service: `status=:pending AND currentJobId=:null`. Job create: `attribute_not_exists(PK)`.        |
-| Task Lambdas (validate-inputs … trigger-deploy)        | —                                                                                      | UpdateItem `currentStep=<step-name>`, `updatedAt=now`                                                | Job: `status=:running`.                                                                          |
+| Task Lambdas (validate-inputs … trigger-deploy)        | —                                                                                      | — (Job META row untouched; per-step rows written via the JobStep contract above)                     | —                                                                                                |
 | `finalize`                                             | transitionStatus `provisioning → live`, set `liveUrl`, `provisionedAt`, `currentJobId=null` | transitionStatus `running → succeeded`, set `completedAt`                                            | Service: `status=:provisioning AND currentJobId=:jobId`. Job: `status=:running`.                  |
 | `cleanup-on-failure`                                   | transitionStatus `provisioning → failed`, set `failureReason`, `failedAt`, `currentJobId=null` | transitionStatus `running → failed`, set `failedAt`, `failureReason`, `failedStep`                   | Service: `status=:provisioning AND currentJobId=:jobId`. Job: `status=:running`.                  |
 
@@ -150,8 +150,8 @@ The Conditional column above maps onto helpers in
   current status; on condition fail, returns the actual current status
   from a follow-up GetItem.
 - Plain `UpdateItem` (no helper) for non-status attribute updates that
-  still need a status guard (e.g. `currentStep` updates inside a
-  running Job).
+  still need a status guard (e.g. setting `executionArn` and `startedAt`
+  on the kickoff `queued → running` transition).
 
 ### Idempotency layering
 

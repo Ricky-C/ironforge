@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { JobSchema } from "./job";
+import { JobStepSchema } from "./job-step";
 
 // Service.name is the subdomain (e.g. <name>.ironforge.rickycaballero.com)
 // and is baked into ACM cert SANs, Route53 records, the GitHub repo name,
@@ -230,3 +231,24 @@ export const ServiceListResponseSchema = z.object({
   cursor: z.string().nullable(),
 });
 export type ServiceListResponse = z.infer<typeof ServiceListResponseSchema>;
+
+// 200 OK response shape for GET /api/services/:id/job (subphase 2.4-A.2).
+// Returns the most recently-created Job for the Service — provisioning,
+// deprovisioning, or terminal — so the portal can render progress without
+// pivoting through Service.currentJobId. `job` is null when the Service
+// has no Jobs (rare, transitional pending → first kickoff window).
+export const ServiceJobResponseSchema = z.object({
+  job: JobSchema.nullable(),
+});
+export type ServiceJobResponse = z.infer<typeof ServiceJobResponseSchema>;
+
+// 200 OK response shape for GET /api/services/:id/jobs/:jobId/steps. The
+// portal polls this on a 2s cadence during in-flight Jobs to render the
+// per-step checklist (validate-inputs ✓ → create-repo ✓ → ...). At most
+// ~12 entries per Job (8 happy-path + cleanup-on-failure or deprovision-*),
+// so no pagination needed. Order is unspecified at the schema level —
+// callers sort client-side by `startedAt` if presentation order matters.
+export const ServiceJobStepListResponseSchema = z.object({
+  items: z.array(JobStepSchema),
+});
+export type ServiceJobStepListResponse = z.infer<typeof ServiceJobStepListResponseSchema>;
