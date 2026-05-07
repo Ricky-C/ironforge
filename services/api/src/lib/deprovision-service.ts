@@ -294,7 +294,7 @@ const executeKickoff = async (params: {
       TableName: tableName,
       Key: { PK: buildJobPK(jobId), SK: JOB_SK_META },
       UpdateExpression:
-        "SET #status = :running, startedAt = :now, executionArn = :arn, currentStep = :first, updatedAt = :now",
+        "SET #status = :running, startedAt = :now, executionArn = :arn, updatedAt = :now",
       ConditionExpression: "#status = :queued",
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
@@ -302,10 +302,6 @@ const executeKickoff = async (params: {
         ":queued": "queued",
         ":now": now,
         ":arn": executionArn,
-        // First state of the deprovisioning state machine. InitDeprovision-
-        // Steps is a Pass state that doesn't carry a JobStep — the first
-        // task state is DeprovisionTerraform.
-        ":first": "deprovision-terraform",
       },
     }),
   );
@@ -327,7 +323,6 @@ const executeKickoff = async (params: {
     status: "running",
     startedAt: now,
     executionArn,
-    currentStep: "deprovision-terraform",
     updatedAt: now,
   };
 

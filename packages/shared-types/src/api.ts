@@ -43,10 +43,10 @@ export const ApiErrorCodeSchema = z.enum(API_ERROR_CODES);
 // switch on `code` can read the relevant fields with full type safety.
 //
 // Why no currentStep / estimatedRemainingMinutes on SERVICE_IN_FLIGHT yet:
-// Job.currentStep is currently set once at kickoff (create-service.ts) and
-// not updated by task Lambdas as the workflow progresses, so an in-flight
-// rejection would always report `validate-inputs` regardless of actual
-// progress. Adding meaningful currentStep tracking is tracked in tech-debt.
+// "current step" is computed on read from JobStep[] (per the polling
+// endpoints). Surfacing it on a synchronous error response is feasible
+// (extra Query) but no consumer asks for it; if SERVICE_IN_FLIGHT gains
+// a UX that wants step-detail, add it then.
 export const ApiErrorSchema = z.object({
   code: ApiErrorCodeSchema,
   message: z.string(),

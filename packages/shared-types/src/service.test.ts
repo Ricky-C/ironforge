@@ -11,6 +11,8 @@ import {
   ServiceArchivedSchema,
   ServiceDeprovisioningSchema,
   ServiceFailedSchema,
+  ServiceJobResponseSchema,
+  ServiceJobStepListResponseSchema,
   ServiceListResponseSchema,
   ServiceLiveSchema,
   ServiceNameSchema,
@@ -377,7 +379,6 @@ describe("DeprovisionServiceResponseSchema", () => {
       status: "running" as const,
       startedAt: VALID_TIMESTAMP,
       executionArn: "arn:aws:states:us-east-1:123456789012:execution:test:test",
-      currentStep: "deprovision-terraform",
     },
   };
 
@@ -481,6 +482,86 @@ describe("CreateServiceResponseSchema", () => {
     const result = CreateServiceResponseSchema.safeParse({
       ...validResponse,
       service: { ...validResponse.service, status: "ghost" },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("ServiceJobResponseSchema", () => {
+  const validJob = {
+    id: VALID_JOB_ID,
+    serviceId: VALID_ID,
+    ownerId: VALID_SUB,
+    createdAt: VALID_TIMESTAMP,
+    updatedAt: VALID_TIMESTAMP,
+    status: "running" as const,
+    startedAt: VALID_TIMESTAMP,
+    executionArn: "arn:aws:states:us-east-1:123456789012:execution:test:test",
+  };
+
+  it("parses with a running job", () => {
+    const result = ServiceJobResponseSchema.safeParse({ job: validJob });
+    expect(result.success).toBe(true);
+  });
+
+  it("parses with job: null (Service has no Jobs yet)", () => {
+    const result = ServiceJobResponseSchema.safeParse({ job: null });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects when job is missing (must be present, even if null)", () => {
+    const result = ServiceJobResponseSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects when job variant is malformed", () => {
+    const result = ServiceJobResponseSchema.safeParse({
+      job: { ...validJob, status: "ghost" },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("ServiceJobStepListResponseSchema", () => {
+  const validRunningStep = {
+    jobId: VALID_JOB_ID,
+    stepName: "create-repo" as const,
+    attempts: 1,
+    updatedAt: VALID_TIMESTAMP,
+    status: "running" as const,
+    startedAt: VALID_TIMESTAMP,
+  };
+  const validSucceededStep = {
+    jobId: VALID_JOB_ID,
+    stepName: "validate-inputs" as const,
+    attempts: 1,
+    updatedAt: VALID_TIMESTAMP,
+    status: "succeeded" as const,
+    startedAt: VALID_TIMESTAMP,
+    completedAt: VALID_TIMESTAMP,
+    output: { foo: "bar" },
+  };
+
+  it("parses an empty list (no steps started yet)", () => {
+    const result = ServiceJobStepListResponseSchema.safeParse({ items: [] });
+    expect(result.success).toBe(true);
+  });
+
+  it("parses a list with mixed step variants", () => {
+    const result = ServiceJobStepListResponseSchema.safeParse({
+      items: [validSucceededStep, validRunningStep],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects when items is missing", () => {
+    const result = ServiceJobStepListResponseSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects when an item's variant is malformed", () => {
+    const result = ServiceJobStepListResponseSchema.safeParse({
+      items: [{ ...validRunningStep, status: "ghost" }],
     });
     expect(result.success).toBe(false);
   });

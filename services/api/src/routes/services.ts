@@ -19,6 +19,8 @@ import type { AppEnv } from "../env.js";
 import { createService } from "../lib/create-service.js";
 import { decodeServiceListCursor, encodeServiceListCursor } from "../lib/cursor.js";
 import { deprovisionService } from "../lib/deprovision-service.js";
+import { getJob } from "../lib/get-job.js";
+import { listJobSteps } from "../lib/list-job-steps.js";
 
 const STATE_MACHINE_ARN_ENV = "PROVISIONING_STATE_MACHINE_ARN";
 const DEPROVISIONING_STATE_MACHINE_ARN_ENV = "DEPROVISIONING_STATE_MACHINE_ARN";
@@ -372,6 +374,83 @@ servicesRoutes.delete("/:id", async (c) => {
     return c.json(result.body as Record<string, unknown>, result.statusCode);
   } catch (err) {
     logDynamoError(err, c, "DELETE /api/services/:id");
+    return c.json(INTERNAL_BODY, 500);
+  }
+});
+
+// -----------------------------------------------------------------------
+// GET /api/services/:id/job — most recently-created Job for the service
+// -----------------------------------------------------------------------
+//
+// Polled by the portal's detail page (subphase 2.4-A.2) on a 2s cadence
+// during in-flight Jobs to surface progress + drive the JobStep checklist
+// query underneath. Owner-checked via the parent Service; same 404
+// envelope as GET /:id for not-found / not-owned (no leak).
+
+servicesRoutes.get("/:id/job", async (c) => {
+  const user = c.get("user");
+  const id = c.req.param("id");
+
+  if (!UUID_PATTERN.test(id)) {
+    const body: ApiFailure = {
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "id must be a UUID" },
+    };
+    return c.json(body, 400);
+  }
+
+  try {
+    const result = await getJob({
+      tableName: getTableName(),
+      serviceId: id,
+      ownerId: user.sub,
+    });
+    return c.json(result.body as Record<string, unknown>, result.statusCode);
+  } catch (err) {
+    logDynamoError(err, c, "GET /api/services/:id/job");
+    return c.json(INTERNAL_BODY, 500);
+  }
+});
+
+// -----------------------------------------------------------------------
+// GET /api/services/:id/jobs/:jobId/steps — JobStep[] for the Job
+// -----------------------------------------------------------------------
+//
+// Companion to GET /:id/job. Polled at 2s cadence; returns the per-step
+// rows the portal renders as a checklist (validate-inputs ✓ → create-
+// repo ✓ → ...). Authorization enforces both owner-of-service and
+// job-belongs-to-service so cross-service URL traversal is blocked.
+
+servicesRoutes.get("/:id/jobs/:jobId/steps", async (c) => {
+  const user = c.get("user");
+  const id = c.req.param("id");
+  const jobId = c.req.param("jobId");
+
+  if (!UUID_PATTERN.test(id)) {
+    const body: ApiFailure = {
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "id must be a UUID" },
+    };
+    return c.json(body, 400);
+  }
+  if (!UUID_PATTERN.test(jobId)) {
+    const body: ApiFailure = {
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "jobId must be a UUID" },
+    };
+    return c.json(body, 400);
+  }
+
+  try {
+    const result = await listJobSteps({
+      tableName: getTableName(),
+      serviceId: id,
+      jobId,
+      ownerId: user.sub,
+    });
+    return c.json(result.body as Record<string, unknown>, result.statusCode);
+  } catch (err) {
+    logDynamoError(err, c, "GET /api/services/:id/jobs/:jobId/steps");
     return c.json(INTERNAL_BODY, 500);
   }
 });

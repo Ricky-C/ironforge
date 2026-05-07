@@ -36,13 +36,12 @@ describe("JobSchema variants", () => {
     expect(result.success).toBe(true);
   });
 
-  it("parses running with startedAt + executionArn + currentStep", () => {
+  it("parses running with startedAt + executionArn", () => {
     const result = JobRunningSchema.safeParse({
       ...baseFields,
       status: "running",
       startedAt: TIMESTAMP,
       executionArn: EXECUTION_ARN,
-      currentStep: "create-repo",
     });
     expect(result.success).toBe(true);
   });
@@ -52,7 +51,6 @@ describe("JobSchema variants", () => {
       ...baseFields,
       status: "running",
       startedAt: TIMESTAMP,
-      currentStep: "create-repo",
     });
     expect(result.success).toBe(false);
   });
@@ -63,7 +61,6 @@ describe("JobSchema variants", () => {
       status: "running",
       startedAt: TIMESTAMP,
       executionArn: "",
-      currentStep: "create-repo",
     });
     expect(result.success).toBe(false);
   });
@@ -122,7 +119,6 @@ describe("JobSchema variants", () => {
       status: "running",
       startedAt: TIMESTAMP,
       executionArn: EXECUTION_ARN,
-      currentStep: "validate-inputs",
     });
     expect(result.success).toBe(true);
   });
@@ -138,7 +134,6 @@ describe("JobSchema variants", () => {
       status: "running",
       startedAt: "2026-04-30T15:20:34Z",
       executionArn: EXECUTION_ARN,
-      currentStep: "validate-inputs",
     });
     expect(result.success).toBe(false);
   });
