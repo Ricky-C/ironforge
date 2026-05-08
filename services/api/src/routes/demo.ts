@@ -18,6 +18,7 @@ import {
   getDemoJob,
   getDemoService,
   getDemoSteps,
+  getJobIdForServiceId,
   isDemoId,
   isEphemeralDemoId,
   isStaticDemoId,
@@ -210,8 +211,18 @@ demoRoutes.delete("/services/:id", (c) => {
   // a synthetic "succeeded deprovision Job" to maintain envelope
   // compatibility with /api/services/:id DELETE. PR-B's frontend can
   // treat both responses identically.
+  //
+  // Job ID: getJobIdForServiceId returns a deterministic UUID v4-shape
+  // (service ID with version nibble flipped 7→4). Always a valid UUID,
+  // which is required — Zod's ServiceSchema rejects non-UUID `data.job.id`
+  // at the api-client envelope-parse boundary. The pre-fix fallback
+  // (`${id.slice(0,8)}-demo-deprov`) hit when the service was post-
+  // PROVISION_TOTAL_MS (status "live", currentJobId null) — visitors
+  // who waited the full 30s before clicking Deprovision would see an
+  // INVALID_ENVELOPE error instead of the deprovision succeeding.
+  const jobId = getJobIdForServiceId(id);
   const deprovisionJob: Job = {
-    id: ephemeralOriginal.currentJobId ?? `${id.slice(0, 8)}-demo-deprov`,
+    id: jobId,
     serviceId: id,
     ownerId: DEMO_OWNER_ID,
     createdAt: nowIso,
@@ -221,7 +232,7 @@ demoRoutes.delete("/services/:id", (c) => {
     completedAt: nowIso,
     executionArn:
       "arn:aws:states:us-east-1:000000000000:execution:ironforge-demo-deprovisioning:" +
-      id.slice(0, 8),
+      jobId,
   };
 
   return c.json(ok({ service: archivedService, job: deprovisionJob }), 202);
