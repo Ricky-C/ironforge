@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { BackLink } from "@/components/back-link";
 import { ApiClientError } from "@/lib/api-client";
 
 // Shared create-service form. Used by both the authenticated
@@ -53,11 +54,17 @@ type CreateServiceClient = {
 export function CreateServiceContent({
   apiClient,
   basePath,
+  backHref,
+  backLabel,
   catalogQueryKey = ["services"],
   onCreated,
 }: {
   apiClient: CreateServiceClient;
+  /** Routing prefix for success redirect (`${basePath}/${id}`). Production: "/services". Demo: "/demo/services". */
   basePath: string;
+  /** Back-link + Cancel target (the catalog surface). Production: "/services". Demo: "/demo". */
+  backHref: string;
+  backLabel: string;
   catalogQueryKey?: readonly unknown[];
   onCreated?: (response: CreateServiceResponse) => void;
 }): React.ReactNode {
@@ -106,6 +113,7 @@ export function CreateServiceContent({
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-xl px-6 py-16 sm:py-24">
+        <BackLink href={backHref} label={backLabel} className="mb-6" />
         <header>
           <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
             Create service
@@ -192,7 +200,7 @@ export function CreateServiceContent({
             <Button
               type="button"
               variant="outline"
-              onClick={() => router.push(basePath)}
+              onClick={() => router.push(backHref)}
               disabled={mutation.isPending}
             >
               Cancel

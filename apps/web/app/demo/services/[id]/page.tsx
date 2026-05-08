@@ -68,6 +68,8 @@ export default function DemoServiceDetailPage(
     <ServiceDetailContent
       params={props.params}
       apiClient={demoApiClient}
+      backHref="/demo"
+      backLabel="Demo"
       canDeprovision={demoCanDeprovision}
       displayNameOverride={override}
       deprovisionJobId={deprovisionJobId}
