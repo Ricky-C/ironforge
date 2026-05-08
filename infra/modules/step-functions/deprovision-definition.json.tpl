@@ -12,6 +12,7 @@
     "DeprovisionTerraform": {
       "Type": "Task",
       "Resource": "${run_terraform_arn}",
+      "TimeoutSeconds": 1200,
       "Comment": "Reuses the run-terraform Lambda with action=destroy via Parameters injection. The Lambda accepts {WorkflowExecutionInput, action: \"apply\"|\"destroy\"} per its existing handle-event contract; no Lambda changes needed. Note: run-terraform's internal JobStep writes are conditional on action===\"apply\" (see handle-event.ts:430), so this state does NOT produce a JobStep#deprovision-terraform entry — observability comes from SFN execution history only. Tracked in docs/tech-debt.md § \"JobStep#deprovision-terraform observability gap\".",
       "Parameters": {
         "serviceId.$": "$.serviceId",
@@ -37,6 +38,7 @@
     "DeleteExternalResources": {
       "Type": "Task",
       "Resource": "${delete_external_resources_arn}",
+      "TimeoutSeconds": 30,
       "Comment": "State 2 happy path. Deletes GitHub repo + tfstate file via @ironforge/destroy-chain primitives, then transitions Service deprovisioning -> archived and Job running -> succeeded. Throws on any sub-op failure so the Catch routes to DeprovisionFailed.",
       "Parameters": {
         "jobId.$": "$.jobId",
@@ -70,6 +72,7 @@
     "DeprovisionFailed": {
       "Type": "Task",
       "Resource": "${deprovision_failed_arn}",
+      "TimeoutSeconds": 30,
       "Comment": "Terminal-failure DDB transitions. Service deprovisioning -> failed (failedWorkflow=\"deprovisioning\") and Job running -> failed. Idempotent on re-fire. Does NOT re-run the destroy chain — that would mask the original failure or hit inconsistent partial-destroy state. Recovery is operator-driven via re-issuing DELETE.",
       "Parameters": {
         "jobId.$": "$.jobId",
