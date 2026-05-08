@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ApiClientError, type ListServicesParams } from "@/lib/api-client";
+import { BackLink } from "@/components/back-link";
 import { StatusBadge } from "@/components/status-badge";
 import type { Service, ServiceListResponse } from "@ironforge/shared-types";
 
@@ -59,6 +60,7 @@ export function ServiceCatalogContent({
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-6 py-16 sm:py-24">
+        <BackLink href="/" label="Home" className="mb-6" />
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">{heading}</h1>
@@ -125,7 +127,7 @@ function CatalogGrid({
                 <CardDescription>Template: {service.templateId}</CardDescription>
               </CardHeader>
               <CardContent>
-                <p className="font-mono text-xs text-muted-foreground">{service.id}</p>
+                <p className="break-all font-mono text-xs text-muted-foreground">{service.id}</p>
               </CardContent>
             </Card>
           </Link>

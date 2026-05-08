@@ -7,7 +7,12 @@ import { apiClient } from "@/lib/api-client";
 export default function CreateServicePage(): React.ReactNode {
   return (
     <ProtectedRoute>
-      <CreateServiceContent apiClient={apiClient} basePath="/services" />
+      <CreateServiceContent
+        apiClient={apiClient}
+        basePath="/services"
+        backHref="/services"
+        backLabel="Services"
+      />
     </ProtectedRoute>
   );
 }

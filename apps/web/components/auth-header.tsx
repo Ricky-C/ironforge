@@ -40,7 +40,9 @@ export function AuthHeader(): React.ReactNode {
       ) : (
         <>
           {email !== undefined ? (
-            <span className="text-sm text-muted-foreground">{email}</span>
+            <span className="hidden max-w-[14rem] truncate text-sm text-muted-foreground sm:inline">
+              {email}
+            </span>
           ) : null}
           <Button size="sm" variant="outline" onClick={() => void signOut()}>
             Sign out

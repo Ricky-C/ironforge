@@ -13,7 +13,12 @@ export default function ServiceDetailPage(
 ): React.ReactNode {
   return (
     <ProtectedRoute>
-      <ServiceDetailContent params={props.params} apiClient={apiClient} />
+      <ServiceDetailContent
+        params={props.params}
+        apiClient={apiClient}
+        backHref="/services"
+        backLabel="Services"
+      />
     </ProtectedRoute>
   );
 }

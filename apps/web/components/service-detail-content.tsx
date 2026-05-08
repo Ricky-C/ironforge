@@ -23,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ApiClientError } from "@/lib/api-client";
+import { BackLink } from "@/components/back-link";
 import { JobProgress, type JobProgressClient } from "@/components/job-progress";
 import { StatusBadge } from "@/components/status-badge";
 import type {
@@ -49,6 +50,8 @@ export type ServiceDetailClient = JobProgressClient & {
 export function ServiceDetailContent({
   params,
   apiClient,
+  backHref,
+  backLabel,
   canDeprovision,
   displayNameOverride,
   deprovisionJobId,
@@ -56,6 +59,9 @@ export function ServiceDetailContent({
 }: {
   params: Promise<{ id: string }>;
   apiClient: ServiceDetailClient;
+  /** Back-link href — points to the catalog surface for this context. Production: "/services". Demo: "/demo". */
+  backHref: string;
+  backLabel: string;
   canDeprovision?: (service: Service) => boolean;
   displayNameOverride?: string | undefined;
   /** Demo deprovision-lifecycle context (URL-encoded). Production is unaware. */
@@ -83,10 +89,11 @@ export function ServiceDetailContent({
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-2xl px-6 py-16 sm:py-24">
+        <BackLink href={backHref} label={backLabel} className="mb-6" />
         <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
           Service detail
         </h1>
-        <p className="mt-2 font-mono text-sm text-muted-foreground">{id}</p>
+        <p className="mt-2 break-all font-mono text-sm text-muted-foreground">{id}</p>
 
         <div className="mt-10">
           {query.isPending ? (
@@ -158,7 +165,7 @@ function ServiceDetailCard({
     <Card>
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-3">
-          <span>{displayName}</span>
+          <span className="break-all">{displayName}</span>
           <StatusBadge status={service.status} />
         </CardTitle>
         <CardDescription>Template: {service.templateId}</CardDescription>
@@ -169,10 +176,10 @@ function ServiceDetailCard({
             href={service.liveUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
+            className="inline-flex max-w-full items-center gap-2 break-all text-sm font-medium text-primary hover:underline"
           >
-            {service.liveUrl}
-            <ExternalLink className="h-3.5 w-3.5" />
+            <span className="break-all">{service.liveUrl}</span>
+            <ExternalLink className="h-3.5 w-3.5 shrink-0" />
           </a>
         ) : (
           <p className="text-sm text-muted-foreground">
@@ -249,18 +256,18 @@ function DeprovisionAction({
         />
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Deprovision {displayName}?</DialogTitle>
+            <DialogTitle className="break-all">Deprovision {displayName}?</DialogTitle>
             <DialogDescription>This will destroy:</DialogDescription>
           </DialogHeader>
           <ul className="ml-4 list-disc space-y-1 text-sm text-muted-foreground">
             <li>The AWS infrastructure (S3 + CloudFront + Route53 + IAM)</li>
             <li>
               The GitHub repo (
-              <code className="font-mono text-xs">ironforge-svc/{displayName}</code>)
+              <code className="break-all font-mono text-xs">ironforge-svc/{displayName}</code>)
             </li>
             <li>
               The live URL (
-              <code className="font-mono text-xs">
+              <code className="break-all font-mono text-xs">
                 {displayName}.ironforge.rickycaballero.com
               </code>
               )
