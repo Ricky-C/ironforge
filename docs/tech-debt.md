@@ -376,14 +376,6 @@ These remain deferred because they're production-grade quality on top of a worki
   2. Automation candidates to evaluate at re-visit: (a) template-version field on `Service` row + a scheduled "templateVersion < currentTemplateVersion → open migration PR" Lambda; (b) on-demand "migrate this service" API endpoint exposing a `force_redeploy_yaml` flag; (c) GitHub App-driven cross-repo PR fanout invoked from a one-off ops command.
 - **Where:** `templates/static-site/starter-code/.github/workflows/deploy.yml`; `services/workflow/generate-code/src/handle-event.ts` (the renderer that writes deploy.yml on initial provision); the (currently nonexistent) migration mechanism.
 
-#### Stale verification repo on ironforge-svc — manual cleanup
-
-- **What:** PR-C.4b's Case 4 verification created a real GitHub repo `ironforge-svc/boundary-verify-1777745253` to exercise the create-repo Lambda's end-to-end flow. The verification cleanup step (`gh api -X DELETE`) failed because the gh CLI's auth token lacks the `delete_repo` scope. The repo persists.
-- **Why deferred:** Refreshing the gh CLI auth scope (`gh auth refresh -h github.com -s delete_repo`) is interactive and was not wired into the verification flow. Operationally cheap to leave (single private repo, ~0 cost, no consumer); tidier to delete.
-- **When to revisit:** At any natural break, OR before the next end-to-end verification (each verification leaves a fresh test repo, so multiple verifications without cleanup accumulate).
-- **Action:** Either `gh auth refresh -h github.com -s delete_repo && gh api -X DELETE /repos/ironforge-svc/boundary-verify-1777745253`, or delete via the GitHub UI's Danger Zone at `https://github.com/ironforge-svc/boundary-verify-1777745253/settings`.
-- **Where:** GitHub UI, or operator's terminal.
-
 #### Step Functions Retry blocks lack `JitterStrategy: "FULL"`
 
 - **What:** The 11 Retry blocks across `provision-definition.json.tpl` + `deprovision-definition.json.tpl` retry deterministically with `BackoffRate: 2.0` and no jitter. `aws-serverless` skill recommends `JitterStrategy: "FULL"` to prevent thundering-herd alignment when concurrent executions retry on identical schedules.
