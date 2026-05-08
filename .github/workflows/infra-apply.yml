@@ -226,7 +226,7 @@ jobs:
       - name: Set up Docker Buildx
         # Required for the run-terraform container image build per
         # ADR-009 § Amendments (PR-C.6 binary-footprint trigger).
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build run-terraform container image
         # Required for dev composition's task_run_terraform Lambda
