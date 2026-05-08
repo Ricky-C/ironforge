@@ -20,19 +20,19 @@ const phases: Phase[] = [
     title: "Phase 1 — End-to-end provisioning",
     status: "completed",
     summary:
-      "Step Functions workflow and Lambda task functions. Provisioning + deprovisioning verified end-to-end against the live portfolio-demo service.",
+      "Step Functions workflow and Lambda task functions. Provisioning + deprovisioning verified end-to-end against a live service.",
   },
   {
-    title: "Phase 2 — Wizard UI and service catalog",
-    status: "in-progress",
+    title: "Phase 2 — Portal UI",
+    status: "completed",
     summary:
-      "Multi-step wizard, real-time progress polling, catalog and service-detail views.",
+      "Service catalog, create wizard, real-time progress polling, Cognito-authenticated CRUD, unauthenticated demo mode. Shared components across both surfaces.",
   },
   {
-    title: "Phase 3 — Demo mode and polish",
+    title: "Phase 3 — Additional templates",
     status: "not-started",
     summary:
-      "Mock provisioning flow for unauthenticated visitors, landing page, service deletion.",
+      "Beyond static-site: API services, scheduled jobs. Each new template is a curated module + per-template inputs schema; the platform's pattern is fixed, the surface area expands.",
   },
   {
     title: "Phase 4 — Drift detection and audit",
@@ -62,20 +62,24 @@ export default function Home() {
             Status
           </h2>
           <p className="mt-2 text-zinc-700 dark:text-zinc-300">
-            Phases 0 and 1 are shipped. The live{" "}
-            <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-sm dark:bg-zinc-800">
-              portfolio-demo
-            </code>{" "}
-            service was provisioned end-to-end through the API. Phase 2
-            (portal UI) is in flight; the first authenticated detail-page
-            view is wired below.
+            Phases 0 through 2 are shipped. The platform provisions real
+            AWS infrastructure end-to-end via Step Functions; the portal
+            exposes that as a Cognito-authenticated wizard + service
+            catalog with real-time progress, plus an unauthenticated{" "}
+            <Link
+              href="/demo"
+              className="font-medium text-zinc-900 underline decoration-zinc-400 underline-offset-4 transition hover:decoration-zinc-700 dark:text-zinc-100 dark:decoration-zinc-600 dark:hover:decoration-zinc-300"
+            >
+              demo mode
+            </Link>{" "}
+            that walks visitors through the same UI without sign-in.
           </p>
           <p className="mt-3">
             <Link
-              href="/services/2e4c7e46-2d6f-4243-bcb2-1b73942ed511"
+              href="/demo"
               className="inline-flex items-center gap-2 text-sm font-medium text-zinc-700 transition hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
             >
-              View portfolio-demo (live) →
+              Try the demo →
             </Link>
           </p>
         </section>
@@ -127,14 +131,25 @@ export default function Home() {
             See it in action
           </h2>
           <p className="mt-2 text-zinc-700 dark:text-zinc-300">
-            Ironforge has provisioned{" "}
+            <Link
+              href="/demo"
+              className="font-medium text-zinc-900 underline decoration-zinc-400 underline-offset-4 transition hover:decoration-zinc-700 dark:text-zinc-100 dark:decoration-zinc-600 dark:hover:decoration-zinc-300"
+            >
+              Demo mode
+            </Link>{" "}
+            shows the platform's full state machine without sign-in: a
+            static catalog spanning live / provisioning / failed states,
+            plus an ephemeral provisioning theater that runs a 30-second
+            timer-faked workflow when you create a service. For the real
+            thing, sign in and visit{" "}
             <Link
               href="/services"
               className="font-medium text-zinc-900 underline decoration-zinc-400 underline-offset-4 transition hover:decoration-zinc-700 dark:text-zinc-100 dark:decoration-zinc-600 dark:hover:decoration-zinc-300"
             >
               services
             </Link>{" "}
-            using the architecture described above.
+            — provisioning takes ~5 minutes through the full Step
+            Functions workflow.
           </p>
         </section>
 
