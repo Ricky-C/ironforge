@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Globe, Trash2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -228,15 +228,25 @@ function DetailHeader({
         <p className="mt-1 break-all font-mono text-xs text-fg-subtle">{service.id}</p>
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" render={<a href={repoUrl} target="_blank" rel="noopener noreferrer" />}>
+        <a
+          href={repoUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+        >
           <GithubMark />
           Open repo
-        </Button>
+        </a>
         {service.status === "live" ? (
-          <Button variant="outline" size="sm" render={<a href={service.liveUrl} target="_blank" rel="noopener noreferrer" />}>
+          <a
+            href={service.liveUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          >
             <ExternalLink className="size-3.5" />
             Visit site
-          </Button>
+          </a>
         ) : null}
         {canDeprovision ? (
           <DeprovisionDialogAction
@@ -286,13 +296,15 @@ function LiveUrlPanel({ service }: { service: Service }): React.ReactNode {
             {service.liveUrl}
           </a>
           <CopyButton value={service.liveUrl} />
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            render={<a href={service.liveUrl} target="_blank" rel="noopener noreferrer" aria-label="Open live URL" />}
+          <a
+            href={service.liveUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open live URL"
+            className={cn(buttonVariants({ variant: "ghost", size: "icon-xs" }))}
           >
             <ExternalLink className="size-3.5" />
-          </Button>
+          </a>
         </div>
       ) : (
         <div className="flex items-center gap-2 rounded-md border bg-surface-2 p-2.5 text-xs text-fg-subtle">
