@@ -42,7 +42,7 @@ import type {
 //     would otherwise show
 
 export type ServiceDetailClient = JobProgressClient & {
-  getService: (id: string) => Promise<Service>;
+  getService: (id: string, deprovisionJobId?: string) => Promise<Service>;
   deprovisionService: (id: string) => Promise<DeprovisionServiceResponse>;
 };
 
@@ -51,17 +51,33 @@ export function ServiceDetailContent({
   apiClient,
   canDeprovision,
   displayNameOverride,
+  deprovisionJobId,
+  onDeprovisionSuccess,
 }: {
   params: Promise<{ id: string }>;
   apiClient: ServiceDetailClient;
   canDeprovision?: (service: Service) => boolean;
   displayNameOverride?: string | undefined;
+  /** Demo deprovision-lifecycle context (URL-encoded). Production is unaware. */
+  deprovisionJobId?: string | undefined;
+  /**
+   * Demo wrapper hook fired after a successful Deprovision click. Mirrors
+   * `onCreated` from CreateServiceContent — same `(response) => void`
+   * shape, exposes the full {service, job} composite for hook flexibility.
+   * Demo's hook calls router.replace to encode the deprovisionJobId in
+   * the URL; production passes nothing (existing setQueryData behavior
+   * is sufficient — production's real workflow is what drives state).
+   */
+  onDeprovisionSuccess?: (response: DeprovisionServiceResponse) => void;
 }): React.ReactNode {
   const { id } = use(params);
 
+  // Cache key includes deprovisionJobId so the post-DELETE URL (with
+  // the param set) starts a fresh query rather than reusing the
+  // pre-DELETE service-state cache slot. Same shape JobProgress uses.
   const query = useQuery({
-    queryKey: ["service", id],
-    queryFn: () => apiClient.getService(id),
+    queryKey: ["service", id, deprovisionJobId ?? null],
+    queryFn: () => apiClient.getService(id, deprovisionJobId),
   });
 
   return (
@@ -83,6 +99,8 @@ export function ServiceDetailContent({
               apiClient={apiClient}
               canDeprovision={canDeprovision ?? defaultCanDeprovision}
               displayNameOverride={displayNameOverride}
+              deprovisionJobId={deprovisionJobId}
+              onDeprovisionSuccess={onDeprovisionSuccess}
             />
           )}
         </div>
@@ -124,11 +142,15 @@ function ServiceDetailCard({
   apiClient,
   canDeprovision,
   displayNameOverride,
+  deprovisionJobId,
+  onDeprovisionSuccess,
 }: {
   service: Service;
   apiClient: ServiceDetailClient;
   canDeprovision: (service: Service) => boolean;
   displayNameOverride: string | undefined;
+  deprovisionJobId: string | undefined;
+  onDeprovisionSuccess: ((response: DeprovisionServiceResponse) => void) | undefined;
 }): React.ReactNode {
   const displayName = displayNameOverride ?? service.name;
 
@@ -158,13 +180,19 @@ function ServiceDetailCard({
           </p>
         )}
 
-        <JobProgress serviceId={service.id} apiClient={apiClient} />
+        <JobProgress
+          serviceId={service.id}
+          apiClient={apiClient}
+          deprovisionJobId={deprovisionJobId}
+        />
 
         {canDeprovision(service) ? (
           <DeprovisionAction
             service={service}
             displayName={displayName}
             apiClient={apiClient}
+            deprovisionJobId={deprovisionJobId}
+            onDeprovisionSuccess={onDeprovisionSuccess}
           />
         ) : null}
       </CardContent>
@@ -176,10 +204,14 @@ function DeprovisionAction({
   service,
   displayName,
   apiClient,
+  deprovisionJobId,
+  onDeprovisionSuccess,
 }: {
   service: Service;
   displayName: string;
   apiClient: ServiceDetailClient;
+  deprovisionJobId: string | undefined;
+  onDeprovisionSuccess: ((response: DeprovisionServiceResponse) => void) | undefined;
 }): React.ReactNode {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -187,8 +219,21 @@ function DeprovisionAction({
   const mutation = useMutation({
     mutationFn: () => apiClient.deprovisionService(service.id),
     onSuccess: (data) => {
-      queryClient.setQueryData(["service", service.id], data.service);
+      // Seed BOTH cache slots: the pre-DELETE one (no deprovisionJobId)
+      // and the post-DELETE one (with response.job.id). The post-
+      // DELETE seed is what the URL-changed-via-onDeprovisionSuccess
+      // re-render reads — avoids a flash of "loading" before the next
+      // poll tick comes back.
+      queryClient.setQueryData(
+        ["service", service.id, deprovisionJobId ?? null],
+        data.service,
+      );
+      queryClient.setQueryData(
+        ["service", service.id, data.job.id],
+        data.service,
+      );
       setOpen(false);
+      onDeprovisionSuccess?.(data);
     },
   });
 

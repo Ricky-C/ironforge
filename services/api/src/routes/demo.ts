@@ -13,12 +13,14 @@ import type { AppEnv } from "../env.js";
 import {
   DEMO_OWNER_ID,
   PROVISION_TOTAL_MS,
+  computeDeprovisionJob,
+  computeDeprovisionService,
+  computeDeprovisionSteps,
   generateEphemeralServiceId,
   getDemoCatalog,
   getDemoJob,
   getDemoService,
   getDemoSteps,
-  getJobIdForServiceId,
   isDemoId,
   isEphemeralDemoId,
   isStaticDemoId,
@@ -147,7 +149,12 @@ demoRoutes.post("/services", async (c) => {
 });
 
 // ---------------------------------------------------------------------
-// GET /api/demo/services/:id — service detail (static or ephemeral)
+// GET /api/demo/services/:id — service detail (static or ephemeral);
+// optional ?deprovisionJobId=<v7-uuid> returns deprovision-state-
+// computed response instead. URL-encoded state per the design: visitors
+// who refresh / share the URL during deprovisioning continue to see
+// correctly-elapsed state. Malformed deprovisionJobId falls through to
+// the standard provision-state path (graceful degradation).
 // ---------------------------------------------------------------------
 
 demoRoutes.get("/services/:id", (c) => {
@@ -156,6 +163,16 @@ demoRoutes.get("/services/:id", (c) => {
     return c.json(NOT_FOUND_BODY, 404);
   }
   const now = Date.now();
+
+  const deprovisionJobId = c.req.query("deprovisionJobId");
+  if (deprovisionJobId !== undefined) {
+    const deprovService = computeDeprovisionService(id, deprovisionJobId, now);
+    if (deprovService !== null) {
+      return c.json(ok(deprovService), 200);
+    }
+    // Malformed deprovisionJobId — fall through to standard path.
+  }
+
   const service = getDemoService(id, now);
   if (service === null) {
     return c.json(NOT_FOUND_BODY, 404);
@@ -181,65 +198,40 @@ demoRoutes.delete("/services/:id", (c) => {
     return c.json(NOT_FOUND_BODY, 404);
   }
 
-  // Ephemeral DELETE: respond immediately with archived service +
-  // succeeded deprovision Job. No deprovision timeline simulation —
-  // demo doesn't need to fake AWS cleanup time. Frontend (PR-B)
-  // navigates away after this response; subsequent GETs against the
-  // ID return the original computed state (DELETE is not tracked
-  // server-side; frontend coordinates the post-DELETE UX).
+  // Ephemeral DELETE: kicks off the deprovision theater. Generate a
+  // fresh UUID v7 for the deprovision Job ID (timestamp-encoded with
+  // `now`); subsequent polls carrying the deprovisionJobId via query
+  // param compute current deprovision phase from elapsed-since-now.
+  // Response shape mirrors production's DELETE — service in
+  // `deprovisioning` status, Job in `running` with the deprovision-
+  // terraform step starting. The frontend reads response.job.id and
+  // navigates to /demo/services/<id>?deprovisionJobId=<that-id>; URL-
+  // encoded state preserves the lifecycle view across refresh / share
+  // / bookmark.
   const now = Date.now();
-  const nowIso = new Date(now).toISOString();
-  const ephemeralOriginal = getDemoService(id, now);
-  if (ephemeralOriginal === null) {
-    return c.json(NOT_FOUND_BODY, 404);
+  const deprovJobId = generateEphemeralServiceId(now);
+
+  const deprovService = computeDeprovisionService(id, deprovJobId, now);
+  const deprovJob = computeDeprovisionJob(id, deprovJobId, now);
+  if (deprovService === null || deprovJob === null) {
+    // Unreachable: id was just confirmed ephemeral, deprovJobId was
+    // just generated as a valid v7 UUID. Fail-loud if not.
+    c.get("logger").error("freshly-generated deprovision IDs failed compute", {
+      serviceId: id,
+      deprovJobId,
+    });
+    return c.json<ApiFailure>(
+      { ok: false, error: { code: "INTERNAL", message: "internal server error" } },
+      500,
+    );
   }
 
-  const archivedService: Service = {
-    id: ephemeralOriginal.id,
-    name: ephemeralOriginal.name,
-    ownerId: ephemeralOriginal.ownerId,
-    templateId: ephemeralOriginal.templateId,
-    createdAt: ephemeralOriginal.createdAt,
-    updatedAt: nowIso,
-    inputs: ephemeralOriginal.inputs,
-    currentJobId: null,
-    status: "archived",
-    archivedAt: nowIso,
-  };
-
-  // Mirror production DELETE shape: { service, job }. Job here is
-  // a synthetic "succeeded deprovision Job" to maintain envelope
-  // compatibility with /api/services/:id DELETE. PR-B's frontend can
-  // treat both responses identically.
-  //
-  // Job ID: getJobIdForServiceId returns a deterministic UUID v4-shape
-  // (service ID with version nibble flipped 7→4). Always a valid UUID,
-  // which is required — Zod's ServiceSchema rejects non-UUID `data.job.id`
-  // at the api-client envelope-parse boundary. The pre-fix fallback
-  // (`${id.slice(0,8)}-demo-deprov`) hit when the service was post-
-  // PROVISION_TOTAL_MS (status "live", currentJobId null) — visitors
-  // who waited the full 30s before clicking Deprovision would see an
-  // INVALID_ENVELOPE error instead of the deprovision succeeding.
-  const jobId = getJobIdForServiceId(id);
-  const deprovisionJob: Job = {
-    id: jobId,
-    serviceId: id,
-    ownerId: DEMO_OWNER_ID,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-    status: "succeeded",
-    startedAt: nowIso,
-    completedAt: nowIso,
-    executionArn:
-      "arn:aws:states:us-east-1:000000000000:execution:ironforge-demo-deprovisioning:" +
-      jobId,
-  };
-
-  return c.json(ok({ service: archivedService, job: deprovisionJob }), 202);
+  return c.json(ok({ service: deprovService, job: deprovJob }), 202);
 });
 
 // ---------------------------------------------------------------------
-// GET /api/demo/services/:id/job — most-recent Job for the service
+// GET /api/demo/services/:id/job — most-recent Job; ?deprovisionJobId=
+// switches to deprovision-state-computed Job
 // ---------------------------------------------------------------------
 
 demoRoutes.get("/services/:id/job", (c) => {
@@ -248,12 +240,25 @@ demoRoutes.get("/services/:id/job", (c) => {
     return c.json(NOT_FOUND_BODY, 404);
   }
   const now = Date.now();
+
+  const deprovisionJobId = c.req.query("deprovisionJobId");
+  if (deprovisionJobId !== undefined) {
+    const deprovJob = computeDeprovisionJob(id, deprovisionJobId, now);
+    if (deprovJob !== null) {
+      return c.json<ApiResponse<{ job: Job | null }>>(ok({ job: deprovJob }), 200);
+    }
+    // Malformed param — fall through.
+  }
+
   const job = getDemoJob(id, now);
   return c.json<ApiResponse<{ job: Job | null }>>(ok({ job }), 200);
 });
 
 // ---------------------------------------------------------------------
-// GET /api/demo/services/:id/jobs/:jobId/steps — JobStep[] for a Job
+// GET /api/demo/services/:id/jobs/:jobId/steps — JobStep[] for a Job;
+// ?deprovisionJobId= switches to deprovision-step-list. The :jobId path
+// param is the Job ID the client is asking about; deprovisionJobId is
+// the lifecycle context (which timeline to compute against).
 // ---------------------------------------------------------------------
 
 demoRoutes.get("/services/:id/jobs/:jobId/steps", (c) => {
@@ -262,6 +267,17 @@ demoRoutes.get("/services/:id/jobs/:jobId/steps", (c) => {
     return c.json(NOT_FOUND_BODY, 404);
   }
   const now = Date.now();
+
+  const deprovisionJobId = c.req.query("deprovisionJobId");
+  if (deprovisionJobId !== undefined) {
+    const deprovSteps = computeDeprovisionSteps(deprovisionJobId, now);
+    // Deprovision steps array is non-empty when at least one timeline
+    // entry has elapsed past its startMs; empty during the initial
+    // sub-500ms window. Return empty array honestly; matches the
+    // production polling shape (no "I don't know" fallback).
+    return c.json<ApiResponse<{ items: JobStep[] }>>(ok({ items: deprovSteps }), 200);
+  }
+
   const items = getDemoSteps(id, now);
   return c.json<ApiResponse<{ items: JobStep[] }>>(ok({ items }), 200);
 });

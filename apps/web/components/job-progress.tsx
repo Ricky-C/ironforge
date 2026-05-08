@@ -17,10 +17,19 @@ import { ApiClientError } from "@/lib/api-client";
 // Narrow client interface — JobProgress only needs the two polling
 // methods. Both the production apiClient and the demo apiClient
 // satisfy this shape; the demo path passes its client via prop and
-// the component renders the same UI regardless of source.
+// the component renders the same UI regardless of source. Optional
+// `deprovisionJobId` is the URL-encoded demo deprovision lifecycle
+// context; production ignores it.
 export type JobProgressClient = {
-  getServiceJob: (id: string) => Promise<ServiceJobResponse>;
-  listJobSteps: (id: string, jobId: string) => Promise<ServiceJobStepListResponse>;
+  getServiceJob: (
+    id: string,
+    deprovisionJobId?: string,
+  ) => Promise<ServiceJobResponse>;
+  listJobSteps: (
+    id: string,
+    jobId: string,
+    deprovisionJobId?: string,
+  ) => Promise<ServiceJobStepListResponse>;
 };
 
 // Real-time progress polling for a Service's most-recent Job.
@@ -63,15 +72,21 @@ const sortByStartedAt = (steps: JobStep[]): JobStep[] =>
 export function JobProgress({
   serviceId,
   apiClient,
+  deprovisionJobId,
 }: {
   serviceId: string;
   apiClient: JobProgressClient;
+  deprovisionJobId?: string | undefined;
 }): React.ReactNode {
   const queryClient = useQueryClient();
 
+  // Cache key includes deprovisionJobId so a transition (no deprov →
+  // post-DELETE deprov) starts a fresh query rather than overlaying
+  // stale provision-state cache. URL changes drive the prop change
+  // drives the queryKey change.
   const jobQuery = useQuery({
-    queryKey: ["service", serviceId, "job"],
-    queryFn: () => apiClient.getServiceJob(serviceId),
+    queryKey: ["service", serviceId, "job", deprovisionJobId ?? null],
+    queryFn: () => apiClient.getServiceJob(serviceId, deprovisionJobId),
     refetchInterval: (q) => {
       const data = q.state.data;
       if (data === undefined) return POLL_MS;
@@ -83,29 +98,38 @@ export function JobProgress({
   const jobId = job?.id ?? null;
 
   const stepsQuery = useQuery({
-    queryKey: ["service", serviceId, "jobs", jobId, "steps"],
+    queryKey: [
+      "service",
+      serviceId,
+      "jobs",
+      jobId,
+      "steps",
+      deprovisionJobId ?? null,
+    ],
     queryFn: () =>
-      apiClient.listJobSteps(serviceId, jobId as string),
+      apiClient.listJobSteps(serviceId, jobId as string, deprovisionJobId),
     enabled: jobId !== null,
     refetchInterval: () => (isJobTerminal(job) ? false : POLL_MS),
   });
 
   // When the Job transitions to terminal, the parent Service's status
   // has flipped (provisioning → live | failed; deprovisioning → archived
-  // | failed). Refetch the exact ["service", id] query so the page
-  // reflects the new Service status. `exact: true` avoids invalidating
-  // our own ["service", id, "job"] / ["service", id, "jobs", ...] queries
+  // | failed). Refetch the exact parent query so the page reflects the
+  // new Service status. `exact: true` avoids invalidating our own
+  // ["service", id, "job", ...] / ["service", id, "jobs", ...] queries
   // (which would cause a flash of "loading" right at the cleanest moment).
+  // Parent's queryKey includes deprovisionJobId, so we mirror that here
+  // — the demo deprovision lifecycle has its own parent cache slot.
   useEffect(() => {
     if (job !== null && isJobTerminal(job)) {
       void queryClient.refetchQueries({
-        queryKey: ["service", serviceId],
+        queryKey: ["service", serviceId, deprovisionJobId ?? null],
         exact: true,
       });
     }
     // job.status is the load-bearing identity; React's reference equality
     // on the Job object would re-fire on every poll tick.
-  }, [job?.status, serviceId, queryClient]);
+  }, [job?.status, serviceId, deprovisionJobId, queryClient]);
 
   if (jobQuery.isPending) {
     return <JobProgressSkeleton />;
