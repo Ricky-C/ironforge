@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { AuthHeader } from "@/components/auth-header";
 import { cn } from "@/lib/utils";
 import { Providers } from "./providers";
 
@@ -30,18 +29,19 @@ export default function RootLayout({
 }>) {
   // Dark-first per design direction. The `dark` class triggers shadcn's
   // dark-mode token overrides in globals.css; light-mode tokens remain
-  // available for any future opt-in surface. A theme toggle would flip
-  // this class on <html>; not in scope for PR-1.
+  // available for any future opt-in surface.
+  //
+  // No sidebar/topbar mounted here — that lives in the (shell) route
+  // group's layout, scoped to user-destination routes (/, /services/*,
+  // /demo/*). Utility routes (/auth/callback, /api/*) stay outside the
+  // group and render without chrome.
   return (
     <html
       lang="en"
       className={cn("dark font-sans antialiased", geist.variable, geistMono.variable)}
     >
       <body>
-        <Providers>
-          <AuthHeader />
-          {children}
-        </Providers>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
