@@ -384,6 +384,28 @@ These remain deferred because they're production-grade quality on top of a worki
 - **Action:** Either `gh auth refresh -h github.com -s delete_repo && gh api -X DELETE /repos/ironforge-svc/boundary-verify-1777745253`, or delete via the GitHub UI's Danger Zone at `https://github.com/ironforge-svc/boundary-verify-1777745253/settings`.
 - **Where:** GitHub UI, or operator's terminal.
 
+#### Step Functions Retry blocks lack `JitterStrategy: "FULL"`
+
+- **What:** The 11 Retry blocks across `provision-definition.json.tpl` + `deprovision-definition.json.tpl` retry deterministically with `BackoffRate: 2.0` and no jitter. `aws-serverless` skill recommends `JitterStrategy: "FULL"` to prevent thundering-herd alignment when concurrent executions retry on identical schedules.
+- **Why deferred:** At ≤5 concurrent provisioning jobs (CLAUDE.md hard limit) thundering-herd isn't a realistic concern — five Lambdas retrying the same downstream simultaneously won't overwhelm AWS APIs. Adding the field is a one-line edit per block but with zero observable benefit until concurrent operations approach a threshold where retry alignment matters.
+- **When to revisit:** Concurrent provisioning rate increases meaningfully (multi-tenant operation, batch provisioning, additional template types sharing downstream APIs like GitHub Actions or ACM). OR a retry-storm incident where CloudWatch shows visibly clustered retry intervals.
+- **Action:** Add `"JitterStrategy": "FULL"` to every Retry block in both templates (8 Tasks + CleanupOnFailure on the provision side, DeleteExternalResources + DeprovisionFailed on the deprovision side).
+- **Where:** `infra/modules/step-functions/provision-definition.json.tpl`; `infra/modules/step-functions/deprovision-definition.json.tpl`.
+
+#### Provisioning concurrency limit not enforced
+
+- **What:** CLAUDE.md § Security Guardrails specifies "Hard limit: 5 concurrent provisioning jobs across the system." Currently nothing enforces this — no Lambda reserved concurrency, no SQS queue gating, no DDB-conditional check at job-creation time. A misbehaving caller (or a stress test) could trigger an unbounded number of concurrent Step Functions executions, each holding its own run-terraform Lambda invocation.
+- **Why deferred:** At single-operator portfolio scale, realistic concurrency is 1–2; the documented "5" is more a design guarantee than an enforced limit. Enforcing it adds either Lambda reserved concurrency (blunt; caps total invocation pool but doesn't track in-flight provisioning specifically) or job-creation-time DDB GSI count + conditional-write (correct but adds a query + race-window in the create-service path).
+- **When to revisit (any one of):**
+  1. Multi-user authenticated portal traffic — meaningful concurrent user count makes accidental simultaneous-provision possible.
+  2. Demo-abuse incident — public demo path lets multiple visitors trigger concurrent flows.
+  3. Cost incident — runaway provisioning bills surface a concrete need for the cap.
+- **Action — pick the shape based on the trigger:**
+  1. **Lambda reserved concurrency on `run-terraform`** — simplest: `reserved_concurrent_executions = 5` on the lambda module call. Bluntly limits parallel terraform applies; over-throttle behavior surfaces as `Throttled` errors.
+  2. **Job-creation-time GSI count** — query the existing GSI for `Job.status = "running"` in `services/api/src/lib/create-service.ts`; reject with 429 if count ≥ 5. More correct (matches the documented semantic) but adds a query + has a race window between count and create-Service write that may need a transactional pattern.
+  3. **SQS queue gating** — outside the API request path. POST creates a Job; SQS consumer pulls and starts SFN executions, with reserved concurrency on the consumer = 5. Architecturally cleanest but adds a queue + consumer Lambda.
+- **Where:** `infra/envs/dev/main.tf:482-533` (run-terraform Lambda — option 1); `services/api/src/lib/create-service.ts` (option 2); new infra module + Lambda (option 3); `CLAUDE.md` § Security Guardrails (the documented guarantee).
+
 ### Operational verification / monitoring
 
 #### End-to-end verification flow doesn't exercise in-flight GETs
@@ -451,6 +473,76 @@ The AWS-internal threshold-detection path (Phase 4) is documented as outside the
 - **When to revisit:** Phase 2 (wizard live with authenticated traffic and a non-trivial set of human investigators). Also revisit if a compliance regime with explicit audit-log access logging requirements lands.
 - **Action:** Add a `data_resource` block to `aws_cloudtrail.main` selecting `AWS::S3::Object` with the CloudTrail bucket ARN as the value. Pair with a metric filter alarming on `eventName = GetObject` whose `requestParameters.bucketName` equals the log bucket and whose principal is not the CloudTrail service or known CI roles.
 - **Where:** `infra/modules/cloudtrail/main.tf` (`aws_cloudtrail.main`); future `infra/modules/security-monitoring/` for the alarm.
+
+#### Cost-reporter Lambda DLQ
+
+- **What:** `aws_lambda_function.cost_reporter` (`infra/modules/cost-safeguards/lambda.tf:98–128`) is invoked async by EventBridge schedule (daily 14:00 UTC). No `dead_letter_config` is set. After Lambda's default async retries (2) exhaust, the event is silently discarded.
+- **Why deferred:** Cost-reporter's failure mode is a missed daily cost summary email — operationally low-impact at portfolio scale (the SNS topic also receives Cost Anomaly Detection alerts on the actual spend signal; the daily reporter is a redundant push). Adding the DLQ requires expanding the `ironforge-ci-apply` + `ironforge-ci-plan` roles with `sqs:CreateQueue`/`DeleteQueue`/`GetQueueAttributes`/`SetQueueAttributes`/`TagQueue`/`ListQueueTags`/`AddPermission`/`RemovePermission`, updating `infra/OIDC_BOOTSTRAP.md`, and a manual `aws iam put-role-policy` against live roles before the apply runs (per `feedback_oidc_doc_drift.md` + `feedback_oidc_resource_enumeration.md`). Bundling this with the trivial Terraform-only DLQ change conflates "expand CI permissions" with "enable feature" in one PR.
+- **When to revisit (any one of):**
+  1. Next PR adding any SQS resource elsewhere — same OIDC bootstrap step amortizes across both changes.
+  2. First missed cost report observed — operator notices a missing daily email but can't determine whether the report fired-and-failed or the scheduler didn't fire.
+  3. Multi-tenant or higher-traffic readiness — production-volume monitoring expectations make silent failures unacceptable.
+- **Action:** Create `aws_sqs_queue.cost_reporter_dlq` (AWS-managed encryption; 14-day message retention). Add `dead_letter_config { target_arn = aws_sqs_queue.cost_reporter_dlq.arn }` to the Lambda. Add `sqs:SendMessage` on the queue ARN to `data.aws_iam_policy_document.cost_reporter_permissions`. Update `infra/OIDC_BOOTSTRAP.md` § ironforge-ci-apply policy with the SQS resource grant; run `aws iam put-role-policy` against `ironforge-ci-apply` and `ironforge-ci-plan` before `terraform apply`.
+- **Where:** `infra/modules/cost-safeguards/lambda.tf`; `infra/OIDC_BOOTSTRAP.md`.
+
+#### CloudWatch alarms on Lambda + Step Functions runtime metrics
+
+- **What:** Zero `aws_cloudwatch_metric_alarm` resources monitoring Lambda or Step Functions runtime metrics. `aws-serverless` skill's minimum-six set (Errors %, Throttles, Duration P99, IteratorAge, ConcurrentExecutions, DLQ depth) is entirely absent; only Cost Anomaly Detection + AWS Budgets alarms exist (cost surface only, not operational health). Companion to the CloudTrail-security-alarms entry above — that one covers the security-event surface; this one is the runtime-health peer.
+- **Why deferred:** Phase 1+2 ship without a real user base — operator (Ricky) is the only observer, and a missed alert at portfolio scale doesn't escalate. CloudWatch alarms cost ~$0.10/alarm/month; six per Lambda × 14 Lambdas = $8.40/mo if applied uniformly. Right-sizing the set (which Lambdas warrant which alarms, what thresholds) requires understanding the access pattern, and at Phase 2 close there isn't enough traffic to inform that.
+- **When to revisit (any one of):**
+  1. First incident missed because no alarm fired — concrete signal that the trade-off needs revisiting.
+  2. Pre-portfolio-presentation hardening — "no runtime alarms" is the first gap a senior reviewer will call out; landing them adds visible operational maturity.
+  3. Phase 3+ work that adds new template types or higher-volume paths — additional functions widen the "no alarms" surface meaningfully.
+- **Action:** Add a new `infra/modules/lambda-monitoring/` with per-function `aws_cloudwatch_metric_alarm` resources. Use math expressions for error *rate* (errors as % of invocations, not raw count). Use `p99` extended statistic for latency alarms — never `Average` (skill: "Average hides tail latency"). Wire to `ironforge-cost-alerts` SNS or a new `ironforge-runtime-alerts` topic. Apply per-Lambda via the lambda module call sites (e.g., `enable_alarms = true` flag) rather than blanket-applying — workflow Lambdas don't all need the same threshold.
+- **Where:** New `infra/modules/lambda-monitoring/` (or fold into existing modules); referenced from `infra/modules/lambda/`, `infra/envs/dev/main.tf`, `infra/envs/shared/main.tf`. Companion: § "CloudWatch metric filters and alarms on CloudTrail security events" (security-side); together the two define the alarm-coverage roadmap.
+
+#### EMF custom metrics for platform-domain observability
+
+- **What:** No custom metrics emitted via Embedded Metric Format. Provisioning success rate, time-per-step distribution, deprovisioning success rate, terraform-apply duration percentiles, GitHub-API failure rate — none are tracked. Operational visibility is limited to AWS-emitted Lambda metrics + Step Functions execution status, which capture *the platform's plumbing* but not *the platform's business outcomes*.
+- **Why deferred:** Without traffic, these metrics produce flat lines. EMF + alarms make sense once there are real provisioning operations to derive distributions from. Platform-domain alarming is a Phase 3+ concern that pairs with the runtime-alarms entry above.
+- **When to revisit:** When a non-trivial provisioning rate exists — multi-tenant pilot, additional templates, or ongoing demo traffic where step-distribution data starts being meaningful.
+- **Action:** Add `@aws-lambda-powertools/metrics` to workflow Lambdas. Emit per-step metrics from `handle-event.ts` (e.g., `metrics.addMetric("StepDuration", MetricUnit.Milliseconds, durationMs, { stepName })`). Surface in CloudWatch Dashboards keyed by service/template. Pair with alarms (companion entry) for the metrics that warrant paging. Bundle with the Powertools-logger migration (next entry — same files, same migration window).
+- **Where:** `services/workflow/*/src/handle-event.ts` (callers); new `packages/shared-utils/src/metrics.ts` (mirroring `logger.ts`).
+
+#### Logger consistency: workflow Lambdas use console.error, API uses Powertools
+
+- **What:** API Lambda + cost-reporter use `@aws-lambda-powertools/logger` (via `packages/shared-utils/src/logger.ts`). The 10 workflow Lambdas use `console.error(JSON.stringify(...))` (45 occurrences across `services/workflow/**/handle-event.ts`). Both produce structured JSON; both go to CloudWatch Logs. Powertools provides correlation-ID injection from the Lambda context, log-level filtering via `POWERTOOLS_LOG_LEVEL`, automatic metadata (function name, request ID), and CloudWatch Logs Insights field-extraction conventions. console.error has none of those.
+- **Why deferred:** Migration is mechanical (replace 45 calls) but each touches verified handler code that's been live-verified end-to-end (Phase 1 + 1.5). Risk-of-regression isn't zero; benefit is cleaner ops once alarming/dashboarding land. Without runtime alarms (companion entry), the Powertools advantages don't pay off concretely yet.
+- **When to revisit:** Bundled with the EMF metrics rollout (same migration window — the two changes touch the same files for the same reason). OR when a debugging session is bottlenecked by missing correlation IDs.
+- **Action:** Use `@ironforge/shared-utils`'s existing logger init; export per-handler child loggers with `{ jobId, serviceId }` context. Replace `console.error(JSON.stringify({...}))` → `logger.error({...}, "message")`. Verify via existing `handle-event.test.ts` files (mock the logger; assert call shape).
+- **Where:** All 10 `services/workflow/*/src/handle-event.ts`; `packages/shared-utils/src/logger.ts` (already wired).
+
+#### Lambda Insights extension on workflow + portal Lambdas
+
+- **What:** Lambda Insights (CloudWatch agent extension that emits CPU, memory, network, init-duration metrics beyond what `Duration`/`Errors` show) is not enabled on any function. Standard for production Lambdas at moderate scale.
+- **Why deferred:** ~$0.30/function/month plus log-storage costs. At 14 functions × $0.30 = $4.20/mo if applied uniformly. Marginal observability value at portfolio scale where memory-tuning + cold-start analysis aren't being driven by real traffic data.
+- **When to revisit:** When deciding whether to bump memory on a hot function (Insights gives the data) OR when investigating a real OOM/CPU-saturation incident.
+- **Action:** Attach Lambda Insights extension layer (`arn:aws:lambda:us-east-1:580247275435:layer:LambdaInsightsExtension-Arm64:N` — verify N against current AWS docs at apply time). Add `cloudwatch:PutMetricData` to inline policies (Lambda Insights writes via the standard CW Metrics API). Wire via a `var.lambda_insights_layer_arn` on the lambda module + portal-lambda module.
+- **Where:** `infra/modules/lambda/main.tf` + `variables.tf`; `infra/modules/portal-lambda/main.tf`; call sites `infra/envs/dev/main.tf`, `infra/envs/shared/main.tf`.
+
+### Security / API hardening
+
+#### WAF on the API Gateway path
+
+- **What:** API Gateway (HTTP API) at `https://<id>.execute-api.us-east-1.amazonaws.com` has no WAF. AWS WAF cannot attach directly to HTTP APIs (only REST APIs + CloudFront + ALB); enforcing WAF on the API would require fronting it with CloudFront. CLAUDE.md mentions "AWS WAF on the portal CloudFront with managed rule groups" — that covers the portal but the API is exposed separately.
+- **Why deferred:** At Phase 2 close, the API isn't on a custom domain (still default `execute-api`), and the JWT authorizer + rate limiting (50 burst / 20 RPS) provide a reasonable baseline against accidental abuse. WAF managed rule groups (AWSManagedRulesCommonRuleSet, AWSManagedRulesKnownBadInputsRuleSet) add ~$5–10/mo plus per-request cost. Marginal value at portfolio scale where the only real callers are the portal + the demo path.
+- **When to revisit (any one of):**
+  1. API Gateway gets a custom domain (currently in tech-debt) — natural moment to also front it with CloudFront and attach WAF.
+  2. First abuse incident on the demo path — `/api/demo/*` is unauthenticated; rate limiting is the only current defense.
+  3. Phase 3+ multi-tenant or higher-traffic readiness.
+- **Action:** Add CloudFront in front of the API Gateway as a separate distribution (or extend the portal CloudFront with an additional behavior `/api/*` proxying to the API origin). Attach an `aws_wafv2_web_acl` with managed rule groups (Common, KnownBadInputs, Linux, AnonymousIpList), associated via `aws_wafv2_web_acl_association` to the CloudFront distribution. Custom rules for: rate-based on `/api/demo/*` (block IPs exceeding 100 req/min), geo-block if traffic warrants it.
+- **Where:** New `infra/modules/api-cloudfront/` (or extend `infra/modules/cloudfront-frontend/`); referenced from `infra/envs/dev/main.tf`.
+
+#### JWT `authorization_scopes` per route
+
+- **What:** API Gateway HTTP API JWT authorizer doesn't use `authorization_scopes` on any route. All routes are either `JWT` (catch-all `$default`) or `NONE` (demo + OPTIONS). Cognito user-pool tokens carry an OAuth-style `scope` claim (e.g., `services.read`, `services.write`) that the authorizer can enforce per route — not used.
+- **Why deferred:** Phase 2 has a single user role (the operator) with full permissions on every route. No scope-differentiated permissions exist yet. Adding scopes prematurely without distinct user roles is configuration without purpose.
+- **When to revisit (any one of):**
+  1. Multi-tenant authentication — when distinct user roles (admin vs. read-only viewer) appear.
+  2. Per-template permission model — when not every authenticated user should be able to provision every template (e.g., expensive templates gated to admin).
+  3. Audit / compliance requirement — fine-grained access control is sometimes a checkbox.
+- **Action:** Define Cognito Resource Servers + scopes (`services.read`, `services.write`, `services.deprovision`). Update Cognito client to request scopes during sign-in. Add `authorization_scopes = ["services.read"]` on read routes, `["services.write"]` on POST `/api/services`, `["services.deprovision"]` on DELETE `/api/services/:id`. Update API middleware to accept the scope from `event.requestContext.authorizer.jwt.claims.scope`.
+- **Where:** `infra/modules/cognito/main.tf` (Resource Server + scopes); `infra/modules/api-gateway/main.tf` (per-route `authorization_scopes`); `apps/web/lib/auth/user-manager.ts` (request scopes from Cognito); `services/api/src/middleware/claims.ts` (scope-claim verification).
 
 ### Documentation
 

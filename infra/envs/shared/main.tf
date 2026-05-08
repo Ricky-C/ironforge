@@ -247,6 +247,14 @@ resource "aws_lambda_function" "portal" {
     }
   }
 
+  # X-Ray tracing on every invocation. Captures cold-start vs warm-invoke
+  # duration and surfaces LWA-proxied request latency in the trace timeline.
+  # IAM grant is in modules/portal-lambda/main.tf (xray:PutTraceSegments,
+  # xray:PutTelemetryRecords on Resource:* per docs/iam-exceptions.md).
+  tracing_config {
+    mode = "Active"
+  }
+
   tags = {
     "ironforge-component" = "portal-lambda"
   }

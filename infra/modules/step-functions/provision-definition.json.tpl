@@ -5,6 +5,7 @@
     "ValidateInputs": {
       "Type": "Task",
       "Resource": "${validate_inputs_arn}",
+      "TimeoutSeconds": 30,
       "Retry": [
         {
           "ErrorEquals": [
@@ -32,6 +33,7 @@
     "CreateRepo": {
       "Type": "Task",
       "Resource": "${create_repo_arn}",
+      "TimeoutSeconds": 30,
       "Retry": [
         {
           "ErrorEquals": [
@@ -59,6 +61,7 @@
     "GenerateCode": {
       "Type": "Task",
       "Resource": "${generate_code_arn}",
+      "TimeoutSeconds": 30,
       "Retry": [
         {
           "ErrorEquals": [
@@ -86,6 +89,7 @@
     "RunTerraform": {
       "Type": "Task",
       "Resource": "${run_terraform_arn}",
+      "TimeoutSeconds": 1200,
       "Retry": [],
       "Catch": [
         {
@@ -107,7 +111,8 @@
     "WaitForCloudFront": {
       "Type": "Task",
       "Resource": "${wait_for_cloudfront_arn}",
-      "Comment": "Single-shot poll tick. Calls cloudfront:GetDistribution and returns PollResult. SFN-level Retry catches Lambda-platform transients (one retry); the polling cap is the wall-clock 20-minute budget enforced inside the Lambda — see docs/state-machine.md § \"WaitForCloudFront retry table row\".",
+      "TimeoutSeconds": 30,
+      "Comment": "Single-shot poll tick. Calls cloudfront:GetDistribution and returns PollResult. SFN-level Retry catches Lambda-platform transients (one retry); the polling cap is the wall-clock 20-minute budget enforced inside the Lambda — see docs/state-machine.md § \"WaitForCloudFront retry table row\". TimeoutSeconds is per-tick (Lambda timeout + buffer), NOT the 20-min polling-cap; the cap is enforced in-Lambda via the wall-clock budget.",
       "Parameters": {
         "jobId.$": "$.jobId",
         "distributionId.$": "$.steps.run-terraform.distribution_id",
@@ -158,6 +163,7 @@
     "TriggerDeploy": {
       "Type": "Task",
       "Resource": "${trigger_deploy_arn}",
+      "TimeoutSeconds": 30,
       "Comment": "Sets 3 GitHub Actions repo secrets (deploy role ARN, bucket name, distribution ID) on the user's repo, then fires workflow_dispatch on deploy.yml with the jobId as correlation_id. Order is fixed inside the Lambda: secrets BEFORE dispatch, else the run starts with stale/empty secrets.",
       "Parameters": {
         "jobId.$": "$.jobId",
@@ -202,7 +208,8 @@
     "WaitForDeploy": {
       "Type": "Task",
       "Resource": "${wait_for_deploy_arn}",
-      "Comment": "Single-shot poll tick. Calls listWorkflowRuns filtered by run-name match (Deploy [<correlationId>]) and returns PollResult. SFN-level Retry catches Lambda-platform transients; the polling cap is the wall-clock 10-minute budget enforced inside the Lambda. Status-integrity Lambda — succeeds only after the deploy.yml run completes successfully, so Finalize's transition to Service.status='live' reflects the actual functional state.",
+      "TimeoutSeconds": 30,
+      "Comment": "Single-shot poll tick. Calls listWorkflowRuns filtered by run-name match (Deploy [<correlationId>]) and returns PollResult. SFN-level Retry catches Lambda-platform transients; the polling cap is the wall-clock 10-minute budget enforced inside the Lambda. Status-integrity Lambda — succeeds only after the deploy.yml run completes successfully, so Finalize's transition to Service.status='live' reflects the actual functional state. TimeoutSeconds is per-tick (Lambda timeout + buffer); the wall-clock cap is in-Lambda.",
       "Parameters": {
         "jobId.$": "$.jobId",
         "correlationId.$": "$.steps.trigger-deploy.correlationId",
@@ -254,6 +261,7 @@
     "Finalize": {
       "Type": "Task",
       "Resource": "${finalize_arn}",
+      "TimeoutSeconds": 30,
       "Comment": "Terminal-success transitions: Service provisioning → live (sets liveUrl + provisionedAt, clears currentJobId); Job running → succeeded. Idempotent on retry via post-conditional-failure GetItem inspection; the Lambda treats already-at-target-with-our-markers as success and unexpected state as IronforgeFinalizeError.",
       "Parameters": {
         "jobId.$": "$.jobId",
@@ -287,6 +295,7 @@
     "CleanupOnFailure": {
       "Type": "Task",
       "Resource": "${cleanup_on_failure_arn}",
+      "TimeoutSeconds": 720,
       "Retry": [
         {
           "ErrorEquals": [

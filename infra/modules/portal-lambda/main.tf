@@ -173,8 +173,9 @@ resource "aws_iam_role" "portal" {
   })
 }
 
-# Logs-only inline policy. Portal Lambda makes no AWS-API calls beyond
-# CloudWatch Logs — it calls the Ironforge API as a Bearer-authenticated
+# Inline policy: CloudWatch Logs (own log group only) + X-Ray write
+# (account-scoped per AWS service auth reference). Portal Lambda makes no
+# other AWS-API calls — it calls the Ironforge API as a Bearer-authenticated
 # client (per ADR-010), not via IAM. Adding more permissions later
 # (e.g., DynamoDB reads if portal SSR needs them) will need an explicit
 # policy attachment plus boundary-coverage check.
@@ -186,12 +187,25 @@ resource "aws_iam_role_policy" "portal_logs" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "AllowOwnLogGroup"
         Effect = "Allow"
         Action = [
           "logs:CreateLogStream",
           "logs:PutLogEvents",
         ]
         Resource = "${aws_cloudwatch_log_group.portal.arn}:*"
+      },
+      {
+        # X-Ray write actions are account-scoped; they don't accept
+        # resource-level permissions per docs/iam-exceptions.md. Boundary
+        # already permits xray:PutTraceSegments/PutTelemetryRecords.
+        Sid    = "AllowXRayWrite"
+        Effect = "Allow"
+        Action = [
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords",
+        ]
+        Resource = "*"
       }
     ]
   })
