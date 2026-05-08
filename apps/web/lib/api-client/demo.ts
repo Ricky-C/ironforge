@@ -131,11 +131,30 @@ export const readDemoEphemeralName = (id: string): string | undefined => {
   return readNameCache()[id];
 };
 
-// Demo api-client — same shape as production apiClient.
+// `deprovisionJobId` query-param helper. URL-encoded state per the
+// demo deprovision-theater design: visitors who refresh / share /
+// bookmark `/demo/services/<id>?deprovisionJobId=<uuid>` continue to
+// see correctly-elapsed deprovision state. Empty when not in the
+// post-DELETE lifecycle phase.
+const deprovQuery = (deprovisionJobId: string | undefined): string =>
+  deprovisionJobId
+    ? `?deprovisionJobId=${encodeURIComponent(deprovisionJobId)}`
+    : "";
+
+// Demo api-client — same shape as production apiClient. Methods that
+// fetch service / job / steps accept an optional `deprovisionJobId`;
+// when set, the demo backend computes deprovision-state-derived
+// responses instead of provision-state. Production's apiClient accepts
+// the same param signature for interface parity but ignores it (real
+// workflow state lives in DynamoDB).
 
 export const demoApiClient = {
-  getService: (id: string): Promise<Service> =>
-    request<Service>(`/api/demo/services/${id}`, { method: "GET" }, ServiceSchema),
+  getService: (id: string, deprovisionJobId?: string): Promise<Service> =>
+    request<Service>(
+      `/api/demo/services/${id}${deprovQuery(deprovisionJobId)}`,
+      { method: "GET" },
+      ServiceSchema,
+    ),
 
   deprovisionService: (id: string): Promise<DeprovisionServiceResponse> =>
     request<DeprovisionServiceResponse>(
@@ -171,9 +190,12 @@ export const demoApiClient = {
       CreateServiceResponseSchema,
     ),
 
-  getServiceJob: (id: string): Promise<ServiceJobResponse> =>
+  getServiceJob: (
+    id: string,
+    deprovisionJobId?: string,
+  ): Promise<ServiceJobResponse> =>
     request<ServiceJobResponse>(
-      `/api/demo/services/${id}/job`,
+      `/api/demo/services/${id}/job${deprovQuery(deprovisionJobId)}`,
       { method: "GET" },
       ServiceJobResponseSchema,
     ),
@@ -181,9 +203,10 @@ export const demoApiClient = {
   listJobSteps: (
     id: string,
     jobId: string,
+    deprovisionJobId?: string,
   ): Promise<ServiceJobStepListResponse> =>
     request<ServiceJobStepListResponse>(
-      `/api/demo/services/${id}/jobs/${jobId}/steps`,
+      `/api/demo/services/${id}/jobs/${jobId}/steps${deprovQuery(deprovisionJobId)}`,
       { method: "GET" },
       ServiceJobStepListResponseSchema,
     ),

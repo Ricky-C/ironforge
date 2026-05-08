@@ -126,7 +126,7 @@ const buildListServicesQuery = (params: ListServicesParams): string => {
 };
 
 export const apiClient = {
-  getService: (id: string): Promise<Service> =>
+  getService: (id: string, _deprovisionJobId?: string): Promise<Service> =>
     request<Service>(`/api/services/${id}`, { method: "GET" }, ServiceSchema),
 
   // DELETE /api/services/:id — kicks off deprovisioning (or returns the
@@ -190,7 +190,17 @@ export const apiClient = {
   // Job is non-terminal; the polling consumer detects terminal
   // status by `data.job?.status` ∈ {succeeded, failed, cancelled}
   // and stops polling.
-  getServiceJob: (id: string): Promise<ServiceJobResponse> =>
+  //
+  // The trailing `_deprovisionJobId` is signature-shape parity with
+  // demoApiClient (which uses it as a URL query param to compute
+  // deprovision-state). Production has real workflow state; the
+  // param is accepted but ignored. Keeps JobProgressClient one
+  // interface across both clients without forcing demo-specific
+  // narrowing.
+  getServiceJob: (
+    id: string,
+    _deprovisionJobId?: string,
+  ): Promise<ServiceJobResponse> =>
     request<ServiceJobResponse>(
       `/api/services/${id}/job`,
       { method: "GET" },
@@ -203,10 +213,13 @@ export const apiClient = {
   // client-side because workflow ordering is the meaningful one
   // for users. Returns `{ items: [] }` cleanly when no steps have
   // been written yet (workflow kickoff window, deprovisioning's
-  // long deprovision-terraform stage).
+  // long deprovision-terraform stage). The trailing
+  // `_deprovisionJobId` is signature parity with demoApiClient;
+  // ignored here.
   listJobSteps: (
     id: string,
     jobId: string,
+    _deprovisionJobId?: string,
   ): Promise<ServiceJobStepListResponse> =>
     request<ServiceJobStepListResponse>(
       `/api/services/${id}/jobs/${jobId}/steps`,

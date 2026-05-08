@@ -519,3 +519,144 @@ export const getDemoSteps = (id: string, now: number): JobStep[] => {
   if (isEphemeralDemoId(id)) return buildEphemeralSteps(id, now);
   return [];
 };
+
+// ---------------------------------------------------------------------
+// Deprovision state — peer of provision computation, keyed on a fresh
+// UUID v7 generated at DELETE time. The deprovision job ID encodes the
+// "deprovisioning started" timestamp; subsequent polls (carrying the
+// deprovision job ID via query param) compute current deprovision phase
+// from elapsed-since-deprov-start.
+//
+// Returns null on malformed input — visitor-controlled URL params land
+// here, so the helpers handle bad input gracefully (route falls back to
+// existing provision-state path or 404 rather than crashing).
+//
+// Divergence from production note: production deprovisioning has near-
+// zero step visibility (deprovision-terraform doesn't write JobStep on
+// task entry — see docs/tech-debt.md § "JobStep#deprovision-terraform
+// observability gap"). Demo controls its own state machine and shows
+// the clean step progression that production INTENDS but doesn't
+// achieve. Demo demonstrates intended UX, not reproduces a production
+// bug for fidelity.
+
+export const computeDeprovisionService = (
+  serviceId: string,
+  deprovJobId: string,
+  now: number,
+): Service | null => {
+  if (!isEphemeralDemoId(serviceId)) return null;
+  const startTs = parseEphemeralTimestamp(deprovJobId);
+  if (startTs === null) return null;
+  const elapsed = now - startTs;
+
+  // Inherit name / templateId / inputs from the original ephemeral
+  // service so the deprovision view shows the same identity. Pass `now`
+  // not `startTs` so buildEphemeralService's phase logic doesn't matter
+  // — we only use its identity fields, not its status.
+  const original = buildEphemeralService(serviceId, now);
+  if (original === null) return null;
+
+  const baseFields = {
+    id: serviceId,
+    name: original.name,
+    ownerId: DEMO_OWNER_ID,
+    templateId: original.templateId,
+    createdAt: original.createdAt,
+    inputs: original.inputs,
+  };
+
+  if (elapsed < DEPROVISION_TOTAL_MS) {
+    return {
+      ...baseFields,
+      updatedAt: isoFromMs(startTs + Math.max(0, elapsed)),
+      currentJobId: deprovJobId,
+      status: "deprovisioning",
+      jobId: deprovJobId,
+    };
+  }
+
+  const archivedAt = isoFromMs(startTs + DEPROVISION_TOTAL_MS);
+  return {
+    ...baseFields,
+    updatedAt: archivedAt,
+    currentJobId: null,
+    status: "archived",
+    archivedAt,
+  };
+};
+
+export const computeDeprovisionJob = (
+  serviceId: string,
+  deprovJobId: string,
+  now: number,
+): Job | null => {
+  if (!isEphemeralDemoId(serviceId)) return null;
+  const startTs = parseEphemeralTimestamp(deprovJobId);
+  if (startTs === null) return null;
+  const elapsed = now - startTs;
+  const startedAt = isoFromMs(startTs);
+  const executionArn =
+    "arn:aws:states:us-east-1:000000000000:execution:ironforge-demo-deprovisioning:" +
+    deprovJobId;
+  const base = {
+    id: deprovJobId,
+    serviceId,
+    ownerId: DEMO_OWNER_ID,
+    createdAt: startedAt,
+  };
+
+  if (elapsed < DEPROVISION_TOTAL_MS) {
+    return {
+      ...base,
+      updatedAt: isoFromMs(startTs + Math.max(0, elapsed)),
+      status: "running",
+      startedAt,
+      executionArn,
+    };
+  }
+
+  const completedAt = isoFromMs(startTs + DEPROVISION_TOTAL_MS);
+  return {
+    ...base,
+    updatedAt: completedAt,
+    status: "succeeded",
+    startedAt,
+    completedAt,
+    executionArn,
+  };
+};
+
+export const computeDeprovisionSteps = (
+  deprovJobId: string,
+  now: number,
+): JobStep[] => {
+  const startTs = parseEphemeralTimestamp(deprovJobId);
+  if (startTs === null) return [];
+  const elapsed = now - startTs;
+  const result: JobStep[] = [];
+  for (const s of EPHEMERAL_DEPROVISION_TIMELINE) {
+    if (elapsed < s.startMs) break;
+    if (elapsed < s.endMs) {
+      result.push({
+        jobId: deprovJobId,
+        stepName: s.stepName,
+        attempts: 1,
+        updatedAt: isoFromMs(startTs + elapsed),
+        status: "running",
+        startedAt: isoFromMs(startTs + s.startMs),
+      });
+    } else {
+      result.push({
+        jobId: deprovJobId,
+        stepName: s.stepName,
+        attempts: 1,
+        updatedAt: isoFromMs(startTs + s.endMs),
+        status: "succeeded",
+        startedAt: isoFromMs(startTs + s.startMs),
+        completedAt: isoFromMs(startTs + s.endMs),
+        output: {},
+      });
+    }
+  }
+  return result;
+};

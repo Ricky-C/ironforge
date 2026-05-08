@@ -6,8 +6,13 @@ import {
   DEMO_STATIC_FAILED_ID,
   DEMO_STATIC_LIVE_ID,
   DEMO_STATIC_PROVISIONING_ID,
+  DEPROVISION_TOTAL_MS,
+  EPHEMERAL_DEPROVISION_TIMELINE,
   EPHEMERAL_PROVISION_TIMELINE,
   PROVISION_TOTAL_MS,
+  computeDeprovisionJob,
+  computeDeprovisionService,
+  computeDeprovisionSteps,
   generateEphemeralServiceId,
   getDemoCatalog,
   getDemoJob,
@@ -389,5 +394,159 @@ describe("getDemoSteps — ephemeral phases", () => {
 
   it("returns [] for non-demo IDs", () => {
     expect(getDemoSteps("not-a-uuid", FIXED_NOW_MS)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// computeDeprovisionService — deprovision-state computation by phase
+// ===========================================================================
+
+describe("computeDeprovisionService", () => {
+  const serviceId = generateEphemeralServiceId(FIXED_NOW_MS);
+  const deprovStartMs = FIXED_NOW_MS + 60_000; // service was provisioned, then DELETE clicked 60s later
+  const deprovJobId = generateEphemeralServiceId(deprovStartMs);
+
+  it("returns deprovisioning when elapsed < DEPROVISION_TOTAL_MS", () => {
+    const result = computeDeprovisionService(serviceId, deprovJobId, deprovStartMs + 5_000);
+    expect(result?.status).toBe("deprovisioning");
+    if (result?.status === "deprovisioning") {
+      expect(result.jobId).toBe(deprovJobId);
+      expect(result.currentJobId).toBe(deprovJobId);
+    }
+  });
+
+  it("returns archived when elapsed >= DEPROVISION_TOTAL_MS", () => {
+    const result = computeDeprovisionService(
+      serviceId,
+      deprovJobId,
+      deprovStartMs + DEPROVISION_TOTAL_MS + 1,
+    );
+    expect(result?.status).toBe("archived");
+    if (result?.status === "archived") {
+      expect(result.archivedAt).toBeTruthy();
+      expect(result.currentJobId).toBeNull();
+    }
+  });
+
+  it("validates against ServiceSchema in each phase", () => {
+    for (const elapsed of [5_000, DEPROVISION_TOTAL_MS + 1]) {
+      const result = computeDeprovisionService(serviceId, deprovJobId, deprovStartMs + elapsed);
+      expect(result).not.toBeNull();
+      const parsed = ServiceSchema.safeParse(result);
+      expect(parsed.success).toBe(true);
+    }
+  });
+
+  it("returns null on malformed deprovJobId (URL-controlled input)", () => {
+    expect(computeDeprovisionService(serviceId, "not-a-uuid", FIXED_NOW_MS)).toBeNull();
+    expect(computeDeprovisionService(serviceId, "", FIXED_NOW_MS)).toBeNull();
+  });
+
+  it("returns null on non-ephemeral serviceId", () => {
+    expect(computeDeprovisionService(DEMO_STATIC_LIVE_ID, deprovJobId, deprovStartMs)).toBeNull();
+    expect(computeDeprovisionService("not-a-uuid", deprovJobId, deprovStartMs)).toBeNull();
+  });
+
+  it("preserves identity fields from the original service (name, templateId, createdAt)", () => {
+    const original = getDemoService(serviceId, FIXED_NOW_MS + 500); // pending phase
+    const deprov = computeDeprovisionService(serviceId, deprovJobId, deprovStartMs + 5_000);
+    expect(deprov?.name).toBe(original?.name);
+    expect(deprov?.templateId).toBe(original?.templateId);
+    expect(deprov?.createdAt).toBe(original?.createdAt);
+    expect(deprov?.ownerId).toBe(DEMO_OWNER_ID);
+  });
+});
+
+// ===========================================================================
+// computeDeprovisionJob
+// ===========================================================================
+
+describe("computeDeprovisionJob", () => {
+  const serviceId = generateEphemeralServiceId(FIXED_NOW_MS);
+  const deprovStartMs = FIXED_NOW_MS + 60_000;
+  const deprovJobId = generateEphemeralServiceId(deprovStartMs);
+
+  it("returns running when elapsed < DEPROVISION_TOTAL_MS", () => {
+    const job = computeDeprovisionJob(serviceId, deprovJobId, deprovStartMs + 5_000);
+    expect(job?.status).toBe("running");
+    expect(job?.id).toBe(deprovJobId);
+  });
+
+  it("returns succeeded when elapsed >= DEPROVISION_TOTAL_MS", () => {
+    const job = computeDeprovisionJob(
+      serviceId,
+      deprovJobId,
+      deprovStartMs + DEPROVISION_TOTAL_MS + 1,
+    );
+    expect(job?.status).toBe("succeeded");
+  });
+
+  it("validates against JobSchema in each phase", () => {
+    for (const elapsed of [5_000, DEPROVISION_TOTAL_MS + 1]) {
+      const job = computeDeprovisionJob(serviceId, deprovJobId, deprovStartMs + elapsed);
+      expect(job).not.toBeNull();
+      const parsed = JobSchema.safeParse(job);
+      expect(parsed.success).toBe(true);
+    }
+  });
+
+  it("returns null on malformed deprovJobId", () => {
+    expect(computeDeprovisionJob(serviceId, "not-a-uuid", FIXED_NOW_MS)).toBeNull();
+  });
+
+  it("returns null on non-ephemeral serviceId", () => {
+    expect(computeDeprovisionJob(DEMO_STATIC_LIVE_ID, deprovJobId, deprovStartMs)).toBeNull();
+  });
+});
+
+// ===========================================================================
+// computeDeprovisionSteps
+// ===========================================================================
+
+describe("computeDeprovisionSteps", () => {
+  const deprovStartMs = FIXED_NOW_MS + 60_000;
+  const deprovJobId = generateEphemeralServiceId(deprovStartMs);
+
+  it("returns empty array before first step's startMs", () => {
+    expect(computeDeprovisionSteps(deprovJobId, deprovStartMs + 100)).toEqual([]);
+  });
+
+  it("returns deprovision-terraform running mid-first-step", () => {
+    const steps = computeDeprovisionSteps(deprovJobId, deprovStartMs + 4_000);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]?.stepName).toBe("deprovision-terraform");
+    expect(steps[0]?.status).toBe("running");
+  });
+
+  it("returns first step succeeded + second running mid-second-step", () => {
+    const steps = computeDeprovisionSteps(deprovJobId, deprovStartMs + 9_000);
+    expect(steps).toHaveLength(2);
+    expect(steps[0]?.stepName).toBe("deprovision-terraform");
+    expect(steps[0]?.status).toBe("succeeded");
+    expect(steps[1]?.stepName).toBe("deprovision-external-resources");
+    expect(steps[1]?.status).toBe("running");
+  });
+
+  it("returns both steps succeeded after DEPROVISION_TOTAL_MS", () => {
+    const steps = computeDeprovisionSteps(deprovJobId, deprovStartMs + DEPROVISION_TOTAL_MS + 1);
+    expect(steps).toHaveLength(EPHEMERAL_DEPROVISION_TIMELINE.length);
+    for (const s of steps) {
+      expect(s.status).toBe("succeeded");
+    }
+  });
+
+  it("validates against JobStepSchema", () => {
+    for (const elapsed of [4_000, 9_000, DEPROVISION_TOTAL_MS + 1]) {
+      const steps = computeDeprovisionSteps(deprovJobId, deprovStartMs + elapsed);
+      for (const step of steps) {
+        const parsed = JobStepSchema.safeParse(step);
+        expect(parsed.success).toBe(true);
+      }
+    }
+  });
+
+  it("returns [] on malformed deprovJobId", () => {
+    expect(computeDeprovisionSteps("not-a-uuid", FIXED_NOW_MS)).toEqual([]);
+    expect(computeDeprovisionSteps("", FIXED_NOW_MS)).toEqual([]);
   });
 });
