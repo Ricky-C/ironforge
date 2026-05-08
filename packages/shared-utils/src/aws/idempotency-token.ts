@@ -14,7 +14,9 @@ const slug = (s: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    // Single `-` suffices after the collapse above; `-+$` here would
+    // trigger CodeQL js/polynomial-redos.
+    .replace(/^-|-$/g, "");
 
 // Joins parts with `-` after slug-cleaning each. Order matters: the
 // caller is responsible for passing parts in a stable order. Empty
