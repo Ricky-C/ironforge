@@ -18,6 +18,16 @@ export const createApp = (): Hono<AppEnv> => {
   // correlation against the API Gateway access log.
   app.use("*", loggerMiddleware);
 
+  // CORS preflight short-circuit. Browsers send OPTIONS without auth
+  // headers; if Hono returns 404 (no registered OPTIONS handler) or
+  // we let auth middleware run, the preflight gets a 4xx, browsers
+  // reject it, and the actual request never fires. API Gateway's
+  // cors_configuration adds the Access-Control-* response headers
+  // automatically; we just need to return a 2xx status with no body.
+  // Registered before auth + route handlers so auth middleware never
+  // gates preflights.
+  app.options("*", (c) => c.body(null, 204));
+
   // Cognito auth middleware applies to /api/* EXCEPT /api/demo/*.
   //
   // The API Gateway HTTP API JWT authorizer has already verified
