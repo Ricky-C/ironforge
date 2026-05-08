@@ -7,6 +7,8 @@
 @layer base {
   body {
     @apply bg-background text-foreground;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
   }
   * {
     @apply border-border outline-ring/50;
@@ -19,6 +21,7 @@
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -35,7 +38,9 @@
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -49,7 +54,19 @@
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --color-foreground: var(--foreground);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-fg-faint: var(--fg-faint);
   --color-background: var(--background);
+  --color-surface-2: var(--surface-2);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-soft: var(--info-soft);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -60,70 +77,140 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.985 0.002 270);
+  --foreground: oklch(0.18 0.005 270);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.18 0.005 270);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
+  --popover-foreground: oklch(0.18 0.005 270);
+  /* Rose accent — primary CTAs, focus rings, active-state markers. */
+  --primary: oklch(0.62 0.22 17);
+  --primary-foreground: oklch(0.99 0.005 17);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
+  --muted: oklch(0.975 0.003 270);
+  --muted-foreground: oklch(0.4 0.008 270);
+  --accent: oklch(0.96 0.004 270);
+  --accent-foreground: oklch(0.18 0.005 270);
+  --destructive: oklch(0.66 0.22 25);
+  --destructive-soft: oklch(0.66 0.22 25 / 0.14);
+  --border: oklch(0 0 0 / 0.08);
+  --border-strong: oklch(0 0 0 / 0.14);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --ring: oklch(0.62 0.22 17);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: oklch(0.99 0.002 270);
+  --sidebar-foreground: oklch(0.18 0.005 270);
+  --sidebar-primary: oklch(0.62 0.22 17);
+  --sidebar-primary-foreground: oklch(0.99 0.005 17);
+  --sidebar-accent: oklch(0.96 0.004 270);
+  --sidebar-accent-foreground: oklch(0.18 0.005 270);
+  --sidebar-border: oklch(0 0 0 / 0.08);
+  --sidebar-ring: oklch(0.62 0.22 17);
+  /* Surface hierarchy beyond card. surface-2 is one shade up from card,
+     used for inset rows (table headers, sticky footers, KV value chips). */
+  --surface-2: oklch(0.97 0.003 270);
+  /* Foreground hierarchy beyond muted. fg-subtle is mid-contrast (eyebrow
+     labels, helper text); fg-faint is low-contrast (placeholders, faded
+     chrome). Naming mirrors design tokens; values tuned for OKLCH-equal
+     perceived steps. */
+  --fg-subtle: oklch(0.55 0.008 270);
+  --fg-faint: oklch(0.7 0.008 270);
+  /* Status — semantic colors. *-soft variants are the same hue at low
+     opacity for badge/alert backgrounds. */
+  --success: oklch(0.55 0.16 162);
+  --success-foreground: oklch(0.98 0.01 162);
+  --success-soft: oklch(0.72 0.16 162 / 0.14);
+  --warning: oklch(0.62 0.15 75);
+  --warning-foreground: oklch(0.98 0.01 75);
+  --warning-soft: oklch(0.78 0.15 75 / 0.14);
+  --info: oklch(0.55 0.13 240);
+  --info-foreground: oklch(0.98 0.01 240);
+  --info-soft: oklch(0.7 0.13 240 / 0.14);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --background: oklch(0.155 0.005 270);
+  --foreground: oklch(0.97 0.005 270);
+  --card: oklch(0.185 0.005 270);
+  --card-foreground: oklch(0.97 0.005 270);
+  --popover: oklch(0.185 0.005 270);
+  --popover-foreground: oklch(0.97 0.005 270);
+  --primary: oklch(0.62 0.22 17);
+  --primary-foreground: oklch(0.99 0.005 17);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
+  --muted: oklch(0.235 0.006 270);
+  --muted-foreground: oklch(0.72 0.01 270);
+  --accent: oklch(0.235 0.008 270);
+  --accent-foreground: oklch(0.97 0.005 270);
+  --destructive: oklch(0.66 0.22 25);
+  --destructive-soft: oklch(0.66 0.22 25 / 0.14);
+  --border: oklch(1 0 0 / 0.08);
+  --border-strong: oklch(1 0 0 / 0.14);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --ring: oklch(0.62 0.22 17);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar: oklch(0.165 0.005 270);
+  --sidebar-foreground: oklch(0.97 0.005 270);
+  --sidebar-primary: oklch(0.62 0.22 17);
+  --sidebar-primary-foreground: oklch(0.99 0.005 17);
+  --sidebar-accent: oklch(0.235 0.008 270);
+  --sidebar-accent-foreground: oklch(0.97 0.005 270);
+  --sidebar-border: oklch(1 0 0 / 0.08);
+  --sidebar-ring: oklch(0.62 0.22 17);
+  --surface-2: oklch(0.215 0.006 270);
+  --fg-subtle: oklch(0.52 0.01 270);
+  --fg-faint: oklch(0.4 0.01 270);
+  --success: oklch(0.72 0.16 162);
+  --success-foreground: oklch(0.12 0.02 162);
+  --success-soft: oklch(0.72 0.16 162 / 0.14);
+  --warning: oklch(0.78 0.15 75);
+  --warning-foreground: oklch(0.18 0.02 75);
+  --warning-soft: oklch(0.78 0.15 75 / 0.14);
+  --info: oklch(0.7 0.13 240);
+  --info-foreground: oklch(0.18 0.02 240);
+  --info-soft: oklch(0.7 0.13 240 / 0.14);
+}
+
+/* ====== Status-badge dot animations ====== */
+/* Live-state pulse: a halo expands and fades, signaling "this is healthy
+   right now." Two-second cadence chosen to feel calm rather than urgent.
+   Provisioning blink: opacity oscillation at faster cadence to convey
+   transient state. Both target the .badge-dot child element specifically
+   so other dots in the app aren't affected. */
+@keyframes ironforge-pulse {
+  0% {
+    box-shadow: 0 0 0 0 oklch(0.72 0.16 162 / 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 6px oklch(0.72 0.16 162 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 oklch(0.72 0.16 162 / 0);
+  }
+}
+@keyframes ironforge-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.dot-pulse {
+  animation: ironforge-pulse 2s infinite;
+}
+.dot-blink {
+  animation: ironforge-blink 1.4s infinite;
 }
