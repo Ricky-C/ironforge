@@ -148,6 +148,33 @@ resource "aws_apigatewayv2_route" "demo_public" {
   authorization_type = "NONE"
 }
 
+# CORS preflight bypass — `OPTIONS /{proxy+}` with NONE auth catches
+# preflight requests for any path that would otherwise hit the
+# JWT-authorized $default route. Browsers send preflights without
+# Authorization headers (CORS spec); the JWT authorizer would 401
+# them, browsers would reject the actual request, and any non-simple
+# request from a browser (POST with JSON body, custom headers like
+# Idempotency-Key) would silently fail.
+#
+# Route-selection arithmetic:
+#   - For OPTIONS /api/demo/...: `ANY /api/demo/{proxy+}` wins on
+#     path specificity (more literal segments). Lambda handles the
+#     OPTIONS via its global Hono OPTIONS handler returning 204.
+#   - For OPTIONS /api/services or /api/anything-else: $default
+#     would match (ANY level 3) but THIS route matches at level 2
+#     (greedy path var); level-2 wins. NONE auth, forwards to
+#     Lambda, Lambda returns 204.
+#
+# Combined with the Lambda-side OPTIONS handler, every preflight
+# returns 2xx with CORS headers, satisfying browsers' preflight
+# acceptance check.
+resource "aws_apigatewayv2_route" "cors_preflight" {
+  api_id             = aws_apigatewayv2_api.this.id
+  route_key          = "OPTIONS /{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "NONE"
+}
+
 # Permission for API Gateway to invoke the Lambda. Source ARN scoped to
 # this specific API + any stage + any route key.
 resource "aws_lambda_permission" "apigw_invoke" {
