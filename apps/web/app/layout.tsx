@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AuthHeader } from "@/components/auth-header";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,12 @@ const geist = Geist({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-sans",
+});
+
+const geistMono = Geist_Mono({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-mono",
 });
 
 export const metadata: Metadata = {
@@ -22,8 +28,15 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Dark-first per design direction. The `dark` class triggers shadcn's
+  // dark-mode token overrides in globals.css; light-mode tokens remain
+  // available for any future opt-in surface. A theme toggle would flip
+  // this class on <html>; not in scope for PR-1.
   return (
-    <html lang="en" className={cn("font-sans antialiased", geist.variable)}>
+    <html
+      lang="en"
+      className={cn("dark font-sans antialiased", geist.variable, geistMono.variable)}
+    >
       <body>
         <Providers>
           <AuthHeader />

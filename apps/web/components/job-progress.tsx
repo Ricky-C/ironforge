@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Loader2, XCircle } from "lucide-react";
+import { Check, Loader2, X } from "lucide-react";
 import type {
   Job,
   JobStep,
@@ -13,6 +13,7 @@ import type {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiClientError } from "@/lib/api-client";
+import { cn } from "@/lib/utils";
 
 // Narrow client interface — JobProgress only needs the two polling
 // methods. Both the production apiClient and the demo apiClient
@@ -49,6 +50,30 @@ export type JobProgressClient = {
 // running steps show an animated spinner.
 
 const POLL_MS = 2000;
+
+// Human-friendly labels for each workflow step. Keys MUST match the
+// stepName values written by SFN task Lambdas (see provision-definition.json.tpl
+// and deprovision-definition.json.tpl). When a new step lands, add it
+// here; missing labels fall back to the technical stepName, which is
+// honest but uglier than the curated label.
+const STEP_LABELS: Record<string, string> = {
+  ValidateInputs: "Validate inputs",
+  CreateRepo: "Create GitHub repo",
+  GenerateCode: "Generate template code",
+  RunTerraform: "Run Terraform (S3 + CloudFront + Route53)",
+  WaitForCloudFront: "Wait for CloudFront",
+  TriggerDeploy: "Trigger initial deploy",
+  WaitForDeploy: "Wait for deploy",
+  Finalize: "Finalize",
+  InitDeprovisionSteps: "Initialize teardown",
+  DeprovisionTerraform: "Destroy infrastructure",
+  DeleteExternalResources: "Delete repo + DNS",
+};
+
+// Steps that drive a poll loop in SFN. When running, the user benefits
+// from knowing the step is intentionally long-lived (waiting on AWS),
+// not stalled. We surface a "polling…" sublabel for these specifically.
+const POLL_STEPS = new Set(["WaitForCloudFront", "WaitForDeploy"]);
 
 const isJobTerminal = (job: Job | null): boolean =>
   job === null ||
@@ -143,8 +168,8 @@ export function JobProgress({
     // Service has no Jobs yet — transitional pending state, very brief
     // window before the kickoff workflow's first Job item is written.
     return (
-      <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-        <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+      <div className="rounded-lg border border-dashed bg-card p-4 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 inline size-4 animate-spin" />
         Starting up…
       </div>
     );
@@ -161,36 +186,47 @@ export function JobProgress({
       : null;
 
   return (
-    <div className="rounded-md border p-4">
-      <div className="mb-3 flex items-baseline justify-between">
+    <div className="overflow-hidden rounded-lg border bg-card">
+      <header className="flex items-center justify-between gap-3 border-b px-4 py-2.5">
         <h3 className="text-sm font-semibold">Workflow</h3>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-fg-subtle">
           <JobStatusLabel status={job.status} />
           {totalDuration !== null ? (
-            <span> · {formatDuration(totalDuration)}</span>
+            <span className="tabular-nums"> · {formatDuration(totalDuration)}</span>
           ) : null}
         </p>
+      </header>
+
+      <div className="p-4">
+        {steps.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {job.status === "queued"
+              ? "Queued — waiting for kickoff."
+              : "No step events reported yet."}
+          </p>
+        ) : (
+          <ol className="relative">
+            {steps.map((step, i) => (
+              <StepRow
+                key={step.stepName}
+                step={step}
+                index={i}
+                isLast={i === steps.length - 1}
+              />
+            ))}
+          </ol>
+        )}
       </div>
 
-      {steps.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          {job.status === "queued"
-            ? "Queued — waiting for kickoff."
-            : "No step events reported yet."}
-        </p>
-      ) : (
-        <ol className="space-y-1.5">
-          {steps.map((step) => (
-            <StepRow key={step.stepName} step={step} />
-          ))}
-        </ol>
-      )}
-
       {job.status === "failed" ? (
-        <Alert variant="destructive" className="mt-4">
-          <AlertTitle>Failed at {job.failedStep}</AlertTitle>
-          <AlertDescription>{job.failureReason}</AlertDescription>
-        </Alert>
+        <div className="border-t p-4">
+          <Alert variant="destructive">
+            <AlertTitle className="font-mono text-xs">{job.failedStep}</AlertTitle>
+            <AlertDescription className="font-mono text-xs">
+              {job.failureReason}
+            </AlertDescription>
+          </Alert>
+        </div>
       ) : null}
     </div>
   );
@@ -209,7 +245,15 @@ function JobStatusLabel({ status }: { status: Job["status"] }): React.ReactNode 
   return <span>{labels[status]}</span>;
 }
 
-function StepRow({ step }: { step: JobStep }): React.ReactNode {
+function StepRow({
+  step,
+  index,
+  isLast,
+}: {
+  step: JobStep;
+  index: number;
+  isLast: boolean;
+}): React.ReactNode {
   const duration =
     step.status === "succeeded"
       ? formatDuration(
@@ -218,35 +262,93 @@ function StepRow({ step }: { step: JobStep }): React.ReactNode {
         )
       : null;
 
+  const label = STEP_LABELS[step.stepName] ?? step.stepName;
+  const isPolling = step.status === "running" && POLL_STEPS.has(step.stepName);
+
   return (
-    <li className="flex items-center gap-2 text-sm">
-      <StepIcon status={step.status} />
-      <span className="font-mono text-xs">{step.stepName}</span>
-      {duration !== null ? (
-        <span className="ml-auto text-xs text-muted-foreground">{duration}</span>
-      ) : step.status === "running" ? (
-        <span className="ml-auto text-xs text-muted-foreground">running…</span>
-      ) : step.status === "failed" ? (
-        <span className="ml-auto text-xs text-red-600">failed</span>
+    <li className="relative grid grid-cols-[28px_1fr_auto] items-start gap-3 py-2">
+      {/* Connecting rail to next step. Hidden on the last row.
+          Color flips per step status — succeeded steps get a solid rail
+          to their successor. */}
+      {!isLast ? (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute left-[13px] top-[30px] -bottom-2 w-px",
+            step.status === "succeeded" ? "bg-success" : "bg-border-strong",
+          )}
+        />
       ) : null}
+
+      <StepIcon status={step.status} index={index} />
+
+      <div className="min-w-0">
+        <div className="flex min-h-[28px] items-center gap-2 text-[13px] font-medium">
+          <span className="break-all">{label}</span>
+          {isPolling ? (
+            <span className="font-mono text-xs font-normal text-fg-subtle">
+              polling…
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="self-center text-[11.5px] tabular-nums text-fg-subtle">
+        {duration !== null ? (
+          duration
+        ) : step.status === "running" ? (
+          <span>running…</span>
+        ) : step.status === "failed" ? (
+          <span className="text-destructive">failed</span>
+        ) : null}
+      </div>
     </li>
   );
 }
 
-function StepIcon({ status }: { status: JobStep["status"] }): React.ReactNode {
+function StepIcon({
+  status,
+  index,
+}: {
+  status: JobStep["status"];
+  index: number;
+}): React.ReactNode {
+  const base =
+    "z-10 grid size-7 shrink-0 place-items-center rounded-full border-[1.5px] text-[11px] font-semibold";
   switch (status) {
     case "succeeded":
-      return <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />;
+      return (
+        <span
+          className={cn(base, "border-success bg-success-soft text-success")}
+          aria-label={`step ${index + 1} succeeded`}
+        >
+          <Check className="size-3.5" strokeWidth={2.5} />
+        </span>
+      );
     case "running":
-      return <Loader2 className="h-4 w-4 text-amber-600 shrink-0 animate-spin" />;
+      return (
+        <span
+          className={cn(base, "border-warning bg-warning-soft text-warning")}
+          aria-label={`step ${index + 1} running`}
+        >
+          <Loader2 className="size-3.5 animate-spin" />
+        </span>
+      );
     case "failed":
-      return <XCircle className="h-4 w-4 text-red-600 shrink-0" />;
+      return (
+        <span
+          className={cn(base, "border-destructive bg-destructive-soft text-destructive")}
+          aria-label={`step ${index + 1} failed`}
+        >
+          <X className="size-3.5" strokeWidth={2.5} />
+        </span>
+      );
   }
 }
 
 function JobProgressSkeleton(): React.ReactNode {
   return (
-    <div className="rounded-md border p-4">
+    <div className="rounded-lg border bg-card p-4">
       <Skeleton className="mb-3 h-4 w-24" />
       <Skeleton className="mb-1.5 h-4 w-full" />
       <Skeleton className="mb-1.5 h-4 w-5/6" />
