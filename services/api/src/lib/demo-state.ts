@@ -191,7 +191,7 @@ const buildStaticService = (id: string): Service | null => {
         inputs: {},
         currentJobId: null,
         status: "live",
-        liveUrl: "https://marketing-site.demo.ironforge.example/",
+        liveUrl: "https://ironforge.rickycaballero.com/demo-target/marketing-site",
         provisionedAt: isoFromMs(STATIC_BASELINE_MS + PROVISION_TOTAL_MS),
       };
     case DEMO_STATIC_PROVISIONING_ID:
@@ -275,7 +275,7 @@ const buildEphemeralService = (id: string, now: number): Service | null => {
     updatedAt: isoFromMs(provisionedMs),
     currentJobId: null,
     status: "live",
-    liveUrl: `https://demo-${id.slice(0, 8)}.demo.ironforge.example/`,
+    liveUrl: `https://ironforge.rickycaballero.com/demo-target/demo-${id.slice(0, 8)}`,
     provisionedAt: isoFromMs(provisionedMs),
   };
 };
