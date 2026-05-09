@@ -13,8 +13,8 @@ export default function DemoCreateServicePage(): React.ReactNode {
     <CreateServiceContent
       apiClient={demoApiClient}
       basePath="/demo/services"
-      backHref="/demo"
-      backLabel="Demo"
+      backHref="/demo/services"
+      backLabel="Services"
       catalogQueryKey={["demo-services"]}
       onCreated={(data) => {
         cacheDemoEphemeralName(data.service.id, data.service.name);
