@@ -314,3 +314,79 @@ resource "aws_lambda_permission" "cloudfront_invoke_portal_function" {
   principal     = "cloudfront.amazonaws.com"
   source_arn    = module.portal_frontend.distribution_arn
 }
+
+# ============================================================================
+# Portal keep-alive ping
+# ============================================================================
+#
+# AWS reclaims container-image Lambdas with no invocations into an `Inactive`
+# state after a low-usage window (anecdotally ~14 days; not contractually
+# documented). The next invocation triggers reactivation, which re-pulls the
+# image from ECR and re-runs Lambda's image-optimization step. At low traffic
+# the optimization cache may also be evicted independently of the function's
+# Active/Inactive state. Either path surfaces to the user as `BadGateway-
+# Exception` from the Function URL when CloudFront forwards the first request
+# after a long idle period (observed 2026-05-20 after ~11 days quiescence).
+#
+# A daily EventBridge ping forces a real Lambda invocation, keeping the
+# function Active and the optimization cache warm. Payload is shaped as a
+# Lambda Function URL v2.0 event so LWA routes it to /api/health — the same
+# readiness path LWA polls during cold start. Response is a no-op 200.
+#
+# EventBridge Rules (not Scheduler) for the same reason cost-safeguards
+# chose them: one cron Lambda, no extra service role needed.
+resource "aws_cloudwatch_event_rule" "portal_keepalive" {
+  name                = "ironforge-portal-keepalive"
+  description         = "Daily portal Lambda invocation to prevent Inactive-state reactivation and keep the image-optimization cache warm."
+  schedule_expression = "cron(30 14 * * ? *)"
+
+  tags = {
+    "ironforge-component" = "portal-lambda"
+    Name                  = "ironforge-portal-keepalive"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "portal_keepalive" {
+  rule      = aws_cloudwatch_event_rule.portal_keepalive.name
+  target_id = "portal-lambda"
+  arn       = aws_lambda_function.portal.arn
+
+  # Function URL v2.0-shaped event so LWA routes it to GET /api/health.
+  # Without this envelope LWA receives the raw EventBridge event (no
+  # requestContext.http) and can't translate it into an HTTP request.
+  input = jsonencode({
+    version        = "2.0"
+    rawPath        = "/api/health"
+    rawQueryString = ""
+    headers = {
+      host         = "keepalive.internal"
+      "user-agent" = "ironforge-keepalive/1.0"
+    }
+    requestContext = {
+      accountId  = data.aws_caller_identity.current.account_id
+      apiId      = "keepalive"
+      domainName = "keepalive.internal"
+      requestId  = "keepalive"
+      routeKey   = "$default"
+      stage      = "$default"
+      time       = "01/Jan/1970:00:00:00 +0000"
+      timeEpoch  = 0
+      http = {
+        method    = "GET"
+        path      = "/api/health"
+        protocol  = "HTTP/1.1"
+        sourceIp  = "127.0.0.1"
+        userAgent = "ironforge-keepalive/1.0"
+      }
+    }
+    isBase64Encoded = false
+  })
+}
+
+resource "aws_lambda_permission" "eventbridge_invoke_portal" {
+  statement_id  = "AllowEventBridgePortalKeepalive"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.portal.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.portal_keepalive.arn
+}
