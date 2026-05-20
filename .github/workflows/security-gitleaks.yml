@@ -1,0 +1,88 @@
+name: security-gitleaks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Mondays 12:00 UTC. Fixed cadence so findings are easy to correlate
+    # with recent changes and cron failures are visible at a predictable
+    # time of week.
+    - cron: "0 12 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  GITLEAKS_VERSION: "8.30.0"
+
+jobs:
+  gitleaks:
+    name: gitleaks scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history for push/schedule (needs --log-opts="--all").
+          # Shallow for PRs; the base SHA is fetched explicitly below so
+          # we have both diff endpoints without paying for full history
+          # on every PR.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+
+      - name: Fetch PR base SHA
+        if: github.event_name == 'pull_request'
+        # base.sha is the merge target tip at PR-open time. Needed
+        # locally so the diff scan below can resolve `base..head`.
+        run: |
+          git fetch --no-tags --no-recurse-submodules --depth=1 \
+            origin ${{ github.event.pull_request.base.sha }}
+
+      - name: Install gitleaks
+        # Pinned via GITLEAKS_VERSION above; update deliberately rather
+        # than tracking floating tags. Fetched over TLS from the project
+        # release page.
+        run: |
+          curl -sSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o /tmp/gitleaks.tgz
+          tar xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan (PR diff)
+        if: github.event_name == 'pull_request'
+        # --first-parent + --no-merges restricts the scan to commits on
+        # the PR branch itself, not history merged into base.
+        run: |
+          gitleaks detect \
+            --source . \
+            --log-opts="--no-merges --first-parent ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --exit-code 1 \
+            --no-banner \
+            --verbose
+
+      - name: Scan (full history)
+        if: github.event_name != 'pull_request'
+        run: |
+          gitleaks detect \
+            --source . \
+            --log-opts="--all" \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --exit-code 1 \
+            --no-banner \
+            --verbose
+
+      - name: Upload SARIF
+        # always() so findings reach the Security tab even when the scan
+        # exits non-zero. gitleaks writes the SARIF report before the
+        # findings-triggered exit, so the file exists when this runs.
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
