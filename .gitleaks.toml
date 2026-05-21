@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+Plausible-but-fake PEM used in github-app unit tests. Shape-conformant only
+(BEGIN/END markers + single short base64 chunk) so the helper's parse-shape
+check passes; never used to mint real JWTs because auth is factory-injected
+in tests.
+
+If this allowlist fires on a NEW string, it means the fake fixture changed.
+Verify the new string is still shape-only (not a real key) before extending
+the allowlist.
+
+Source: packages/shared-utils/src/github-app/get-installation-token.test.ts
+"""
+regexes = [
+    '''MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF7r5SjXXsB7l4hOUm0d7jKMeKiVU''',
+]
