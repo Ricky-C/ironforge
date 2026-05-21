@@ -106,6 +106,11 @@ resource "aws_lambda_function" "cost_reporter" {
   timeout          = 30
   memory_size      = 128
 
+  # Daily cron, no concurrency benefit; reserved_concurrent_executions=1
+  # also prevents accidental fan-out if the cost-action trigger ever
+  # invokes alongside the schedule.
+  reserved_concurrent_executions = 1
+
   environment {
     variables = {
       SNS_TOPIC_ARN = aws_sns_topic.cost_alerts.arn

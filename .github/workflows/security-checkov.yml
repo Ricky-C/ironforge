@@ -1,0 +1,96 @@
+name: security-checkov
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Mondays 12:00 UTC. Same cadence as security-gitleaks so findings
+    # across the security suite surface together each week.
+    - cron: "0 12 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  CHECKOV_VERSION: "3.2.493"
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  infra:
+    name: checkov infra
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install checkov
+        # Pinned via CHECKOV_VERSION at workflow level; update deliberately
+        # rather than tracking floating tags.
+        run: pip install "checkov==${{ env.CHECKOV_VERSION }}"
+
+      - name: Scan infra/
+        # Hard-fail on any unskipped finding (default exit-code behavior).
+        # infra/.checkov.yml's skip-check covers known architectural skips
+        # with documented reasoning; any NEW unrecognized finding fails the
+        # build and forces classification.
+        run: |
+          checkov \
+            --directory infra/ \
+            --framework terraform \
+            --config-file infra/.checkov.yml \
+            --output sarif \
+            --output-file-path . \
+            --compact
+
+      - name: Upload SARIF
+        # always() so findings reach the Security tab even when the scan
+        # exits non-zero. checkov writes the SARIF report before the
+        # findings-triggered exit, so the file exists when this runs.
+        if: always() && hashFiles('results_sarif.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results_sarif.sarif
+          category: checkov-infra
+
+  templates:
+    name: checkov templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install checkov
+        run: pip install "checkov==${{ env.CHECKOV_VERSION }}"
+
+      - name: Scan templates/static-site/terraform/
+        # Same hard-fail model as infra. The template tree has its own
+        # .checkov.yml with skips appropriate to user-provisioned scope
+        # (different threat model from platform infra).
+        run: |
+          checkov \
+            --directory templates/static-site/terraform/ \
+            --framework terraform \
+            --config-file templates/static-site/terraform/.checkov.yml \
+            --output sarif \
+            --output-file-path . \
+            --compact
+
+      - name: Upload SARIF
+        if: always() && hashFiles('results_sarif.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results_sarif.sarif
+          category: checkov-templates
