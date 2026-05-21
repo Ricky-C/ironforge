@@ -1,0 +1,62 @@
+# Checkov configuration for the static-site template's Terraform.
+#
+# Different threat model from infra/: this is what Ironforge produces
+# for user-provisioned services. Skip-check reasoning below; several
+# real-fix candidates are deferred to PR-B.6 (template hardening wave).
+#
+# Source-inspection walkthrough is captured in PR-B's PR description
+# (security-checkov branch).
+
+framework:
+  - terraform
+
+skip-check:
+  # === Encryption-at-rest CMK — ADR-003 ===
+  # AWS-managed encryption is the default. CMK would require per-service
+  # CMK creation per provisioned site (cost + ops complexity); no
+  # tenant-isolation requirement in current scope.
+  #
+  # Revisit triggers:
+  #   (a) Multi-tenant data isolation requires per-tenant encryption
+  #       context binding.
+  #   (b) Compliance framework (HIPAA, PCI, SOC 2 Type II) requires CMK.
+  #   (c) Cross-account access patterns emerge.
+  - CKV_AWS_145
+
+  # === Single-region by design ===
+  # User-provisioned sites are single-region (us-east-1). S3's 11-nines
+  # durability covers data loss; cross-region replication addresses
+  # regional availability (a different concern). User content is
+  # recoverable from source repo + idempotent provisioning.
+  - CKV_AWS_144
+
+  # === S3 — non-event-driven origin bucket ===
+  # The origin bucket holds static-site assets uploaded by the deploy
+  # role's `aws s3 sync`. No event-notification consumer planned. S3
+  # access logging is deferred to PR-B.6 (CloudFront access logging
+  # covers the same forensic surface more usefully for static sites).
+  - CKV2_AWS_62  # S3 event notifications
+  - CKV_AWS_18   # S3 access logging
+
+  # === CloudFront — architectural ===
+  # - Geo restriction: user-provisioned sites are intentionally globally
+  #   accessible by default. Per-site geo restriction is a future
+  #   template option, not a default.
+  # - Origin failover: single S3 origin per template; no multi-origin
+  #   pattern in scope.
+  # - WAFv2 Log4j AMR: static-site template ships HTML/JS/CSS only; no
+  #   Java in any provisionable code path.
+  - CKV_AWS_374  # Geo restriction
+  - CKV_AWS_310  # Origin failover
+  - CKV2_AWS_47  # WAFv2 Log4j AMR
+
+  # === CloudFront / WAF hardening — deferred to PR-B.6 ===
+  # User-provisioned sites have higher abuse / forensic surface than
+  # the portal does — they're publicly accessible and may serve
+  # arbitrary user content. The cost+complexity of WAF, security
+  # response headers, and CloudFront access logging is justified here
+  # in a way it isn't for the portal.
+  # Bundled in PR-B.6 to keep PR-B focused on the gate itself.
+  - CKV_AWS_68   # WAF enabled
+  - CKV2_AWS_32  # Response headers policy
+  - CKV_AWS_86   # CloudFront access logging

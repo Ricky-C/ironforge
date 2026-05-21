@@ -1,0 +1,181 @@
+# Checkov configuration for Ironforge platform infrastructure (infra/).
+#
+# Skip-check reasoning is grouped by architectural category below. The
+# WHY lives in the YAML comments; the skip-check list enumerates the
+# rule IDs that fire for the rationale immediately above them.
+#
+# Source-inspection walkthrough that produced these dispositions is
+# captured in PR-B's PR description (security-checkov branch).
+
+framework:
+  - terraform
+
+skip-check:
+  # === IAM Resource:"*" — context-inapplicable on the boundary + KMS key policies ===
+  # CKV_AWS_109/111/356 are written for IAM identity-policy semantics
+  # where Resource:"*" IS broad. They fire correctly per their written
+  # logic but the logic doesn't generalize to two contexts present here:
+  #
+  # (a) IronforgePermissionBoundary (modules/lambda-baseline/main.tf):
+  #     intentionally Resource:"*" with tag/namespace conditions. Per
+  #     ADR-006, boundary widens and per-Lambda identity policies
+  #     narrow; intersection gives each Lambda only what it needs.
+  #     Three amendments (PR-C.4a, PR-C.6, PR-I) document the per-
+  #     amendment scope-narrowing pattern.
+  #
+  # (b) KMS key policies (cloudtrail, github-app-secret, tfstate-bucket):
+  #     attached TO a key — Resource:"*" refers to that key (you can't
+  #     write the key's ARN since the policy IS the key's authorization
+  #     document — circular). Each statement is further constrained by
+  #     service principal + kms:EncryptionContext + aws:SourceAccount
+  #     conditions. See AWS KMS key policy documentation.
+  #
+  # Source inspection (PR-B) confirmed all 15 findings fall in one of
+  # these two contexts. None are over-broad identity-policy grants.
+  - CKV_AWS_109
+  - CKV_AWS_111
+  - CKV_AWS_356
+
+  # === Encryption-at-rest CMK — ADR-003 says AWS-managed by default ===
+  # ADR-003: CMK is only adopted when its key policy enables something
+  # IAM alone can't (cross-account access, per-secret EncryptionContext
+  # binding). AWS-managed encryption-at-rest satisfies the security
+  # baseline; CMK adds key-management overhead + cost for unclear
+  # benefit at portfolio scale.
+  #
+  # Revisit triggers:
+  #   (a) Multi-tenant data isolation requires per-tenant encryption
+  #       context binding.
+  #   (b) Compliance framework (HIPAA, PCI, SOC 2 Type II) requires CMK.
+  #   (c) Cross-account access patterns emerge.
+  - CKV_AWS_145  # S3 buckets
+  - CKV_AWS_158  # CloudWatch Logs
+  - CKV_AWS_173  # Lambda environment variables
+  - CKV_AWS_119  # DynamoDB
+  - CKV_AWS_136  # ECR
+
+  # === Serverless-first architecture (CLAUDE.md) ===
+  # No VPC-only resources to reach (no RDS, no ElastiCache, no private
+  # API endpoints). Putting Lambdas in a VPC adds cold-start latency +
+  # NAT Gateway cost (~$35/mo per AZ) without proportional benefit.
+  # Code signing adds AWS Signer setup overhead without proportional
+  # benefit for single-developer scope; build provenance is already
+  # provided by CI-built immutable images tagged with commit SHA
+  # digests.
+  - CKV_AWS_117  # Lambda inside VPC
+  - CKV_AWS_272  # Lambda code-signing config
+
+  # === Single-region by design (us-east-1, CLAUDE.md) ===
+  # S3's 11-nines durability covers data loss risk; cross-region
+  # replication addresses regional availability (a different concern).
+  # Portfolio doesn't require multi-region availability; user-provisioned
+  # content is recoverable from source repos + idempotent Step Functions.
+  # CloudTrail all-regions adds no signal without multi-region resources
+  # to audit.
+  - CKV_AWS_144  # S3 cross-region replication
+  - CKV_AWS_67   # CloudTrail enabled in all regions
+
+  # === Portfolio-scale log retention ===
+  # 1-year retention is overkill at portfolio scale and costs money
+  # (CloudWatch Logs storage). Existing per-module retention values are
+  # set deliberately — typically 30 days for app logs, 90 days for
+  # workflow audit, 365 only for compliance-grade trails.
+  - CKV_AWS_338
+
+  # === SSM Parameter String (not SecureString) — non-secret values ===
+  # The parameters flagged hold non-secret values: GitHub org name,
+  # GitHub App ID, GitHub App installation ID, ECR portal image URI.
+  # SecureString is the right choice for secrets; secrets in this
+  # project live in Secrets Manager (see modules/github-app-secret/).
+  # The check doesn't distinguish parameter types.
+  - CKV2_AWS_34
+
+  # === S3 — non-event-driven, audit covered by CloudTrail ===
+  # Artifacts, tfstate, and cloudtrail-logs buckets are not consumers
+  # of S3 event notifications (no Lambda triggers, no SNS/SQS notifs
+  # planned). S3 server access logs add cost and create recursion
+  # concerns on the CloudTrail bucket itself; CloudTrail data events
+  # cover the audit need where it matters.
+  - CKV2_AWS_62  # S3 event notifications
+  - CKV_AWS_18   # S3 access logging
+
+  # === ECR :latest tag re-pointing is the deploy mechanism ===
+  # Portal and run-terraform images use :latest re-pointing as the
+  # deploy mechanism (per app-deploy.yml and terraform-lambda-image/
+  # build-image.sh). Immutable tags would break that pattern. SHA-
+  # tagged images preserve immutability for rollback debugging.
+  - CKV_AWS_51
+
+  # === CloudFront — portal-specific architectural choices ===
+  # - Geo restriction: portfolio site, intentionally globally accessible.
+  # - default_root_object: portal uses Lambda Function URL origin;
+  #   default_root_object="index.html" would rewrite GET / at the edge
+  #   before the origin sees the request, breaking dynamic routing
+  #   (see feedback memory feedback_cloudfront_default_root_object_origin_type_dependent.md).
+  # - HSTS preload=false intentional. HSTS itself IS configured (max-age
+  #   1y, include_subdomains, override). preload=true commits the domain
+  #   to the browser preload list irrevocably — multi-year cache;
+  #   defensible to leave off for a portfolio domain that may change.
+  # - Access logging: cost-vs-benefit at portfolio scale; CloudTrail
+  #   covers admin-plane events.
+  # - Origin failover: single origin (Lambda Function URL) by design.
+  # - WAFv2 Log4j AMR: Next.js + Node runtime, no Java in request path.
+  - CKV_AWS_374  # Geo restriction
+  - CKV_AWS_305  # Default root object
+  - CKV_AWS_259  # HSTS preload
+  - CKV_AWS_86   # CloudFront access logging
+  - CKV_AWS_310  # Origin failover
+  - CKV2_AWS_47  # WAFv2 Log4j AMR
+
+  # === CloudTrail SNS notification — not security-critical ===
+  # Optional notification mechanism. CloudWatch Alarms on the trail's
+  # metric filters cover real alerting needs (root account use, IAM
+  # changes, etc.).
+  - CKV_AWS_252
+
+  # === API Gateway — demo + CORS preflight intentionally unauthenticated ===
+  # CKV_AWS_309 fires on two routes that explicitly set
+  # authorization_type="NONE" with inline comment blocks explaining
+  # the design:
+  # - /api/demo/{proxy+}: public demo surface (mocked data only, per
+  #   CLAUDE.md security guardrails).
+  # - OPTIONS /{proxy+}: CORS preflight; browsers spec-mandated to send
+  #   without Authorization headers. Must return 2xx for the actual
+  #   request to proceed.
+  - CKV_AWS_309
+
+  # === Lambda DLQs — deferred to PR-B.5 ===
+  # DLQ on Step-Function-invoked Lambdas isn't for retry (Step Functions
+  # handles that) — it's for failure-forensics observability, capturing
+  # the input event when a task Lambda dies. Cheap (~20 lines TF per
+  # Lambda) and operationally meaningful, especially for run-terraform
+  # where TF apply failure modes are nontrivial.
+  # Scoped to PR-B.5 to keep PR-B focused on the gate itself.
+  - CKV_AWS_116
+
+  # === Lambda function-level concurrency — partial fix ===
+  # cost_reporter gets reserved_concurrent_executions=1 in PR-B (daily
+  # cron, no concurrency benefit; prevents accidental fan-out from
+  # cost-action-triggered invocations). Portal Lambda concurrency limit
+  # needs traffic data to pick the right value — too low triggers 429s,
+  # too high allows cost blowout under abuse.
+  # See docs/tech-debt.md § "Portal Lambda concurrency limit pending
+  # traffic data" for the deferral and revisit trigger.
+  - CKV_AWS_115
+
+  # === Secrets Manager rotation — GitHub App key rotation is GitHub-side ===
+  # GitHub App private keys rotate by regenerating in App settings, then
+  # manual Secrets Manager update. No off-the-shelf rotation Lambda fits
+  # (the secret value originates outside AWS). A custom rotation Lambda
+  # that uses the GitHub Apps API to create + activate a new key, then
+  # update Secrets Manager, is feasible but non-trivial.
+  # See docs/tech-debt.md § "GitHub App private key custom rotation
+  # Lambda" for the deferral and revisit trigger.
+  - CKV2_AWS_57
+
+  # === WAF logging — deferred to PR-B.6 ===
+  # WAF logs surface block reasons for tuning. Kinesis Firehose to S3
+  # has low cost at portfolio traffic; benefit increases when WAF gets
+  # real traffic. Bundled with template hardening (PR-B.6) since both
+  # touch CloudFront-fronted edge security.
+  - CKV2_AWS_31

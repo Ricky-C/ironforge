@@ -94,6 +94,21 @@ resource "aws_s3_bucket_lifecycle_configuration" "origin" {
       noncurrent_days = 30
     }
   }
+
+  # Abandoned multipart uploads sit in the bucket indefinitely otherwise,
+  # accruing storage cost for parts that will never assemble. 7 days is
+  # the AWS-recommended default and well beyond the longest realistic
+  # deploy retry window.
+  rule {
+    id     = "abort-incomplete-multipart-uploads"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
 }
 
 # Bucket policy: deny everything except CloudFront's service principal
