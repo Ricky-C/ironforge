@@ -1,0 +1,87 @@
+# Trivy ignore list — security-trivy workflow.
+#
+# Findings grouped by architectural category with shared reasoning
+# blocks. Per-CVE notes only when CVE-specific context is needed
+# beyond the category reasoning. PR-C's PR description has the
+# full triage walkthrough.
+#
+# Each category's reasoning includes revisit triggers — conditions
+# under which the category-level disposition should be reconsidered.
+# Trivy applies ignores globally by CVE ID; a CVE appearing in
+# multiple images is listed once in the most-specific category.
+
+
+# ===========================================================================
+# Category A: Base image CVEs, no upstream fix or will-not-fix
+# ===========================================================================
+#
+# Findings in Debian base packages where either no fix exists yet
+# (status: `affected`) or upstream maintainers decided not to patch
+# (status: `will_not_fix`). Accepted at portfolio scope: single-tenant,
+# low blast radius, no exploit path identified through Ironforge's
+# request surface (ncurses is not loaded by the portal Lambda runtime;
+# zlib MiniZip overflow requires attacker-controlled ZIP input which
+# the portal doesn't process).
+#
+# Revisit triggers:
+#   (a) Upstream publishes a fix (status changes `affected` → `fixed`);
+#       move the CVE to Category B.
+#   (b) Multi-tenant or compliance scope arrives that doesn't accept
+#       residual risk on these CVEs.
+#   (c) Active-exploitation advisory specifically for one of these
+#       CVEs.
+
+CVE-2025-69720  # libtinfo6 / ncurses-base / ncurses-bin — buffer overflow, no fix
+CVE-2023-45853  # zlib1g — MiniZip integer overflow, upstream will-not-fix
+
+
+# ===========================================================================
+# Category B: Debian base CVEs, fix available — accept floating-tag lag
+# ===========================================================================
+#
+# Findings with upstream fixes available in newer Debian package
+# revisions. `apps/web/Dockerfile` pulls the floating tag
+# `node:22-bookworm-slim` (and its `public.ecr.aws/docker/library/`
+# mirror), so security updates land automatically when Docker Hub
+# republishes the tag — typically within days of CVE publication.
+# The current scan reflects the lag between fix publication and tag
+# refresh.
+#
+# Revisit triggers:
+#   (a) The lag exceeds 30 days from CVE publication; consider pinning
+#       to a specific Node 22 patch version with the fix included.
+#   (b) An audit framework requires demonstrating active patching
+#       rather than passive floating-tag updates.
+#   (c) Active-exploitation advisory on one of these CVEs.
+
+CVE-2026-33845  # libgnutls30 — fix: 3.7.9-2+deb12u7
+CVE-2026-42010  # libgnutls30 — fix: 3.7.9-2+deb12u7
+CVE-2026-33846  # libgnutls30 — fix: 3.7.9-2+deb12u7
+CVE-2026-3833   # libgnutls30 — fix: 3.7.9-2+deb12u7
+CVE-2026-42009  # libgnutls30 — fix: 3.7.9-2+deb12u7
+CVE-2026-33671  # picomatch (bundled in Node base) — fix: 4.0.4 / 3.0.2 / 2.3.2
+
+
+# ===========================================================================
+# Category C: AWS Lambda runtime base CVEs, AWS-managed refresh
+# ===========================================================================
+#
+# Findings in JavaScript packages bundled by the AWS Lambda team in
+# `public.ecr.aws/lambda/nodejs:22` — the runtime base for the
+# run-terraform Lambda (per ADR-009 § Amendments / PR-C.6). We don't
+# control these dependencies; AWS Lambda publishes the base with their
+# chosen versions. The run-terraform Dockerfile pulls the floating
+# `nodejs:22` tag so AWS refreshes land automatically.
+#
+# Revisit triggers:
+#   (a) The lag exceeds 60 days from CVE publication; open an AWS
+#       support ticket or evaluate moving to a self-managed base
+#       (significant work — abandons the Lambda-blessed runtime
+#       interface pattern).
+#   (b) Active-exploitation advisory on one of these CVEs.
+
+CVE-2026-42033  # axios — fix: 1.15.1 / 0.31.1 (AWS Lambda Node 22 base)
+CVE-2026-42035  # axios — fix: 1.15.1 / 0.31.1 (AWS Lambda Node 22 base)
+CVE-2026-42043  # axios — fix: 1.15.1 / 0.31.1 (AWS Lambda Node 22 base)
+CVE-2026-42264  # axios — fix: 1.15.2 (AWS Lambda Node 22 base)
+CVE-2026-44665  # fast-xml-builder — fix: 1.1.7 (AWS Lambda Node 22 base)
