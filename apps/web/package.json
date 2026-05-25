@@ -20,7 +20,7 @@
     "next": "^16.2.6",
     "oidc-client-ts": "^3.5.0",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5",
+    "react-dom": "^19.2.6",
     "react-hook-form": "^7.75.0",
     "shadcn": "^4.6.0",
     "tailwind-merge": "^3.5.0",
