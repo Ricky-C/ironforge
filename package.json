@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "amazon-cognito-identity-js": "^6.3.12",
-    "tsx": "^4.19.2"
+    "tsx": "^4.22.3"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
