@@ -22,11 +22,11 @@
     "@ironforge/shared-utils": "workspace:*"
   },
   "devDependencies": {
-    "@smithy/util-stream": "^4.6.0",
-    "@types/node": "^25.6.2",
+    "@smithy/util-stream": "^4.6.4",
+    "@types/node": "^25.9.1",
     "aws-sdk-client-mock": "^4.1.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.11",
-    "vitest": "^4.1.5"
+    "vite": "^8.0.14",
+    "vitest": "^4.1.7"
   }
 }

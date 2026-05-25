@@ -16,7 +16,7 @@
     "@ironforge/workflow-stub-lib": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.1",
     "esbuild": "^0.28.0",
     "typescript": "^6.0.3"
   }
