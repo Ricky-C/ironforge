@@ -729,6 +729,80 @@ KMS got the tightening this round (the `KMS*` sids above). Structure: `kms:Creat
 
 **Two-step manual procedure for adding new services to these roles:** the policy here is the source of truth, but `aws iam put-role-policy` against the live roles is what actually changes them. When a PR adds a new service usage (a new `ssm:*` grant, a new CMK, a new resource-level scope), the procedure is: (1) update this file in the PR; (2) run `aws iam put-role-policy --role-name ironforge-ci-{plan,apply} --policy-name ironforge-ci-{plan,apply}-permissions --policy-document file:///tmp/...json` with the updated JSON manually before merge; (3) merge → CI's first apply uses the updated permissions. Skipping step 2 surfaces as `AccessDenied` on the first CI apply.
 
+## Step 4b — Create `ironforge-ci-trivy`
+
+Dedicated read-only role for the `security-trivy` workflow's ECR image pulls. Separate from `ironforge-ci-plan`/`ironforge-ci-apply` because trivy needs neither write nor plan-time read-everything surface — only enough to authenticate to ECR and pull the two scanned images.
+
+Trust policy: scoped to `ref:refs/heads/main` only. The trivy workflow triggers on `push: branches: [main]`, `schedule`, and `workflow_dispatch` — all three carry the same `ref:refs/heads/main` sub claim (schedule and dispatch run against the workflow file at the default branch ref).
+
+```bash
+cat > /tmp/ironforge-ci-trivy-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": "repo:${GITHUB_REPO}:ref:refs/heads/main"
+      }
+    }
+  }]
+}
+EOF
+
+aws iam create-role \
+  --role-name ironforge-ci-trivy \
+  --assume-role-policy-document file:///tmp/ironforge-ci-trivy-trust.json \
+  --permissions-boundary "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/IronforgeCIPermissionBoundary" \
+  --tags Key=ironforge-managed,Value=true \
+         Key=ironforge-component,Value=ci-oidc \
+         Key=ironforge-environment,Value=shared
+```
+
+Trivy role identity policy: ECR authorization-token + the four image-pull actions, scoped to the two scanned repositories. `GetAuthorizationToken` is account-scoped per the AWS service-authorization reference (no resource-level support); the pull-path actions (`BatchGetImage`, `BatchCheckLayerAvailability`, `GetDownloadUrlForLayer`, `DescribeImages`) scope to the specific ECR repo ARNs so the role cannot pull other Ironforge images.
+
+```bash
+cat > /tmp/ironforge-ci-trivy-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ECRAuthorizationTokenAccountWide",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECRReadScannedImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:DescribeImages"
+      ],
+      "Resource": [
+        "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/ironforge-portal",
+        "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/ironforge-run-terraform"
+      ]
+    }
+  ]
+}
+EOF
+
+aws iam put-role-policy \
+  --role-name ironforge-ci-trivy \
+  --policy-name ironforge-ci-trivy-permissions \
+  --policy-document file:///tmp/ironforge-ci-trivy-policy.json
+```
+
+Note on action set: the user-facing spec named three actions (`DescribeImages`, `GetAuthorizationToken`, `BatchGetImage`); `BatchCheckLayerAvailability` and `GetDownloadUrlForLayer` are added because `docker pull` (which trivy invokes internally for `trivy image`) cannot complete a layer-level pull without them. The set above is the AWS-documented minimum read-only pull surface. No write, no delete, no repository-management actions — `IronforgeCIPermissionBoundary` would deny those even if a future update widened this identity policy by mistake.
+
 ## Step 5 — Configure GitHub Environment `production`
 
 In the GitHub UI:
@@ -760,6 +834,7 @@ Repo → **Settings** → **Secrets and variables** → **Actions** → **New re
 |---|---|
 | `AWS_OIDC_PLAN_ROLE_ARN` | `arn:aws:iam::<account-id>:role/ironforge-ci-plan` |
 | `AWS_OIDC_APPLY_ROLE_ARN` | `arn:aws:iam::<account-id>:role/ironforge-ci-apply` |
+| `AWS_OIDC_TRIVY_ROLE_ARN` | `arn:aws:iam::<account-id>:role/ironforge-ci-trivy` |
 | `AWS_ACCOUNT_ID` | `<your-aws-account-id>` |
 | `TF_VAR_ALERT_EMAIL` | `<your alert recipient email>` |
 | `TF_VAR_GITHUB_ORG_NAME` | `<your GitHub org for provisioned repos, e.g. ironforge-svc>` |
@@ -836,7 +911,29 @@ aws iam get-role --role-name ironforge-ci-apply \
 # Expected: sts.amazonaws.com
 ```
 
-If all six expected outputs match, the bootstrap is correct without needing to wait for the first workflow run.
+### Trivy role: boundary attached, trust scoped to `ref:refs/heads/main`
+
+```bash
+# Boundary
+aws iam get-role --role-name ironforge-ci-trivy \
+  --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text
+# Expected: arn:aws:iam::<account-id>:policy/IronforgeCIPermissionBoundary
+
+# Trust policy sub claim
+aws iam get-role --role-name ironforge-ci-trivy \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals."token.actions.githubusercontent.com:sub"' \
+  --output text
+# Expected: repo:Ricky-C/ironforge:ref:refs/heads/main
+
+# Identity-policy actions
+aws iam get-role-policy \
+  --role-name ironforge-ci-trivy \
+  --policy-name ironforge-ci-trivy-permissions \
+  --query 'PolicyDocument.Statement[].Action' --output json
+# Expected: [["ecr:GetAuthorizationToken"], ["ecr:BatchGetImage","ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:DescribeImages"]]
+```
+
+If all expected outputs match, the bootstrap is correct without needing to wait for the first workflow run.
 
 ## Rotation / recovery procedure
 

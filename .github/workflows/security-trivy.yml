@@ -1,0 +1,134 @@
+name: security-trivy
+
+# Trivy scans the deployed portal + run-terraform Lambda container
+# images for OS-package and language-library CVEs. Standalone from
+# the build workflows: a finding here surfaces in the GitHub Security
+# tab as visibility, but does NOT block the build/deploy path. Block-
+# at-source vs surface-at-scan is the explicit ADR-style trade — see
+# PR-C's PR description.
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Mondays 12:00 UTC — same cadence as security-gitleaks and
+    # security-checkov so the weekly security view lands together.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  # OIDC + read code + write code-scanning alerts to the Security tab.
+  # NOT pull-requests:write or contents:write — Trivy doesn't need
+  # either.
+  id-token: write
+  contents: read
+  security-events: write
+
+env:
+  TRIVY_VERSION: "0.69.3"
+  AWS_REGION: us-east-1
+
+jobs:
+  portal:
+    name: trivy portal
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Dedicated read-only ECR scanning role; see
+          # infra/OIDC_BOOTSTRAP.md § "Step 4b — Create
+          # ironforge-ci-trivy" for the role definition + bootstrap.
+          role-to-assume: ${{ secrets.AWS_OIDC_TRIVY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ECR login
+        run: |
+          ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+      - name: Install trivy
+        # Pinned via TRIVY_VERSION at workflow level; update
+        # deliberately rather than tracking floating tags.
+        run: |
+          curl -sSL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o /tmp/trivy.tgz
+          tar xzf /tmp/trivy.tgz -C /tmp trivy
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Scan portal image
+        # HIGH+CRITICAL only to keep Security tab signal high. Soft-fail
+        # (--exit-code 0) — findings surface but don't block. .trivyignore
+        # at repo root suppresses architecturally-accepted findings with
+        # category-grouped reasoning.
+        run: |
+          ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          trivy image \
+            --no-progress \
+            --severity HIGH,CRITICAL \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-portal.sarif \
+            --exit-code 0 \
+            "${ECR_REGISTRY}/ironforge-portal:latest"
+
+      - name: Upload SARIF
+        if: always() && hashFiles('trivy-portal.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-portal.sarif
+          category: trivy-portal
+
+  run-terraform:
+    name: trivy run-terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_TRIVY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ECR login
+        run: |
+          ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+      - name: Install trivy
+        run: |
+          curl -sSL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o /tmp/trivy.tgz
+          tar xzf /tmp/trivy.tgz -C /tmp trivy
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Scan run-terraform image
+        run: |
+          ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          trivy image \
+            --no-progress \
+            --severity HIGH,CRITICAL \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-run-terraform.sarif \
+            --exit-code 0 \
+            "${ECR_REGISTRY}/ironforge-run-terraform:latest"
+
+      - name: Upload SARIF
+        if: always() && hashFiles('trivy-run-terraform.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-run-terraform.sarif
+          category: trivy-run-terraform
