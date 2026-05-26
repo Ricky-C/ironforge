@@ -160,8 +160,8 @@ importers:
   packages/shared-utils:
     dependencies:
       '@aws-lambda-powertools/logger':
-        specifier: ^2.10.0
-        version: 2.33.0
+        specifier: ^2.33.1
+        version: 2.33.1
       '@aws-sdk/client-dynamodb':
         specifier: ^3.1045.0
         version: 3.1045.0
@@ -227,8 +227,8 @@ importers:
   services/api:
     dependencies:
       '@aws-lambda-powertools/logger':
-        specifier: ^2.10.0
-        version: 2.33.0
+        specifier: ^2.33.1
+        version: 2.33.1
       '@aws-sdk/client-dynamodb':
         specifier: ^3.1045.0
         version: 3.1045.0
@@ -276,8 +276,8 @@ importers:
   services/cost-reporter:
     dependencies:
       '@aws-lambda-powertools/logger':
-        specifier: ^2.10.0
-        version: 2.33.0
+        specifier: ^2.33.1
+        version: 2.33.1
       '@aws-sdk/client-cost-explorer':
         specifier: ^3.1045.0
         version: 3.1045.0
@@ -756,13 +756,13 @@ packages:
   '@aws-crypto/util@5.2.0':
     resolution: {integrity: sha512-4RkU9EsI6ZpBve5fseQlGNUWKMa1RLPQ1dnjnQoe07ldfIzcsGb5hC5W0Dm7u423KWzawlrpbjXBrXCEv9zazQ==}
 
-  '@aws-lambda-powertools/commons@2.33.0':
-    resolution: {integrity: sha512-cXGfWT4FXtLO7Ny/shep6V/xYzgVN7hvukOA0bTa4nlg2GWiQsPoBoKvCEcfQ9I8GIS0tPyDfRkdx80SvA7LpA==}
+  '@aws-lambda-powertools/commons@2.33.1':
+    resolution: {integrity: sha512-edzvz+zqBl8p9J2Cgo1rFmhd+3ANqr0PQDqowElS3CJ10ioHN2wUYiANGxfalcgbB8ulZxGkRbK3wvEEziV/5w==}
 
-  '@aws-lambda-powertools/logger@2.33.0':
-    resolution: {integrity: sha512-ejkgit7O8yrhu5Mbx8fBAd3lykBNtYsVzFSR653Sh3d8ojpp8zo2OoARt3lKEK4cjHsKB/kUGbpzZcSYkR6Hvg==}
+  '@aws-lambda-powertools/logger@2.33.1':
+    resolution: {integrity: sha512-DDnKcv2zghslh2AtrVsa4wHcAuI5M7+JlX65CgdXLk2th0Nr0octJQq0f4Bnp+DzuwFynmH4GJqsBe33rZapAw==}
     peerDependencies:
-      '@aws-lambda-powertools/jmespath': 2.33.0
+      '@aws-lambda-powertools/jmespath': 2.33.1
       '@middy/core': 4.x || 5.x || 6.x || 7.x
     peerDependenciesMeta:
       '@aws-lambda-powertools/jmespath':
@@ -4875,13 +4875,13 @@ snapshots:
       '@smithy/util-utf8': 2.3.0
       tslib: 2.8.1
 
-  '@aws-lambda-powertools/commons@2.33.0':
+  '@aws-lambda-powertools/commons@2.33.1':
     dependencies:
       '@aws/lambda-invoke-store': 0.2.4
 
-  '@aws-lambda-powertools/logger@2.33.0':
+  '@aws-lambda-powertools/logger@2.33.1':
     dependencies:
-      '@aws-lambda-powertools/commons': 2.33.0
+      '@aws-lambda-powertools/commons': 2.33.1
       '@aws/lambda-invoke-store': 0.2.4
 
   '@aws-sdk/client-cloudfront@3.1045.0':
