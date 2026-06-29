@@ -57,7 +57,18 @@ CLAUDE.md lists "AWS WAF on the portal CloudFront with managed rule groups" unde
 
 - **Cost:** WAF → ~$0 while dormant (prorated hourly); ~$9 only during the days it's toggled on. Combined with the KMS/account cleanup (§ Related) and ECR retention trim, the dormant bill drops ~65% (≈$18.3 → ≈$6.5/mo).
 - **Security posture (residual risk):** while `portal_waf_enabled = false`, the public portal has no edge managed-rule filtering or WAF rate limiting. Mitigations: the provisioning path remains Cognito-gated + job-capped + whitelisted + budget-guarded (unaffected); AWS Shield Standard still covers L3/L4 volumetric DDoS on CloudFront for free; and the concurrency cap bounds the cost of an L7 flood. The accepted residual is generic L7 scanner noise reaching the Next.js app and a bounded (not unbounded) flood cost. For any event that elevates this risk (e.g. a publicized live demo, an observed attack), flip the toggle on.
-- **Operational:** turning WAF on is not instant — budget ~5–15 min for CloudFront to propagate the association. "Turn it on the morning of a demo," not at click time. The `count` change moves the state address to `aws_wafv2_web_acl.portal[0]`; with the default `false` the first apply destroys the live ACL (intended). To keep it up across the change, set the tfvar `true` and `terraform state mv` the resource into the `[0]` index.
+- **Operational:** turning WAF on is not instant — budget ~5–15 min for CloudFront to propagate the association. "Turn it on the morning of a demo," not at click time.
+
+## Toggling off — two-phase teardown (added 2026-06-29)
+
+The first toggle-off (PR #174) failed at apply: terraform attempted `DeleteWebACL` while the ACL was still associated with the distribution and returned `WAFAssociatedItemException`. Root cause is a terraform limitation — when a *kept* resource (the CloudFront distribution, updated to drop `web_acl_id`) and a *destroyed* resource (the WAF ACL) change in the same apply, terraform does **not** reliably update the keeper before destroying the referent. So CloudFront was never detached and the ACL stayed deletable-blocked. Plain re-runs (CI or `-target`) repeat this; only detaching CloudFront first breaks the deadlock, and AWS additionally needs the disassociation to propagate before the delete is accepted.
+
+Fix: `enable_waf` (ACL **exists**, via `count`) is decoupled from `attach_waf` (ACL **attached** to CloudFront). `web_acl_id = var.enable_waf && var.attach_waf ? aws_wafv2_web_acl.portal[0].arn : null`. Toggle **off** in two applies:
+
+1. **Detach:** `attach_waf = false` (keep `enable_waf = true`) → apply. Only CloudFront updates (drops `web_acl_id`); the ACL survives, detached. Wait ~5–15 min for CloudFront to reach `Deployed` so the WAFv2 association clears.
+2. **Delete:** `enable_waf = false` → apply. The now-detached ACL deletes cleanly.
+
+Toggle **on** is a single apply (`enable_waf = true`, `attach_waf = true` default): the ACL is created and attached together (no ordering hazard on create).
 
 ## Related
 
