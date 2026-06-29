@@ -248,10 +248,13 @@ resource "aws_cloudfront_distribution" "portal" {
   # Discovery captured in feedback_cloudfront_default_root_object_origin_type_dependent.md.
   default_root_object = ""
 
-  # Null when var.enable_waf is false — CloudFront serves with no WAF
-  # attached (legitimate traffic is unaffected; see ADR-012 for why the
-  # provisioning path is gated by Cognito, not this ACL).
-  web_acl_id = one(aws_wafv2_web_acl.portal[*].arn)
+  # Null when the ACL doesn't exist (enable_waf=false) OR is intentionally
+  # detached (attach_waf=false). The attach_waf decoupling lets toggle-off
+  # run as two applies — detach (ACL survives), then destroy — because AWS
+  # rejects DeleteWebACL while associated and terraform won't detach before
+  # destroying in one pass. CloudFront serves fine with no WAF; the
+  # provisioning path is gated by Cognito, not this ACL (ADR-012).
+  web_acl_id = var.enable_waf && var.attach_waf ? aws_wafv2_web_acl.portal[0].arn : null
 
   aliases = [var.domain_name]
 

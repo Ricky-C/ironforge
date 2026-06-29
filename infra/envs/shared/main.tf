@@ -90,8 +90,18 @@ module "portal_frontend" {
   hosted_zone_id      = module.dns.hosted_zone_id
   lambda_function_url = aws_lambda_function_url.portal.function_url
 
-  # Cost toggle — default off; flip via portal_waf_enabled tfvar for demos.
-  enable_waf = var.portal_waf_enabled
+  # ── TWO-PHASE WAF TEARDOWN — PHASE 1 of 2 (detach) ──────────────────────
+  # The single-apply toggle-off (PR #174) failed: terraform won't update
+  # CloudFront to drop web_acl_id BEFORE destroying the ACL (update-before-
+  # destroy limitation), so DeleteWebACL hit WAFAssociatedItemException while
+  # still associated. This phase keeps the ACL alive (enable_waf = true) but
+  # DETACHES it (attach_waf = false). After this applies and CloudFront
+  # propagates, the phase-2 PR reverts these two lines to the var-driven form
+  # below so the now-detached ACL deletes cleanly. See ADR-012 § Toggling off.
+  #   PHASE 2 restores: enable_waf = var.portal_waf_enabled
+  #                     attach_waf = var.portal_waf_attached
+  enable_waf = true
+  attach_waf = false
 }
 
 # Portal Lambda substrate (ADR-011): ECR + IAM execution role + log
