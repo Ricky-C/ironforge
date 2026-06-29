@@ -28,10 +28,9 @@ locals {
     "ironforge-dev-run-terraform",
   ]
 
-  # Prod has no provisioning Lambdas yet — list stays empty until the
-  # prod composition lands. Empty list keeps the dynamic statement in
-  # tfstate-bucket's CMK key policy disabled until needed.
-  tfstate_consuming_lambda_function_names_prod = []
+  # Prod tfstate consumer list removed with module.tfstate_prod
+  # (cost-optimization sweep 2026-06-29, ADR-012). Re-add this local
+  # together with the module when the prod composition lands.
 }
 
 module "lambda_baseline" {
@@ -90,6 +89,9 @@ module "portal_frontend" {
   certificate_arn     = module.dns.certificate_arn
   hosted_zone_id      = module.dns.hosted_zone_id
   lambda_function_url = aws_lambda_function_url.portal.function_url
+
+  # Cost toggle — default off; flip via portal_waf_enabled tfvar for demos.
+  enable_waf = var.portal_waf_enabled
 }
 
 # Portal Lambda substrate (ADR-011): ECR + IAM execution role + log
@@ -102,6 +104,11 @@ module "portal_lambda" {
   source = "../../modules/portal-lambda"
 
   permissions_boundary_arn = module.lambda_baseline.boundary_policy_arn
+
+  # Trim ECR storage cost: keep 3 most-recent portal images (≈3 days of
+  # rollback at 1 deploy/day) instead of the 10 default. Cost-optimization
+  # sweep 2026-06-29.
+  image_retention_count = 3
 }
 
 module "cloudtrail" {
@@ -122,18 +129,14 @@ module "tfstate_dev" {
   ]
 }
 
-# Prod tfstate bucket apples-to-apples with dev. Per-env CMKs and
-# per-env consumer lists; the module enforces no cross-env reuse.
-module "tfstate_prod" {
-  source = "../../modules/tfstate-bucket"
-
-  environment = "prod"
-
-  consuming_lambda_role_arns = [
-    for name in local.tfstate_consuming_lambda_function_names_prod :
-    "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${name}-execution"
-  ]
-}
+# Prod tfstate bucket + CMK deferred (YAGNI) — cost-optimization sweep
+# 2026-06-29, ADR-012. Prod has no provisioning Lambdas (consumer list was
+# empty) and no compute, so this per-env state bucket and its ~$1/mo CMK
+# were provisioned ahead of need; the bucket was verified empty before
+# removal. Re-instantiate apples-to-apples with module.tfstate_dev above
+# (environment = "prod" + a prod consumer list) when the prod composition
+# lands and needs per-service run-terraform state. The CMK deletes on a
+# 30-day cancelable window (module sets deletion_window_in_days = 30).
 
 module "terraform_lambda_image" {
   source = "../../modules/terraform-lambda-image"
@@ -141,6 +144,11 @@ module "terraform_lambda_image" {
   # 5.83.0, arm64). Bumping requires updating both build-image.sh
   # constants AND the module variable defaults — the variables are
   # documentation; the script's constants are the truth.
+
+  # Trim ECR storage cost: keep 3 most-recent run-terraform images (the
+  # module's floor — enough for one rollback). Cost-optimization sweep
+  # 2026-06-29.
+  image_retention_count = 3
 }
 
 module "github_app_secret" {
@@ -225,6 +233,20 @@ resource "aws_lambda_function" "portal" {
   # Data-driven bump to 2048 if the first-load-latency gate fails on memory
   # pressure rather than image-pull cold start.
   memory_size = 1024
+
+  # Hard cost-ceiling against an L7 request flood on the public portal.
+  # Without a cap, a flood scales this 1024 MB function unbounded to the
+  # 400 account-concurrency limit; with it, excess requests get throttled
+  # (429) instead of invoking, capping both Lambda compute and full-response
+  # data transfer — the two open-ended multipliers. This is the portal's
+  # real flood control: the $50 budget action denies resource CREATION by
+  # the provisioning/CI roles, so it cannot stop traffic-driven cost on the
+  # already-existing CloudFront + Lambda. 15 is ample for portfolio traffic
+  # (only a flood ever reaches it) and also stops a portal flood from
+  # starving the provisioning Lambdas in the shared 400 pool. Revisits the
+  # deliberate "unset" in docs/tech-debt.md with a cost-DoS rationale. See
+  # ADR-012.
+  reserved_concurrent_executions = 15
 
   # 30s is sufficient for portal page rendering at portfolio scale; API
   # client timeouts cap at the proxy boundary (in-Lambda fetch from the

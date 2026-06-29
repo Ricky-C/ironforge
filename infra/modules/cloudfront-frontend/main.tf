@@ -47,6 +47,11 @@ locals {
 resource "aws_wafv2_web_acl" "portal" {
   provider = aws.us_east_1
 
+  # Cost toggle (ADR-012): when var.enable_waf is false the ACL is not
+  # created at all, so the ~$9/mo (web ACL + 4 rules) stops accruing.
+  # Detaching alone would not — an existing-but-detached ACL still bills.
+  count = var.enable_waf ? 1 : 0
+
   name  = "ironforge-portal"
   scope = "CLOUDFRONT"
 
@@ -243,7 +248,10 @@ resource "aws_cloudfront_distribution" "portal" {
   # Discovery captured in feedback_cloudfront_default_root_object_origin_type_dependent.md.
   default_root_object = ""
 
-  web_acl_id = aws_wafv2_web_acl.portal.arn
+  # Null when var.enable_waf is false — CloudFront serves with no WAF
+  # attached (legitimate traffic is unaffected; see ADR-012 for why the
+  # provisioning path is gated by Cognito, not this ACL).
+  web_acl_id = one(aws_wafv2_web_acl.portal[*].arn)
 
   aliases = [var.domain_name]
 
