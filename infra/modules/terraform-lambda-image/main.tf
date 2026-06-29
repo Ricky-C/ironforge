@@ -91,17 +91,28 @@ resource "aws_ecr_lifecycle_policy" "run_terraform" {
   })
 }
 
-# Repository policy: allow the run-terraform Lambda's execution role
-# to pull images. The Lambda runtime calls ecr:BatchGetImage +
-# ecr:GetDownloadUrlForLayer when starting a container Lambda from
-# this repo's images.
+# Repository policy: allow the Lambda SERVICE principal
+# (lambda.amazonaws.com) to pull images. Lambda pulls a container image
+# on every cold start and on reactivation from the Inactive state using
+# the SERVICE principal — NOT the function's execution role. A grant to
+# the execution role does nothing for image retrieval and leaves the
+# function unable to cold-start (StateReasonCode=ImageAccessDenied) once
+# its warm execution environments are reclaimed. This is the failure
+# mode that took the portal down for ~1 month in 2026-06; the portal
+# module shares the identical fix. See docs/runbook.md.
 #
-# Forward-referenceable: the consuming Lambda role ARN doesn't exist
-# until the dev composition applies. AWS ECR accepts non-existent
-# role ARNs in repository policies (same pattern as KMS key policies);
-# this module applies before the dev composition.
+# Terraform owns this policy, so it OVERWRITES the
+# LambdaECRImageRetrievalPolicy statement Lambda would otherwise
+# auto-inject — the service-principal grant MUST be declared here, or it
+# is silently clobbered on the next apply.
+#
+# Forward-referenceable: the consuming function ARN doesn't exist until
+# the dev composition applies. AWS ECR accepts not-yet-created ARNs in
+# repository policies (same pattern as KMS key policies); this module
+# applies before the dev composition.
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
+data "aws_region" "current" {}
 
 resource "aws_ecr_repository_policy" "run_terraform" {
   repository = aws_ecr_repository.run_terraform.name
@@ -110,21 +121,28 @@ resource "aws_ecr_repository_policy" "run_terraform" {
 
 data "aws_iam_policy_document" "repository" {
   statement {
-    sid    = "AllowRunTerraformLambdaPull"
+    sid    = "LambdaECRImageRetrievalPolicy"
     effect = "Allow"
 
     principals {
-      type = "AWS"
-      identifiers = [
-        "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/ironforge-dev-run-terraform-execution",
-        # PR-C.6 only adds dev's role. When prod composition lands,
-        # append "ironforge-prod-run-terraform-execution".
-      ]
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
     }
 
     actions = [
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer",
     ]
+
+    # Confused-deputy guard: scope the service grant to the run-terraform
+    # function ARN(s). PR-C.6 only adds dev. When the prod composition
+    # lands, append "...:function:ironforge-prod-run-terraform".
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values = [
+        "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:ironforge-dev-run-terraform",
+      ]
+    }
   }
 }
