@@ -572,6 +572,19 @@ cat > /tmp/ironforge-ci-apply-policy.json <<EOF
       "Resource": "arn:aws:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:ironforge-*"
     },
     {
+      "Sid": "WriteIronforgeCloudWatchAlarms",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource",
+        "cloudwatch:EnableAlarmActions",
+        "cloudwatch:DisableAlarmActions"
+      ],
+      "Resource": "arn:aws:cloudwatch:${AWS_REGION}:${AWS_ACCOUNT_ID}:alarm:ironforge-*"
+    },
+    {
       "Sid": "WriteIronforgeStateMachines",
       "Effect": "Allow",
       "Action": "states:*",
