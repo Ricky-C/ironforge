@@ -14,6 +14,6 @@ output "distribution_domain_name" {
 }
 
 output "waf_web_acl_arn" {
-  description = "ARN of the portal WAF web ACL. Reference for cross-resource attachment or auditing."
-  value       = aws_wafv2_web_acl.portal.arn
+  description = "ARN of the portal WAF web ACL, or null when var.enable_waf is false (the ACL is not created). Reference for cross-resource attachment or auditing."
+  value       = one(aws_wafv2_web_acl.portal[*].arn)
 }

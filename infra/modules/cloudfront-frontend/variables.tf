@@ -22,3 +22,9 @@ variable "lambda_function_url" {
     error_message = "lambda_function_url must be a Lambda Function URL of the form https://<url-id>.lambda-url.<region>.on.aws/"
   }
 }
+
+variable "enable_waf" {
+  description = "Whether to create + attach the portal WAF web ACL. Default false: the WAF is edge defense-in-depth + a portfolio signal, NOT the control that gates provisioning (Cognito JWT auth + the concurrency-job cap do that), and it sits only on the portal CloudFront path — not the API (AWS WAF cannot attach to an HTTP API). Its one load-bearing function — per-IP rate limiting against a request flood — is replaced for $0 by the portal Lambda's reserved_concurrent_executions cap (see ADR-012). Toggling false DESTROYS the ACL so the ~$9/mo (1 web ACL + 4 rules, prorated hourly) stops accruing; flip true for active demos/interviews. A detached-but-existing ACL still bills, so the toggle gates resource existence via count, not just the CloudFront association."
+  type        = bool
+  default     = false
+}

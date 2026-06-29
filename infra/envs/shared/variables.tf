@@ -26,6 +26,12 @@ variable "budget_action_target_groups" {
   default     = []
 }
 
+variable "portal_waf_enabled" {
+  description = "Whether the portal CloudFront WAF web ACL is created + attached. Default false to avoid the ~$9/mo standing charge (1 web ACL + 4 rules) on a portfolio project that is dormant most of the time — the WAF is edge defense-in-depth, not the provisioning gate (Cognito + the concurrency cap do that), and the portal Lambda's reserved concurrency replaces its flood-cost-protection role for $0. Flip true for active demos/interviews (one `terraform apply`, ~5-15 min CloudFront propagation). See ADR-012."
+  type        = bool
+  default     = false
+}
+
 variable "github_org_name" {
   description = "GitHub organization that holds Ironforge-provisioned repos (e.g., ironforge-svc). Tenant-specific — supply via gitignored terraform.tfvars per the env-specific-identifiers convention."
   type        = string

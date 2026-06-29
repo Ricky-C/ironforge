@@ -118,20 +118,9 @@ output "tfstate_dev_kms_key_arn" {
   value       = module.tfstate_dev.kms_key_arn
 }
 
-output "tfstate_prod_bucket_name" {
-  description = "Name of the prod environment's terraform state bucket. Empty consumer list until prod composition lands; bucket exists regardless."
-  value       = module.tfstate_prod.bucket_name
-}
-
-output "tfstate_prod_bucket_arn" {
-  description = "ARN of the prod environment's terraform state bucket."
-  value       = module.tfstate_prod.bucket_arn
-}
-
-output "tfstate_prod_kms_key_arn" {
-  description = "ARN of the CMK encrypting the prod environment's terraform state."
-  value       = module.tfstate_prod.kms_key_arn
-}
+# tfstate_prod_* outputs removed with module.tfstate_prod (cost-optimization
+# sweep 2026-06-29, ADR-012). Re-add together with the module when the prod
+# composition lands.
 
 output "terraform_lambda_image_repository_url" {
   description = "ECR repository URL for the run-terraform Lambda's container image. CI's build-image.sh pushes here; the Lambda function references the image by URI + digest."
