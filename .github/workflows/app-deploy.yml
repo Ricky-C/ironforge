@@ -46,7 +46,7 @@ jobs:
         # advantage). Forward-debt: switch to ubuntu-24.04-arm runner once
         # the repo's plan / runner labels are verified — see
         # docs/tech-debt.md § "ARM-native CI runners for Lambda image builds".
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: linux/arm64
 
