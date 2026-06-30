@@ -84,7 +84,7 @@ jobs:
         # push. Provenance is recoverable via separate signing if needed
         # later — Lambda compatibility is non-negotiable.
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/web/Dockerfile
