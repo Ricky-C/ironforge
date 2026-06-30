@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-lambda-powertools/logger": "^2.10.0",
+    "@aws-lambda-powertools/logger": "^2.33.1",
     "@aws-sdk/client-dynamodb": "^3.1045.0",
     "@aws-sdk/client-sfn": "^3.1045.0",
     "@aws-sdk/lib-dynamodb": "^3.1045.0",
