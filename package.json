@@ -16,8 +16,8 @@
     "mint-test-token": "tsx scripts/mint-test-token.ts"
   },
   "devDependencies": {
-    "amazon-cognito-identity-js": "^6.3.12",
-    "tsx": "^4.22.3"
+    "amazon-cognito-identity-js": "^6.3.20",
+    "tsx": "^4.23.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
