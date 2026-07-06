@@ -83,6 +83,6 @@ jobs:
         # exits non-zero. gitleaks writes the SARIF report before the
         # findings-triggered exit, so the file exists when this runs.
         if: always() && hashFiles('gitleaks.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: gitleaks.sarif
