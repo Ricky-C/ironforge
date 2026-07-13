@@ -16,7 +16,7 @@
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
-    "@aws-sdk/lib-dynamodb": "^3.1045.0",
+    "@aws-sdk/lib-dynamodb": "^3.1086.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.9.1",
     "aws-sdk-client-mock": "^4.1.0",
