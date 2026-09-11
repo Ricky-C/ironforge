@@ -16,8 +16,8 @@
     "@ironforge/template-renderer": "workspace:*"
   },
   "devDependencies": {
-    "@aws-sdk/lib-dynamodb": "^3.1045.0",
-    "@types/node": "^26.1.1",
+    "@aws-sdk/lib-dynamodb": "^3.1086.0",
+    "@types/node": "^25.9.1",
     "aws-sdk-client-mock": "^4.1.0",
     "esbuild": "^0.28.1",
     "typescript": "^7.0.2",
