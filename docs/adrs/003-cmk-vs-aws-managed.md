@@ -45,6 +45,7 @@ Without a corresponding access-control or compliance benefit, this is over-engin
 | CloudTrail S3 log bucket (PR-B) | **CMK** | Criteria 1 + 2: this bucket *is* the audit trail. Key policy admits the `cloudtrail.amazonaws.com` service principal only with an `aws:cloudtrail:arn` EncryptionContext condition pinned to our trail's ARN — narrower than IAM can express. CloudTrail decrypt events on the key form the chain-of-custody record for the audit logs themselves. |
 | CloudTrail CloudWatch log group (PR-B) | **CMK** (same key as the S3 bucket) | Same data as the S3-side logs, same audit purpose; sharing one key keeps the policy surface and rotation surface single. The `logs.<region>.amazonaws.com` principal is admitted only with an `aws:logs:arn` EncryptionContext condition pinned to this log group's ARN. |
 | Secrets Manager secrets (future) | **CMK** | Criteria 1 + 3: actual secrets; fine-grained decrypt control matters. |
+| Ops-alerts SNS topic (2026-06-29) | **CMK** | Criterion 5 (added by the 2026-06-29 amendment): a CloudWatch alarm cannot publish to an `alias/aws/sns`-encrypted topic, and that managed key policy can't be edited to grant `cloudwatch.amazonaws.com`. A CMK is *functionally required* to keep the topic both encrypted (CKV_AWS_26 baseline) and deliverable. Content is alert text — criteria 1–4 do not apply. |
 
 **General pattern: audit logs are a strong fit for CMK.** When a resource holds the forensic record (CloudTrail logs, future security-event archives, regulated audit data), criterion 2 applies almost by definition — the decrypt events on the key become part of the audit trail. Criterion 1 typically pairs with it because the key policy can pin the legitimate service principal via an `EncryptionContext` condition that IAM alone cannot enforce.
 
@@ -87,7 +88,21 @@ When a previously-CMK resource is downgraded to AWS-managed:
 3. Schedule deletion of the old CMK with a long enough window (30+ days) to recover if something needs decryption.
 4. Update outputs and any downstream IAM policies that reference the old CMK ARN.
 
+## Amendment — 2026-06-29: functional service-integration requirement (criterion 5)
+
+The original four criteria all ask *"does the key policy express access control or compliance value that AWS-managed encryption can't?"* They assume AWS-managed encryption always **works**, and the only question is whether a CMK adds value. The portal-health monitoring work surfaced a case where AWS-managed encryption does not work at all:
+
+- A CloudWatch alarm publishing to a KMS-encrypted SNS topic requires the key policy to grant `cloudwatch.amazonaws.com` `kms:Decrypt` + `kms:GenerateDataKey*`. With the AWS-managed `alias/aws/sns` key the alarm action fails — *"CloudWatch Alarms does not have authorization to access the SNS topic encryption key"* — and the managed key's policy **cannot be edited** to add that grant. (AWS re:Post: "Configure a CloudWatch alarm with an encrypted SNS topic.")
+- The encrypt-at-rest baseline still applies (`CKV_AWS_26` is not skipped), so an unencrypted topic isn't an option either.
+
+A CMK is therefore the only configuration that is **both** encrypted **and** functional. This is not a content-sensitivity or compliance argument — it's a hard service-integration constraint.
+
+**Criterion 5 — Functional service-integration requirement.** A CMK is justified when an AWS service that must read or write the encrypted resource cannot operate against the AWS-managed key, *and* the AWS-managed key's policy cannot be edited to make it work. The justification names the specific service principal and the operation it's denied (here: `cloudwatch.amazonaws.com`, `kms:GenerateDataKey*`/`kms:Decrypt` for alarm-action delivery).
+
+Scope guard so this doesn't become a CMK-everywhere loophole: criterion 5 applies only when AWS-managed encryption is *demonstrably broken* for a required integration (an observed `AccessDenied`/failed action), not when a CMK would merely be "cleaner." Implementation: `infra/envs/shared/portal-monitoring.tf` (`aws_kms_key.ops_alerts`).
+
 ## Related
 
 - `CLAUDE.md` § "Security Guardrails / Data" — encryption rules updated by this ADR.
 - `docs/adrs/002-managed-iam-policies.md` — same "default vs justified exception" shape applied to IAM policies.
+- `docs/runbook.md` § 5 + `docs/tech-debt.md` § "Portal keepalive failure is undetectable" — the incident that motivated the 2026-06-29 amendment.

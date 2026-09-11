@@ -1540,6 +1540,85 @@ If CSS overrides break Hosted UI rendering:
 
 ---
 
+## 5. Portal BadGatewayException / container-Lambda ImageAccessDenied
+
+### Symptom
+
+`https://ironforge.rickycaballero.com/` (or any portal route) returns CloudFront **502** with response headers:
+
+- `x-amzn-errortype: BadGatewayException`
+- `x-cache: Error from cloudfront`
+
+The portal is a container-image Lambda behind a Function URL + CloudFront. CloudFront returns 502 whenever the origin Lambda can't produce a response — most often because the function can't **cold-start**.
+
+### Diagnosis
+
+```bash
+# 1. Is the function Inactive / failing to start?
+aws lambda get-function-configuration --function-name ironforge-portal \
+  --query '{State:State,StateReasonCode:StateReasonCode,StateReason:StateReason}'
+#   State=Inactive + StateReasonCode=ImageAccessDenied  → repo-policy root cause (this section)
+#   (a fresh invoke may instead surface CodeArtifactUserFailedException — same root cause,
+#    the State field can lag the live attempt)
+
+# 2. Does the ECR repo policy grant the LAMBDA SERVICE principal (not just the exec role)?
+aws ecr get-repository-policy --repository-name ironforge-portal --query policyText --output text
+#   MUST contain  "Principal": { "Service": "lambda.amazonaws.com" }  granting
+#   ecr:BatchGetImage + ecr:GetDownloadUrlForLayer. A grant to the *execution role*
+#   does NOTHING for image pulls — that is the bug.
+
+# 3. Confirm the pinned image digest still exists (rule out lifecycle pruning):
+aws lambda get-function --function-name ironforge-portal --query Code.ImageUri --output text
+aws ecr describe-images --repository-name ironforge-portal \
+  --query 'imageDetails[].imageDigest'
+
+# 4. Has the daily keepalive been silently failing? (async invokes dropped, not errored)
+aws cloudwatch get-metric-statistics --namespace AWS/Lambda --metric-name AsyncEventsDropped \
+  --dimensions Name=FunctionName,Value=ironforge-portal \
+  --start-time $(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 86400 --statistics Sum
+#   AsyncEventsDropped ~1/day with AWS/Events FailedInvocations empty == the silent-failure
+#   signature: EventBridge accepts the event (202) but the function never executes.
+```
+
+### Root cause
+
+Container-image Lambdas pull their image on **every cold start and on reactivation from Inactive** using the **Lambda service principal `lambda.amazonaws.com`**, *not* the function's execution role. The ECR repository policy must grant that service principal `ecr:BatchGetImage` + `ecr:GetDownloadUrlForLayer`. Because Terraform owns the repo policy (`aws_ecr_repository_policy`), it **overwrites** the `LambdaECRImageRetrievalPolicy` statement that Lambda would otherwise auto-inject — so the grant must be declared in Terraform or it is clobbered on the next apply.
+
+A function whose policy lacks this grant still serves traffic *while a warm execution environment survives* (the image was pulled at deploy time by the deployer's credentials). It breaks on the **first cold start after those environments are reclaimed**, surfacing as 502s. The daily EventBridge keepalive cannot rescue it: EventBridge→Lambda is **asynchronous**, every keepalive needs a cold start, every cold start is denied, and the failures are dropped silently (no DLQ, no `FailedInvocations`, no `Errors`).
+
+### Recovery (immediate, ~1 min)
+
+```bash
+# 1. Add the service-principal grant to the live repo policy (back it up first):
+aws ecr get-repository-policy --repository-name ironforge-portal --query policyText --output text > /tmp/portal-repo-policy.bak
+#    Set a policy containing BOTH the existing statements AND:
+#      { "Sid":"LambdaECRImageRetrievalPolicy","Effect":"Allow",
+#        "Principal":{"Service":"lambda.amazonaws.com"},
+#        "Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer"],
+#        "Condition":{"StringLike":{"aws:sourceArn":
+#          "arn:aws:lambda:us-east-1:<account>:function:ironforge-portal"}} }
+aws ecr set-repository-policy --repository-name ironforge-portal --policy-text file://portal-repo-policy.fixed.json
+
+# 2. Force a fresh re-pull + re-optimize (same digest — no behavior change):
+aws lambda update-function-code --function-name ironforge-portal \
+  --image-uri $(aws lambda get-function --function-name ironforge-portal --query Code.ImageUri --output text)
+aws lambda wait function-updated-v2 --function-name ironforge-portal
+
+# 3. Verify State=Active, then verify through CloudFront (the real user path):
+aws lambda get-function-configuration --function-name ironforge-portal --query '{State:State,StateReasonCode:StateReasonCode}'
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' https://ironforge.rickycaballero.com/
+```
+
+The live `set-repository-policy` is a **hotfix only** — it is reverted by the next `terraform apply` unless the durable Terraform fix is in place.
+
+### Prevention (durable)
+
+- **The actual fix is in Terraform:** `infra/modules/portal-lambda/main.tf` and `infra/modules/terraform-lambda-image/main.tf` grant `lambda.amazonaws.com` (scoped by `aws:SourceArn` to the specific function) in `data.aws_iam_policy_document.repository`. Both modules previously granted the execution role — the same latent fault affected the `run-terraform` Lambda. Apply via the normal CI/OIDC path.
+- The daily keepalive (`ironforge-portal-keepalive`) is necessary but **not sufficient** — it only keeps the function warm once cold starts work, and it used to fail **silently** (no alarm fired during the ~1-month outage). Two CloudWatch alarms now catch this within ~1 day, both routed to the CMK-encrypted `ironforge-ops-alerts` SNS topic → email (`infra/envs/shared/portal-monitoring.tf`): `ironforge-portal-keepalive-dropped` (`AsyncEventsDropped >= 1`, the exact outage signature) and `ironforge-portal-not-invoked-24h` (`Invocations < 1` over 24h, catches the keepalive rule going away). A richer end-to-end Synthetics canary on the real URL remains tracked in `docs/tech-debt.md` § "Portal health: add an end-to-end Synthetics canary".
+
+---
+
 ## See also
 
 - `infra/BOOTSTRAP.md` — initial creation of state bucket, CMK, lock table.

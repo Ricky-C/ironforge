@@ -22,3 +22,15 @@ variable "lambda_function_url" {
     error_message = "lambda_function_url must be a Lambda Function URL of the form https://<url-id>.lambda-url.<region>.on.aws/"
   }
 }
+
+variable "enable_waf" {
+  description = "Whether the portal WAF web ACL EXISTS (count). Default false: the WAF is edge defense-in-depth + a portfolio signal, NOT the control that gates provisioning (Cognito JWT auth + the concurrency-job cap do that), and it sits only on the portal CloudFront path — not the API (AWS WAF cannot attach to an HTTP API). Its one load-bearing function — per-IP rate limiting against a request flood — is replaced for $0 by the portal Lambda's reserved_concurrent_executions cap (see ADR-012). Toggling false DESTROYS the ACL so the ~$9/mo (1 web ACL + 4 rules, prorated hourly) stops accruing; flip true for active demos/interviews. A detached-but-existing ACL still bills, so this gates resource existence via count. NOTE: toggling false directly fails — terraform won't detach CloudFront before destroying the ACL (WAFAssociatedItemException); use the two-phase teardown (set attach_waf=false + apply, then enable_waf=false + apply). See ADR-012 § Toggling off."
+  type        = bool
+  default     = false
+}
+
+variable "attach_waf" {
+  description = "Whether the (existing) portal WAF web ACL is ATTACHED to the CloudFront distribution. Decoupled from enable_waf so toggle-OFF can be done safely in two applies: AWS rejects DeleteWebACL while the ACL is associated, and terraform won't update CloudFront to drop web_acl_id before destroying the ACL in a single apply. Phase 1: attach_waf=false (detach, ACL survives) → apply → CloudFront propagates. Phase 2: enable_waf=false → apply → the now-detached ACL deletes cleanly. Ignored when enable_waf is false (no ACL exists to attach). See ADR-012 § Toggling off."
+  type        = bool
+  default     = true
+}

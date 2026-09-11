@@ -111,18 +111,28 @@ resource "aws_ecr_lifecycle_policy" "portal" {
 }
 
 # ============================================================================
-# ECR repository policy: portal Lambda execution role can pull images
+# ECR repository policy: allow the Lambda SERVICE to pull the image
 # ============================================================================
 #
-# Forward-referenceable: the consuming Lambda role is created in this
-# same module above. The repository policy enumerates the role's ARN
-# directly. AWS ECR also accepts non-existent role ARNs in repository
-# policies (same forward-reference pattern as KMS key policies +
-# tfstate-bucket CMK), which simplifies cross-module use cases — not
-# needed here since the role lives alongside the repo.
+# Container-image Lambdas are pulled by the Lambda service principal
+# (lambda.amazonaws.com) on every cold start and on reactivation from
+# the Inactive state — NOT by the function's execution role. Granting
+# the execution role ecr:BatchGetImage / ecr:GetDownloadUrlForLayer does
+# nothing for image retrieval: the function serves only while a warm
+# execution environment survives, then fails every cold start with
+# StateReasonCode=ImageAccessDenied once those environments are
+# reclaimed. (Observed 2026-06: the portal returned CloudFront 502
+# BadGatewayException for ~1 month this way — see docs/runbook.md
+# "portal BadGatewayException".)
+#
+# Terraform owns this repository policy, so it OVERWRITES the
+# LambdaECRImageRetrievalPolicy statement that the Lambda service would
+# otherwise auto-inject. The service-principal grant therefore MUST live
+# here explicitly, or it is silently clobbered on the next apply.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
+data "aws_region" "current" {}
 
 resource "aws_ecr_repository_policy" "portal" {
   repository = aws_ecr_repository.portal.name
@@ -131,18 +141,31 @@ resource "aws_ecr_repository_policy" "portal" {
 
 data "aws_iam_policy_document" "repository" {
   statement {
-    sid    = "AllowPortalLambdaPull"
+    sid    = "LambdaECRImageRetrievalPolicy"
     effect = "Allow"
 
     principals {
-      type        = "AWS"
-      identifiers = [aws_iam_role.portal.arn]
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
     }
 
     actions = [
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer",
     ]
+
+    # Confused-deputy guard: scope the service grant to this account's
+    # portal function ARN so it can't be leveraged on behalf of any other
+    # Lambda. The function lives in the dev composition; ECR accepts a
+    # not-yet-created function ARN here (same forward-reference tolerance
+    # as KMS key policies).
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values = [
+        "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${local.function_name}",
+      ]
+    }
   }
 }
 

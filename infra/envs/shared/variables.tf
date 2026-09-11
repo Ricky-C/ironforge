@@ -26,6 +26,18 @@ variable "budget_action_target_groups" {
   default     = []
 }
 
+variable "portal_waf_enabled" {
+  description = "Whether the portal CloudFront WAF web ACL EXISTS. Default false to avoid the ~$9/mo standing charge (1 web ACL + 4 rules) on a portfolio project that is dormant most of the time — the WAF is edge defense-in-depth, not the provisioning gate (Cognito + the concurrency cap do that), and the portal Lambda's reserved concurrency replaces its flood-cost-protection role for $0. Toggle ON = one apply (ACL created + attached). Toggle OFF = two applies (set portal_waf_attached=false first, then this false) because AWS won't delete an associated ACL. See ADR-012 § Toggling off."
+  type        = bool
+  default     = false
+}
+
+variable "portal_waf_attached" {
+  description = "Whether the (existing) portal WAF ACL is attached to the CloudFront distribution. Decoupled from portal_waf_enabled so toggle-OFF is safe in two applies: set this false + apply (detach, ACL survives), wait for CloudFront to propagate, then set portal_waf_enabled false + apply (delete the now-detached ACL). Default true: when the ACL exists it should normally be attached. Ignored when portal_waf_enabled is false. See ADR-012 § Toggling off."
+  type        = bool
+  default     = true
+}
+
 variable "github_org_name" {
   description = "GitHub organization that holds Ironforge-provisioned repos (e.g., ironforge-svc). Tenant-specific — supply via gitignored terraform.tfvars per the env-specific-identifiers convention."
   type        = string
