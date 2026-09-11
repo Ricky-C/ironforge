@@ -37,7 +37,7 @@ jobs:
     environment: production
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up QEMU
         # Cross-arch emulation so docker buildx can produce arm64 images on

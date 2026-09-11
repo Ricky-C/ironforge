@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Full history for push/schedule (needs --log-opts="--all").
           # Shallow for PRs; the base SHA is fetched explicitly below so
