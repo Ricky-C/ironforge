@@ -11,22 +11,22 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-lambda-powertools/logger": "^2.10.0",
-    "@aws-sdk/client-dynamodb": "^3.1045.0",
-    "@aws-sdk/client-sfn": "^3.1045.0",
-    "@aws-sdk/lib-dynamodb": "^3.1045.0",
+    "@aws-lambda-powertools/logger": "^2.33.1",
+    "@aws-sdk/client-dynamodb": "^3.1086.0",
+    "@aws-sdk/client-sfn": "^3.1086.0",
+    "@aws-sdk/lib-dynamodb": "^3.1086.0",
     "@ironforge/shared-types": "workspace:*",
     "@ironforge/shared-utils": "workspace:*",
-    "hono": "^4.12.16",
+    "hono": "^4.12.30",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.161",
-    "@types/node": "^25.9.1",
+    "@types/aws-lambda": "^8.10.162",
+    "@types/node": "^26.1.1",
     "aws-sdk-client-mock": "^4.1.0",
-    "esbuild": "^0.28.0",
-    "typescript": "^6.0.3",
-    "vite": "^8.0.14",
-    "vitest": "^4.1.7"
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }

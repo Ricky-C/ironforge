@@ -35,10 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           # Dedicated read-only ECR scanning role; see
           # infra/OIDC_BOOTSTRAP.md § "Step 4b — Create
@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload SARIF
         if: always() && hashFiles('trivy-portal.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4.37.4
         with:
           sarif_file: trivy-portal.sarif
           category: trivy-portal
@@ -91,10 +91,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_TRIVY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -128,7 +128,7 @@ jobs:
 
       - name: Upload SARIF
         if: always() && hashFiles('trivy-run-terraform.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4.37.4
         with:
           sarif_file: trivy-run-terraform.sarif
           category: trivy-run-terraform
