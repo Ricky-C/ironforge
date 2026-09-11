@@ -16,12 +16,12 @@
   },
   "devDependencies": {
     "@aws-sdk/lib-dynamodb": "^3.1045.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.1.1",
     "aws-sdk-client-mock": "^4.1.0",
-    "esbuild": "^0.28.0",
-    "nock": "^14.0.15",
-    "typescript": "^6.0.3",
-    "vite": "^8.0.14",
-    "vitest": "^4.1.7"
+    "esbuild": "^0.28.1",
+    "nock": "^14.0.16",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }
